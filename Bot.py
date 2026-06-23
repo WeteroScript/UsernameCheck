@@ -93,7 +93,7 @@ def get_user_settings(user_id):
     if user_id not in user_settings:
         user_settings[user_id] = {
             "letter": "s",  # Буква для повторения (по умолчанию s)
-            "repeat_count": 2,  # Количество повторений (1-4)
+            "repeat_count": 2,  # Количество повторений (2-4)
             "use_full_alphabet": True  # Использовать все буквы
         }
     return user_settings[user_id]
@@ -101,15 +101,15 @@ def get_user_settings(user_id):
 def generate_username(settings):
     """
     Генерация юзернейма:
-    - Основная буква (например s) повторяется repeat_count раз в разных местах
-    - Остальные буквы - рандомные (разные)
+    - Основная буква (например s) повторяется repeat_count раз ПОДРЯД (sss)
+    - Остальные буквы - рандомные
     """
     
     # Определяем доступные буквы
     if settings["use_full_alphabet"]:
-        letters = string.ascii_lowercase  # Все 26 букв
+        letters = string.ascii_lowercase
     else:
-        letters = 'abcdefghijkmnopqrstuvwxyz'  # Без l, o
+        letters = 'abcdefghijkmnopqrstuvwxyz'
     
     main_letter = settings["letter"]
     repeat_count = settings["repeat_count"]
@@ -121,7 +121,7 @@ def generate_username(settings):
     # Получаем все буквы, кроме main_letter
     other_letters = [c for c in letters if c != main_letter]
     
-    # Выбираем рандомные буквы для остальных позиций (уникальные)
+    # Выбираем рандомные буквы для остальных позиций
     remaining_count = 5 - repeat_count
     if len(other_letters) < remaining_count:
         # Если не хватает уникальных букв, разрешаем повтор
@@ -130,13 +130,20 @@ def generate_username(settings):
         # Выбираем уникальные буквы
         chosen_others = random.sample(other_letters, remaining_count)
     
-    # Создаем список: main_letter повторяется repeat_count раз + остальные буквы
+    # Создаем шаблон: повторяющиеся буквы ПОДРЯД + остальные
     pattern = [main_letter] * repeat_count + chosen_others
     
-    # Перемешиваем (чтобы main_letter была в разных местах)
-    random.shuffle(pattern)
+    # Перемешиваем только остальные буквы, но не разбиваем повторяющиеся
+    # Но нам нужно, чтобы повторяющиеся буквы были вместе, а остальные рандомно
     
-    return ''.join(pattern)
+    # Вариант 1: Вставляем блок повторяющихся букв в случайную позицию
+    random_position = random.randint(0, remaining_count)
+    result = []
+    result.extend(chosen_others[:random_position])
+    result.extend([main_letter] * repeat_count)
+    result.extend(chosen_others[random_position:])
+    
+    return ''.join(result)
 
 def generate_examples(settings, count=4):
     """Генерирует примеры юзернеймов с текущими настройками"""
@@ -164,20 +171,18 @@ def get_all_possible_usernames(settings):
     
     all_usernames = []
     
-    # Если остальных букв меньше чем нужно, используем все возможные комбинации
+    # Генерируем все комбинации остальных букв
     if len(other_letters) < remaining_count:
-        # Используем itertools.product для всех комбинаций
         for others in itertools.product(other_letters, repeat=remaining_count):
-            pattern = [main_letter] * repeat_count + list(others)
-            for perm in set(itertools.permutations(pattern)):
-                all_usernames.append(''.join(perm))
+            # Вставляем блок повторяющихся букв в каждую позицию
+            for pos in range(remaining_count + 1):
+                result = list(others[:pos]) + [main_letter] * repeat_count + list(others[pos:])
+                all_usernames.append(''.join(result))
     else:
-        # Используем комбинации без повторений
-        for others in itertools.combinations(other_letters, remaining_count):
-            for perm_others in set(itertools.permutations(others)):
-                pattern = [main_letter] * repeat_count + list(perm_others)
-                for perm in set(itertools.permutations(pattern)):
-                    all_usernames.append(''.join(perm))
+        for others in itertools.permutations(other_letters, remaining_count):
+            for pos in range(remaining_count + 1):
+                result = list(others[:pos]) + [main_letter] * repeat_count + list(others[pos:])
+                all_usernames.append(''.join(result))
     
     return list(set(all_usernames))  # Убираем дубликаты
 
@@ -301,12 +306,11 @@ def get_count_keyboard():
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
-                InlineKeyboardButton(text="1 раз", callback_data="set_count_1"),
                 InlineKeyboardButton(text="2 раза", callback_data="set_count_2"),
-                InlineKeyboardButton(text="3 раза", callback_data="set_count_3")
+                InlineKeyboardButton(text="3 раза", callback_data="set_count_3"),
+                InlineKeyboardButton(text="4 раза", callback_data="set_count_4")
             ],
             [
-                InlineKeyboardButton(text="4 раза", callback_data="set_count_4"),
                 InlineKeyboardButton(text="⬅️ Назад", callback_data="back_to_settings")
             ]
         ]
@@ -489,9 +493,8 @@ async def change_count(callback_query: types.CallbackQuery):
         "🔢 <b>Выбери количество повторений</b> буквы в юзернейме:\n\n"
         "Например:\n"
         "• 2 раза: <b>ssabc</b>, <b>assbc</b>, <b>abssc</b>, <b>abcss</b>\n"
-        "• 3 раза: <b>sssab</b>, <b>ssasb</b>, <b>ssabs</b>, <b>sassb</b>\n"
-        "• 1 раз: <b>sabcd</b>, <b>asbcd</b>, <b>absсd</b>, <b>abcsd</b>\n"
-        "• 4 раза: <b>ssssa</b>, <b>sssas</b>, <b>ssass</b>, <b>sasss</b>\n\n"
+        "• 3 раза: <b>sssab</b>, <b>asssb</b>, <b>absss</b>\n"
+        "• 4 раза: <b>ssssa</b>, <b>assss</b>\n\n"
         "Выбери количество:",
         parse_mode=ParseMode.HTML,
         reply_markup=get_count_keyboard()
@@ -730,7 +733,8 @@ async def check_all_combinations(callback_query: types.CallbackQuery):
     
     settings = get_user_settings(user_id)
     
-    waiting_message = await callback_query.message.edit_text(
+    # Создаем новое сообщение для прогресса
+    progress_message = await callback_query.message.edit_text(
         "⏳ Генерирую все возможные комбинации по вашим настройкам...\n"
         "Это может занять некоторое время..."
     )
@@ -739,27 +743,30 @@ async def check_all_combinations(callback_query: types.CallbackQuery):
     total = len(all_usernames)
     
     if total == 0:
-        await waiting_message.edit_text(
+        await progress_message.edit_text(
             "❌ Не найдено комбинаций с такими настройками.\n"
             "Попробуй изменить настройки!",
             reply_markup=get_main_keyboard()
         )
         return
     
-    await waiting_message.edit_text(
+    await progress_message.edit_text(
         f"⏳ Найдено {total} комбинаций.\n"
         f"Начинаю проверку каждой...\n"
-        f"Это может занять несколько минут."
+        f"Свободные юзернеймы будут отправляться сразу!"
     )
     
     checked = 0
     found_free = []
+    found_count = 0
     
     for username in all_usernames:
+        # Пропускаем уже проверенные
         if is_in_taken_db(username) or is_in_free_db(username):
             checked += 1
             continue
         
+        # Проверяем
         fragment_result = await check_username_fragment(username)
         
         if fragment_result is None:
@@ -768,35 +775,60 @@ async def check_all_combinations(callback_query: types.CallbackQuery):
             is_available = fragment_result
         
         if is_available:
+            # Сохраняем в базу
             add_to_free_db(username, user_id)
             found_free.append(username)
+            found_count += 1
+            
+            # ОТПРАВЛЯЕМ СВОБОДНЫЙ ЮЗЕРНЕЙМ СРАЗУ!
+            keyboard = InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [
+                        InlineKeyboardButton(
+                            text="✅ Забрать юзернейм", 
+                            url=f"https://t.me/{username}"
+                        )
+                    ]
+                ]
+            )
+            
+            await bot.send_message(
+                user_id,
+                f"🎉 <b>Найден свободный юзернейм!</b>\n\n"
+                f"✅ <b>@{username}</b>\n\n"
+                f"Ты можешь забрать его по ссылке ниже:",
+                parse_mode=ParseMode.HTML,
+                reply_markup=keyboard
+            )
         else:
             add_to_taken_db(username, user_id)
         
         checked += 1
         
-        if checked % 10 == 0:
+        # Обновляем прогресс каждые 5 проверок
+        if checked % 5 == 0:
             try:
-                await waiting_message.edit_text(
+                await progress_message.edit_text(
                     f"⏳ Проверка комбинаций...\n"
                     f"Проверено: {checked}/{total}\n"
-                    f"Найдено свободных: {len(found_free)}\n\n"
-                    f"Последний найденный: @{found_free[-1] if found_free else 'пока нет'}"
+                    f"Найдено свободных: {found_count}\n\n"
+                    f"Последний найденный: @{found_free[-1] if found_free else 'пока нет'}\n\n"
+                    f"✅ Все найденные свободные юзернеймы отправлены!"
                 )
             except:
                 pass
     
+    # Финальное сообщение
     if found_free:
-        free_list = "\n".join([f"• @{u}" for u in found_free[:10]])
-        if len(found_free) > 10:
-            free_list += f"\n... и еще {len(found_free) - 10} шт."
+        # Показываем все найденные в одном сообщении
+        all_free = "\n".join([f"• @{u}" for u in found_free])
         
         keyboard = InlineKeyboardMarkup(
             inline_keyboard=[
                 [
                     InlineKeyboardButton(
-                        text="📥 Получить все свободные", 
-                        callback_data=f"get_free_{user_id}"
+                        text="📥 Получить базу данных", 
+                        callback_data="get_db"
                     )
                 ],
                 [
@@ -808,13 +840,15 @@ async def check_all_combinations(callback_query: types.CallbackQuery):
             ]
         )
         
-        await waiting_message.edit_text(
-            f"✅ Проверка завершена!\n\n"
-            f"📊 Статистика:\n"
+        await progress_message.edit_text(
+            f"✅ <b>Проверка завершена!</b>\n\n"
+            f"📊 <b>Статистика:</b>\n"
             f"• Всего комбинаций: {total}\n"
             f"• Проверено: {checked}\n"
-            f"• Найдено свободных: {len(found_free)}\n\n"
-            f"📝 Первые 10 свободных:\n{free_list}",
+            f"• Найдено свободных: {found_count}\n\n"
+            f"📝 <b>Все найденные свободные юзернеймы:</b>\n"
+            f"{all_free}\n\n"
+            f"✅ Все юзернеймы отправлены отдельными сообщениями!",
             parse_mode=ParseMode.HTML,
             reply_markup=keyboard
         )
@@ -836,15 +870,22 @@ async def check_all_combinations(callback_query: types.CallbackQuery):
             ]
         )
         
-        await waiting_message.edit_text(
-            f"😔 Не найдено свободных юзернеймов.\n\n"
-            f"📊 Статистика:\n"
+        await progress_message.edit_text(
+            f"😔 <b>Не найдено свободных юзернеймов.</b>\n\n"
+            f"📊 <b>Статистика:</b>\n"
             f"• Всего комбинаций: {total}\n"
             f"• Проверено: {checked}\n"
             f"• Найдено свободных: 0\n\n"
             f"Попробуй изменить настройки генерации!",
+            parse_mode=ParseMode.HTML,
             reply_markup=keyboard
         )
+
+# Обработчик получения базы данных
+@dp.callback_query(lambda c: c.data == "get_db")
+async def get_db_callback(callback_query: types.CallbackQuery):
+    await callback_query.answer()
+    await get_db_command(callback_query.message)
 
 # Обработчик возврата в главное меню
 @dp.callback_query(lambda c: c.data == "main_menu")
