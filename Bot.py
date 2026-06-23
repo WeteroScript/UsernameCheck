@@ -88,77 +88,52 @@ def is_in_free_db(username):
     db = load_db(FREE_DB_FILE)
     return username in db
 
-def get_all_possible_usernames(settings):
-    """Генерирует ВСЕ возможные комбинации юзернеймов по заданным настройкам"""
-    
-    # Определяем доступные буквы
-    if settings["use_full_alphabet"]:
-        letters = string.ascii_lowercase
-    else:
-        letters = 'abcdefghijkmnopqrstuvwxyz'
-    
-    main_letter = settings["letter"]
-    repeat_count = settings["repeat_count"]
-    
-    # Если выбранная буква не в алфавите, берем все буквы
-    if main_letter not in letters:
-        all_possible = []
-        for letter in letters:
-            temp_settings = settings.copy()
-            temp_settings["letter"] = letter
-            all_possible.extend(get_all_possible_usernames(temp_settings))
-        return all_possible
-    
-    # Получаем все возможные вторые буквы (не равные main_letter)
-    other_letters = [c for c in letters if c != main_letter]
-    
-    all_usernames = []
-    
-    # Генерируем все комбинации
-    for second_letter in other_letters:
-        # Создаем базовый паттерн
-        pattern = [main_letter] * repeat_count + [second_letter] * (5 - repeat_count)
-        
-        # Получаем все уникальные перестановки
-        unique_permutations = set()
-        for perm in itertools.permutations(pattern):
-            unique_permutations.add(''.join(perm))
-        
-        all_usernames.extend(list(unique_permutations))
-    
-    return all_usernames
-
 def get_user_settings(user_id):
     """Получить настройки пользователя"""
     if user_id not in user_settings:
         user_settings[user_id] = {
-            "letter": "a",
-            "repeat_count": 2,
-            "use_full_alphabet": True
+            "letter": "s",  # Буква для повторения (по умолчанию s)
+            "repeat_count": 2,  # Количество повторений (1-4)
+            "use_full_alphabet": True  # Использовать все буквы
         }
     return user_settings[user_id]
 
 def generate_username(settings):
-    """Генерация юзернейма с повторяющейся буквой"""
+    """
+    Генерация юзернейма:
+    - Основная буква (например s) повторяется repeat_count раз в разных местах
+    - Остальные буквы - рандомные (разные)
+    """
     
+    # Определяем доступные буквы
     if settings["use_full_alphabet"]:
-        letters = string.ascii_lowercase
+        letters = string.ascii_lowercase  # Все 26 букв
     else:
-        letters = 'abcdefghijkmnopqrstuvwxyz'
+        letters = 'abcdefghijkmnopqrstuvwxyz'  # Без l, o
     
     main_letter = settings["letter"]
+    repeat_count = settings["repeat_count"]
     
+    # Если выбранная буква не в алфавите, берем случайную
     if main_letter not in letters:
         main_letter = random.choice(letters)
     
-    repeat_count = settings["repeat_count"]
-    
+    # Получаем все буквы, кроме main_letter
     other_letters = [c for c in letters if c != main_letter]
-    if not other_letters:
-        other_letters = letters
-    second_letter = random.choice(other_letters)
     
-    pattern = [main_letter] * repeat_count + [second_letter] * (5 - repeat_count)
+    # Выбираем рандомные буквы для остальных позиций (уникальные)
+    remaining_count = 5 - repeat_count
+    if len(other_letters) < remaining_count:
+        # Если не хватает уникальных букв, разрешаем повтор
+        chosen_others = [random.choice(other_letters) for _ in range(remaining_count)]
+    else:
+        # Выбираем уникальные буквы
+        chosen_others = random.sample(other_letters, remaining_count)
+    
+    # Создаем список: main_letter повторяется repeat_count раз + остальные буквы
+    pattern = [main_letter] * repeat_count + chosen_others
+    
+    # Перемешиваем (чтобы main_letter была в разных местах)
     random.shuffle(pattern)
     
     return ''.join(pattern)
@@ -170,7 +145,43 @@ def generate_examples(settings, count=4):
         examples.append(generate_username(settings))
     return examples
 
-# НОВАЯ ФУНКЦИЯ ПРОВЕРКИ через Fragment
+def get_all_possible_usernames(settings):
+    """Генерирует ВСЕ возможные комбинации юзернеймов по заданным настройкам"""
+    
+    if settings["use_full_alphabet"]:
+        letters = string.ascii_lowercase
+    else:
+        letters = 'abcdefghijkmnopqrstuvwxyz'
+    
+    main_letter = settings["letter"]
+    repeat_count = settings["repeat_count"]
+    
+    if main_letter not in letters:
+        return []
+    
+    other_letters = [c for c in letters if c != main_letter]
+    remaining_count = 5 - repeat_count
+    
+    all_usernames = []
+    
+    # Если остальных букв меньше чем нужно, используем все возможные комбинации
+    if len(other_letters) < remaining_count:
+        # Используем itertools.product для всех комбинаций
+        for others in itertools.product(other_letters, repeat=remaining_count):
+            pattern = [main_letter] * repeat_count + list(others)
+            for perm in set(itertools.permutations(pattern)):
+                all_usernames.append(''.join(perm))
+    else:
+        # Используем комбинации без повторений
+        for others in itertools.combinations(other_letters, remaining_count):
+            for perm_others in set(itertools.permutations(others)):
+                pattern = [main_letter] * repeat_count + list(perm_others)
+                for perm in set(itertools.permutations(pattern)):
+                    all_usernames.append(''.join(perm))
+    
+    return list(set(all_usernames))  # Убираем дубликаты
+
+# Новая функция проверки через Fragment
 async def check_username_fragment(username):
     try:
         url = f"https://fragment.com/api/username/{username}"
@@ -334,7 +345,6 @@ async def start_command(message: types.Message):
     
     get_user_settings(user_id)
     
-    # Создаем базы данных если их нет
     if not os.path.exists(TAKEN_DB_FILE):
         save_db(TAKEN_DB_FILE, {})
     if not os.path.exists(FREE_DB_FILE):
@@ -351,27 +361,22 @@ async def start_command(message: types.Message):
 async def get_db_command(message: types.Message):
     user_id = message.from_user.id
     
-    # Проверяем, существует ли файлы
     if not os.path.exists(TAKEN_DB_FILE) or not os.path.exists(FREE_DB_FILE):
         await message.answer("❌ Базы данных еще не созданы!")
         return
     
-    # Загружаем базы данных
     taken_db = load_db(TAKEN_DB_FILE)
     free_db = load_db(FREE_DB_FILE)
     
-    # Создаем временные файлы для отправки
     taken_file = f"taken_{user_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
     free_file = f"free_{user_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
     
-    # Сохраняем копии для отправки
     with open(taken_file, 'w', encoding='utf-8') as f:
         json.dump(taken_db, f, indent=2, ensure_ascii=False)
     
     with open(free_file, 'w', encoding='utf-8') as f:
         json.dump(free_db, f, indent=2, ensure_ascii=False)
     
-    # Отправляем файлы
     await message.answer(
         f"📊 Статистика баз данных:\n\n"
         f"📌 Занятых юзернеймов: {len(taken_db)}\n"
@@ -379,7 +384,6 @@ async def get_db_command(message: types.Message):
         f"Отправляю файлы..."
     )
     
-    # Отправляем файлы
     with open(taken_file, 'rb') as f:
         await message.answer_document(
             types.FSInputFile(taken_file, filename=f"taken_usernames_{datetime.now().strftime('%Y%m%d')}.json"),
@@ -392,7 +396,6 @@ async def get_db_command(message: types.Message):
             caption=f"✅ Свободные юзернеймы ({len(free_db)} шт.)"
         )
     
-    # Удаляем временные файлы
     os.remove(taken_file)
     os.remove(free_file)
 
@@ -452,8 +455,8 @@ async def change_letter(callback_query: types.CallbackQuery):
     
     await callback_query.message.edit_text(
         "🔤 <b>Выбери букву</b>, которая будет повторяться в юзернейме:\n\n"
-        "Например: если выберешь <b>A</b> и 2 повторения,\n"
-        "юзернеймы будут типа: <b>aabbb</b>, <b>baabb</b>\n\n"
+        "Например: если выберешь <b>S</b> и 2 повторения,\n"
+        "юзернеймы будут типа: <b>ssabc</b>, <b>assbc</b>, <b>abssc</b>, <b>abcss</b>\n\n"
         "Выбери букву:",
         parse_mode=ParseMode.HTML,
         reply_markup=get_letter_keyboard()
@@ -485,10 +488,10 @@ async def change_count(callback_query: types.CallbackQuery):
     await callback_query.message.edit_text(
         "🔢 <b>Выбери количество повторений</b> буквы в юзернейме:\n\n"
         "Например:\n"
-        "• 2 раза: <b>aabbb</b> (a повторяется 2 раза)\n"
-        "• 3 раза: <b>aaabb</b> (a повторяется 3 раза)\n"
-        "• 1 раз: <b>abbbb</b> (a повторяется 1 раз)\n"
-        "• 4 раза: <b>aaaab</b> (a повторяется 4 раза)\n\n"
+        "• 2 раза: <b>ssabc</b>, <b>assbc</b>, <b>abssc</b>, <b>abcss</b>\n"
+        "• 3 раза: <b>sssab</b>, <b>ssasb</b>, <b>ssabs</b>, <b>sassb</b>\n"
+        "• 1 раз: <b>sabcd</b>, <b>asbcd</b>, <b>absсd</b>, <b>abcsd</b>\n"
+        "• 4 раза: <b>ssssa</b>, <b>sssas</b>, <b>ssass</b>, <b>sasss</b>\n\n"
         "Выбери количество:",
         parse_mode=ParseMode.HTML,
         reply_markup=get_count_keyboard()
@@ -519,7 +522,7 @@ async def reset_settings(callback_query: types.CallbackQuery):
     user_id = callback_query.from_user.id
     
     user_settings[user_id] = {
-        "letter": "a",
+        "letter": "s",
         "repeat_count": 2,
         "use_full_alphabet": True
     }
@@ -543,12 +546,9 @@ async def process_generate_username(callback_query: types.CallbackQuery):
         "⏳ Генерирую красивый юзернейм и проверяю его доступность..."
     )
     
-    # Генерируем юзернейм
     username = generate_username(settings)
     
-    # Проверяем, не проверяли ли уже этот юзернейм
     if is_in_free_db(username):
-        # Уже найден как свободный
         keyboard = InlineKeyboardMarkup(
             inline_keyboard=[
                 [
@@ -579,11 +579,9 @@ async def process_generate_username(callback_query: types.CallbackQuery):
         return
     
     if is_in_taken_db(username):
-        # Уже проверен как занятый - генерируем новый
         await waiting_message.edit_text("⏳ Юзернейм занят, генерирую новый...")
         return await process_generate_username(callback_query)
     
-    # Проверяем через Fragment API
     fragment_result = await check_username_fragment(username)
     
     if fragment_result is None:
@@ -593,7 +591,6 @@ async def process_generate_username(callback_query: types.CallbackQuery):
         is_available = fragment_result
     
     if is_available:
-        # Сохраняем в базу свободных
         add_to_free_db(username, user_id)
         
         keyboard = InlineKeyboardMarkup(
@@ -624,16 +621,13 @@ async def process_generate_username(callback_query: types.CallbackQuery):
             reply_markup=keyboard
         )
     else:
-        # Сохраняем в базу занятых
         add_to_taken_db(username, user_id)
         
-        # Пробуем найти свободный
         attempts = 0
         while attempts < 20:
             new_username = generate_username(settings)
             
             if is_in_free_db(new_username):
-                # Уже найден как свободный
                 keyboard = InlineKeyboardMarkup(
                     inline_keyboard=[
                         [
@@ -736,7 +730,6 @@ async def check_all_combinations(callback_query: types.CallbackQuery):
     
     settings = get_user_settings(user_id)
     
-    # Получаем все возможные комбинации
     waiting_message = await callback_query.message.edit_text(
         "⏳ Генерирую все возможные комбинации по вашим настройкам...\n"
         "Это может занять некоторое время..."
@@ -744,6 +737,14 @@ async def check_all_combinations(callback_query: types.CallbackQuery):
     
     all_usernames = get_all_possible_usernames(settings)
     total = len(all_usernames)
+    
+    if total == 0:
+        await waiting_message.edit_text(
+            "❌ Не найдено комбинаций с такими настройками.\n"
+            "Попробуй изменить настройки!",
+            reply_markup=get_main_keyboard()
+        )
+        return
     
     await waiting_message.edit_text(
         f"⏳ Найдено {total} комбинаций.\n"
@@ -755,12 +756,10 @@ async def check_all_combinations(callback_query: types.CallbackQuery):
     found_free = []
     
     for username in all_usernames:
-        # Пропускаем уже проверенные
         if is_in_taken_db(username) or is_in_free_db(username):
             checked += 1
             continue
         
-        # Проверяем
         fragment_result = await check_username_fragment(username)
         
         if fragment_result is None:
@@ -776,7 +775,6 @@ async def check_all_combinations(callback_query: types.CallbackQuery):
         
         checked += 1
         
-        # Показываем прогресс каждые 10 проверок
         if checked % 10 == 0:
             try:
                 await waiting_message.edit_text(
@@ -788,9 +786,7 @@ async def check_all_combinations(callback_query: types.CallbackQuery):
             except:
                 pass
     
-    # Результат
     if found_free:
-        # Показываем первые 10 свободных
         free_list = "\n".join([f"• @{u}" for u in found_free[:10]])
         if len(found_free) > 10:
             free_list += f"\n... и еще {len(found_free) - 10} шт."
@@ -867,7 +863,6 @@ async def main_menu(callback_query: types.CallbackQuery):
 async def main():
     logging.info("Бот запущен!")
     
-    # Создаем базы данных если их нет
     if not os.path.exists(TAKEN_DB_FILE):
         save_db(TAKEN_DB_FILE, {})
     if not os.path.exists(FREE_DB_FILE):
