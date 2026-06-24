@@ -33,7 +33,7 @@ dp = Dispatcher(storage=storage)
 
 # ⚡️ НАСТРОЙКИ
 RATE_LIMITER = Semaphore(5)
-CHECK_DELAY = 0.5
+CHECK_DELAY = 1.2
 BATCH_SIZE = 5
 CONNECTION_LIMIT = 50
 MAX_RETRIES = 3
