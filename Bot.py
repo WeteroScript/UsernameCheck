@@ -31,9 +31,9 @@ storage = MemoryStorage()
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=storage)
 
-# ⚡️ БЕЗОПАСНЫЕ НАСТРОЙКИ
+# ⚡️ НАСТРОЙКИ
 RATE_LIMITER = Semaphore(5)
-CHECK_DELAY = 1.5
+CHECK_DELAY = 0.5
 BATCH_SIZE = 5
 CONNECTION_LIMIT = 50
 MAX_RETRIES = 3
@@ -44,10 +44,12 @@ http_session: Optional[aiohttp.ClientSession] = None
 # Пути к файлам
 TAKEN_DB_FILE = "taken_usernames.json"
 FREE_DB_FILE = "free_usernames.json"
+BANNED_DB_FILE = "banned_usernames.json"  # 🔥 НОВАЯ БД для заблокированных
 DEBUG_LOG_FILE = "debug_checks.log"
 
 # Глобальные настройки
 user_settings = {}
+stop_flags = {}  # 🔥 Флаги остановки для каждого пользователя
 
 # ============ ФУНКЦИИ БАЗЫ ДАННЫХ ============
 
@@ -94,12 +96,30 @@ def add_to_free_db(username: str, user_id=None, method="unknown"):
         return True
     return False
 
+# 🔥 НОВАЯ ФУНКЦИЯ: добавить в БД заблокированных
+def add_to_banned_db(username: str, user_id=None, method="unknown"):
+    db = load_db(BANNED_DB_FILE)
+    if username not in db:
+        db[username] = {
+            "found_at": datetime.now().isoformat(),
+            "found_by": str(user_id) if user_id else "unknown",
+            "method": method,
+            "status": "banned"
+        }
+        save_db(BANNED_DB_FILE, db)
+        return True
+    return False
+
 def is_in_taken_db(username: str) -> bool:
     db = load_db(TAKEN_DB_FILE)
     return username in db
 
 def is_in_free_db(username: str) -> bool:
     db = load_db(FREE_DB_FILE)
+    return username in db
+
+def is_in_banned_db(username: str) -> bool:
+    db = load_db(BANNED_DB_FILE)
     return username in db
 
 def log_debug(username: str, method: str, status: str, details=""):
@@ -127,6 +147,15 @@ def get_user_settings(user_id: int) -> Dict:
             "use_full_alphabet": True
         }
     return user_settings[user_id]
+
+# 🔥 ФУНКЦИИ ОСТАНОВКИ
+def set_stop_flag(user_id: int, value: bool = True):
+    """Установить флаг остановки для пользователя"""
+    stop_flags[user_id] = value
+
+def is_stopped(user_id: int) -> bool:
+    """Проверить флаг остановки"""
+    return stop_flags.get(user_id, False)
 
 # ============ ГЕНЕРАЦИЯ ЮЗЕРНЕЙМОВ ============
 
@@ -271,11 +300,15 @@ async def safe_request_with_retry(func, *args, **kwargs):
     
     return None
 
-# ============ BOT API ============
+# ============ 🔥 BOT API С ДЕТЕКЦИЕЙ БЛОКИРОВКИ ============
 
 async def check_username_bot_api_fast(username: str) -> Optional[bool]:
     """
-    Проверка через Bot API
+    Проверка через Bot API с детекцией заблокированных
+    Returns:
+    - True: свободен
+    - False: занят или заблокирован (сохраняется в соответствующую БД)
+    - None: неизвестно
     """
     async def _check():
         session = await get_http_session()
@@ -293,6 +326,15 @@ async def check_username_bot_api_fast(username: str) -> Optional[bool]:
             else:
                 error_desc = data.get("description", "").lower()
                 
+                # 🔥 ДЕТЕКЦИЯ БЛОКИРОВКИ
+                if "user is deactivated" in error_desc or "user_deactivated" in error_desc:
+                    logging.info(f"🚫 Bot API: @{username} → ЗАБЛОКИРОВАН (deactivated)")
+                    return "BANNED"
+                elif "forbidden" in error_desc and "banned" in error_desc:
+                    logging.info(f"🚫 Bot API: @{username} → ЗАБЛОКИРОВАН (banned)")
+                    return "BANNED"
+                
+                # Обычные проверки
                 if "chat not found" in error_desc:
                     logging.info(f"✅ Bot API: @{username} → СВОБОДЕН (chat not found)")
                     return True
@@ -303,19 +345,25 @@ async def check_username_bot_api_fast(username: str) -> Optional[bool]:
                     logging.info(f"❌ Bot API: @{username} → ЗАНЯТ (is occupied)")
                     return False
                 elif data.get("error_code") == 400:
-                    logging.info(f"✅ Bot API: @{username} → СВОБОДЕН (400 bad request)")
-                    return True
+                    # 400 может означать что юзернейм свободен или заблокирован
+                    # Проверяем текст ошибки
+                    if "bad request" in error_desc and "username" not in error_desc:
+                        logging.info(f"✅ Bot API: @{username} → СВОБОДЕН (400)")
+                        return True
+                    else:
+                        logging.warning(f"⚠️ Bot API: @{username} → НЕИЗВЕСТНО (400)")
+                        return None
                 else:
                     logging.warning(f"⚠️ Bot API: @{username} → НЕИЗВЕСТНО ({error_desc})")
                     return None
     
     return await safe_request_with_retry(_check)
 
-# ============ 🔥 УЛУЧШЕННАЯ FRAGMENT (СТРОГАЯ ДЕТЕКЦИЯ ПРОДАЖ) ============
+# ============ FRAGMENT ============
 
 async def check_username_fragment_fast(username: str) -> Optional[bool]:
     """
-    Проверка Fragment - ТОЛЬКО признаки продажи = False
+    Проверка Fragment
     """
     async def _check():
         session = await get_http_session()
@@ -339,64 +387,49 @@ async def check_username_fragment_fast(username: str) -> Optional[bool]:
                 
                 log_debug(username, "fragment", f"Status {status}", html[:2000])
                 
-                # 🔥 ТОЛЬКО ЯВНЫЕ ПРИЗНАКИ ПРОДАЖИ/АУКЦИОНА
-                
-                # 1. Кнопка ставки/покупки
+                # Проверка на продажу/аукцион
                 if re.search(r'<(?:button|a)[^>]*(?:place.*bid|buy.*now|make.*offer)', html_lower):
-                    logging.info(f"🛒 Fragment: @{username} → НА ПРОДАЖЕ (кнопка)")
+                    logging.info(f"🛒 Fragment: @{username} → НА ПРОДАЖЕ")
                     return False
                 
-                # 2. Активный аукцион (класс tm-section-bid-button)
-                if 'tm-section-bid-button' in html:
-                    logging.info(f"🛒 Fragment: @{username} → НА АУКЦИОНЕ (bid button)")
+                if 'tm-section-bid-button' in html or 'tm-section-countdown' in html:
+                    logging.info(f"🛒 Fragment: @{username} → НА АУКЦИОНЕ")
                     return False
                 
-                # 3. Таймер обратного отсчета
-                if 'tm-section-countdown' in html or 'data-bid-ts' in html:
-                    logging.info(f"🛒 Fragment: @{username} → НА АУКЦИОНЕ (countdown)")
+                if re.search(r'table-cell-value[^>]*>\s*(?:TON|USD|\$)\s*[\d,]+', html):
+                    logging.info(f"🛒 Fragment: @{username} → НА ПРОДАЖЕ (цена)")
                     return False
                 
-                # 4. Цена в таблице (table-cell-value с TON или $)
-                if re.search(r'table-cell-value[^>]*>\s*(?:TON|USD|\$|₽)\s*[\d,]+', html):
-                    logging.info(f"🛒 Fragment: @{username} → НА ПРОДАЖЕ (цена в таблице)")
+                if re.search(r'(?:highest|current|minimum)\s+(?:bid|price)', html_lower):
+                    logging.info(f"🛒 Fragment: @{username} → НА АУКЦИОНЕ")
                     return False
                 
-                # 5. Информация о ставках
-                if re.search(r'(?:highest|current|minimum|starting)\s+(?:bid|price)', html_lower):
-                    logging.info(f"🛒 Fragment: @{username} → НА АУКЦИОНЕ (bid info)")
+                # 🔥 ДЕТЕКЦИЯ БЛОКИРОВКИ
+                if 'banned' in html_lower or 'restricted' in html_lower or 'deactivated' in html_lower:
+                    if 'status' in html_lower or 'username' in html_lower:
+                        logging.info(f"🚫 Fragment: @{username} → ЗАБЛОКИРОВАН")
+                        return "BANNED"
+                
+                # Проверка на занятость
+                if 'sold' in html_lower or 'taken' in html_lower:
+                    logging.info(f"❌ Fragment: @{username} → ЗАНЯТ")
                     return False
                 
-                # 6. Статус "On Auction" или "For Sale"
-                if re.search(r'<div[^>]*tm-status[^>]*>.*(?:auction|for sale|on sale)', html_lower):
-                    logging.info(f"🛒 Fragment: @{username} → НА ПРОДАЖЕ (status)")
-                    return False
-                
-                # 7. История продаж (значит был продан)
-                if re.search(r'(?:sold for|purchase|bought)', html_lower):
-                    logging.info(f"❌ Fragment: @{username} → ПРОДАН (history)")
-                    return False
-                
-                # 8. Владелец указан (Owned by...)
                 if re.search(r'owned\s+by', html_lower):
                     logging.info(f"❌ Fragment: @{username} → ЗАНЯТ (has owner)")
                     return False
                 
-                # ЕСЛИ НЕТ ПРИЗНАКОВ ПРОДАЖИ - считаем свободным!
-                # (Fragment может показывать страницу даже для незарегистрированных)
-                
-                # Пустая страница или минимальный контент
+                # Свободен
                 if len(html) < 5000 and 'tm-username' not in html:
-                    logging.info(f"✅ Fragment: @{username} → СВОБОДЕН (минимальный контент)")
+                    logging.info(f"✅ Fragment: @{username} → СВОБОДЕН")
                     return True
                 
-                # Нет ни одного признака занятости/продажи
                 if not any(marker in html_lower for marker in [
                     'auction', 'bid', 'price', 'sold', 'owner', 'ton', 'usd', '$'
                 ]):
-                    logging.info(f"✅ Fragment: @{username} → СВОБОДЕН (нет признаков)")
+                    logging.info(f"✅ Fragment: @{username} → СВОБОДЕН")
                     return True
                 
-                # Неопределенно - лучше пропустить другим методам
                 logging.warning(f"⚠️ Fragment: @{username} → НЕОПРЕДЕЛЕННО")
                 return None
             
@@ -434,17 +467,14 @@ async def check_username_web_fast(username: str) -> Optional[bool]:
                 
                 # Признаки занятости
                 if any(marker in html_short for marker in [
-                    'tgme_page_photo',
-                    'tgme_page_title',
-                    'tgme_page_description',
-                    'tgme_page_extra'
+                    'tgme_page_photo', 'tgme_page_title', 'tgme_page_description'
                 ]):
-                    logging.info(f"❌ t.me: @{username} → ЗАНЯТ (есть профиль)")
+                    logging.info(f"❌ t.me: @{username} → ЗАНЯТ")
                     return False
                 
                 # Признаки свободности
                 if "if you have" in html_short.lower() and "telegram" in html_short.lower():
-                    logging.info(f"✅ t.me: @{username} → СВОБОДЕН (пустая страница)")
+                    logging.info(f"✅ t.me: @{username} → СВОБОДЕН")
                     return True
                 
                 logging.warning(f"⚠️ t.me: @{username} → НЕОПРЕДЕЛЕННО")
@@ -454,24 +484,22 @@ async def check_username_web_fast(username: str) -> Optional[bool]:
     
     return await safe_request_with_retry(_check)
 
-# ============ 🔥 АГРЕССИВНАЯ ЛОГИКА ПРОВЕРКИ ============
+# ============ 🔥 ГЛАВНАЯ ПРОВЕРКА С ДЕТЕКЦИЕЙ БЛОКИРОВКИ ============
 
 async def check_username_parallel(username: str, user_id=None) -> bool:
     """
-    НОВАЯ ЛОГИКА:
+    Проверка с детекцией заблокированных юзернеймов
     
-    СВОБОДЕН если:
-    ✅ Хотя бы ОДИН метод говорит "свободен" 
-    ✅ И НИ ОДИН не говорит "на продаже/аукционе"
-    
-    ЗАНЯТ если:
-    ❌ Fragment говорит "на продаже/аукционе"
-    ❌ ИЛИ все методы говорят "занят"
+    Returns:
+    - True: СВОБОДЕН и НЕ заблокирован
+    - False: ЗАНЯТ, на продаже или ЗАБЛОКИРОВАН
     """
     
     if is_in_free_db(username):
         return True
     if is_in_taken_db(username):
+        return False
+    if is_in_banned_db(username):
         return False
     
     async with RATE_LIMITER:
@@ -505,55 +533,55 @@ async def check_username_parallel(username: str, user_id=None) -> bool:
         logging.info(f"   Fragment: {fragment_result}")
         logging.info(f"   t.me: {web_result}")
         
-        # 🔥 НОВАЯ АГРЕССИВНАЯ ЛОГИКА
-        
-        # 1. ПРИОРИТЕТ: Fragment говорит False (на продаже) → БЛОКИРУЕМ
-        if fragment_result is False:
-            add_to_taken_db(username, user_id, "fragment_sale", "На продаже/аукционе на Fragment")
-            logging.info(f"🔴 ИТОГ: @{username} ЗАНЯТ ❌ (Fragment: продажа)")
+        # 🔥 ПРОВЕРКА НА БЛОКИРОВКУ (ПРИОРИТЕТ!)
+        if bot_api_result == "BANNED" or fragment_result == "BANNED":
+            add_to_banned_db(username, user_id, "detected")
+            logging.info(f"🚫 ИТОГ: @{username} ЗАБЛОКИРОВАН ❌")
             return False
         
-        # 2. АГРЕССИВНО: Хотя бы ОДИН говорит "свободен" → СВОБОДЕН!
+        # ПРОВЕРКА НА ПРОДАЖУ
+        if fragment_result is False:
+            add_to_taken_db(username, user_id, "fragment", "На продаже/аукционе")
+            logging.info(f"🔴 ИТОГ: @{username} ЗАНЯТ/ПРОДАЖА ❌")
+            return False
+        
+        # АГРЕССИВНАЯ ЛОГИКА: хотя бы один говорит "свободен"
         if bot_api_result is True or fragment_result is True or web_result is True:
-            # Но проверяем что нет явных "занят"
             taken_count = sum(1 for v in [bot_api_result, fragment_result, web_result] if v is False)
             
             if taken_count == 0:
-                # Ни один не говорит "занят" и хотя бы один говорит "свободен"
-                add_to_free_db(username, user_id, "aggressive_check")
-                logging.info(f"🟢 ИТОГ: @{username} СВОБОДЕН ✅ (агрессивная логика)")
+                add_to_free_db(username, user_id, "aggressive")
+                logging.info(f"🟢 ИТОГ: @{username} СВОБОДЕН ✅")
                 return True
             elif taken_count == 1 and bot_api_result is True:
-                # Даже если один говорит "занят", но Bot API говорит "свободен" - доверяем Bot API
                 add_to_free_db(username, user_id, "bot_api_priority")
                 logging.info(f"🟢 ИТОГ: @{username} СВОБОДЕН ✅ (Bot API приоритет)")
                 return True
         
-        # 3. Все говорят "занят" (False)
+        # Все говорят "занят"
         if all(v is False for v in [bot_api_result, fragment_result, web_result] if v is not None):
-            add_to_taken_db(username, user_id, "all_taken", "Все методы подтвердили занятость")
-            logging.info(f"🔴 ИТОГ: @{username} ЗАНЯТ ❌ (все подтвердили)")
+            add_to_taken_db(username, user_id, "all_taken", "Все подтвердили")
+            logging.info(f"🔴 ИТОГ: @{username} ЗАНЯТ ❌")
             return False
         
-        # 4. Большинство говорит "занят"
+        # Большинство говорит "занят"
         results_list = [bot_api_result, fragment_result, web_result]
         taken_votes = sum(1 for v in results_list if v is False)
-        free_votes = sum(1 for v in results_list if v is True)
         
         if taken_votes >= 2:
-            add_to_taken_db(username, user_id, "majority_taken", f"Занят: {taken_votes}, Свободен: {free_votes}")
-            logging.info(f"🔴 ИТОГ: @{username} ЗАНЯТ ❌ (большинство: {taken_votes})")
+            add_to_taken_db(username, user_id, "majority", f"Занят: {taken_votes}")
+            logging.info(f"🔴 ИТОГ: @{username} ЗАНЯТ ❌")
             return False
         
-        # 5. Все неопределенно (None) - по умолчанию считаем СВОБОДНЫМ (агрессивно!)
+        # Все неопределенно - оптимистично считаем свободным
         if all(v is None for v in results_list):
-            add_to_free_db(username, user_id, "all_unknown_optimistic")
-            logging.info(f"🟢 ИТОГ: @{username} СВОБОДЕН ✅ (все неопределенно, оптимистично)")
+            add_to_free_db(username, user_id, "optimistic")
+            logging.info(f"🟢 ИТОГ: @{username} СВОБОДЕН ✅ (оптимистично)")
             return True
         
-        # 6. В остальных случаях - по умолчанию ЗАНЯТ (безопаснее)
+        # По умолчанию - занят
         add_to_taken_db(username, user_id, "default", "Недостаточно данных")
-        logging.info(f"🔴 ИТОГ: @{username} ЗАНЯТ ❌ (по умолчанию)")
+        logging.info(f"🔴 ИТОГ: @{username} ЗАНЯТ ❌")
         return False
 
 # ============ БАТЧ-ПРОВЕРКА ============
@@ -661,24 +689,40 @@ async def start_command(message: types.Message):
     user_id = message.from_user.id
     
     get_user_settings(user_id)
+    set_stop_flag(user_id, False)  # Сбросить флаг остановки
     
     if not os.path.exists(TAKEN_DB_FILE):
         save_db(TAKEN_DB_FILE, {})
     if not os.path.exists(FREE_DB_FILE):
         save_db(FREE_DB_FILE, {})
+    if not os.path.exists(BANNED_DB_FILE):
+        save_db(BANNED_DB_FILE, {})
     
     await safe_send_message(
         message.chat.id,
         f"Привет, {user_name}! 👋\n\n"
         f"🎯 <b>Поиск СВОБОДНЫХ юзернеймов</b>\n\n"
-        f"⚡️ <b>АГРЕССИВНАЯ ПРОВЕРКА:</b>\n"
-        f"✅ Если хотя бы 1 метод говорит \"свободен\" → ВЫДАЕМ!\n"
-        f"✅ Блокируем только явные продажи\n"
+        f"⚡️ <b>УМНАЯ ПРОВЕРКА:</b>\n"
+        f"✅ Игнорирует заблокированные\n"
+        f"✅ Фильтрует продажи на Fragment\n"
         f"✅ Защита от rate limit\n"
-        f"✅ 3 метода: Bot API, Fragment, t.me\n\n"
+        f"✅ Команда /stop для остановки\n\n"
         f"Выбери действие:",
         parse_mode=ParseMode.HTML,
         reply_markup=get_main_keyboard()
+    )
+
+# 🔥 КОМАНДА /stop
+@dp.message(Command("stop"))
+async def stop_command(message: types.Message):
+    user_id = message.from_user.id
+    set_stop_flag(user_id, True)
+    
+    await safe_send_message(
+        message.chat.id,
+        "🛑 <b>Остановка поиска...</b>\n\n"
+        "Текущая проверка завершится, затем поиск остановится.",
+        parse_mode=ParseMode.HTML
     )
 
 @dp.message(Command("getdb"))
@@ -687,10 +731,12 @@ async def get_db_command(message: types.Message):
     
     taken_db = load_db(TAKEN_DB_FILE)
     free_db = load_db(FREE_DB_FILE)
+    banned_db = load_db(BANNED_DB_FILE)
     
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
     taken_file = f"taken_{user_id}_{timestamp}.json"
     free_file = f"free_{user_id}_{timestamp}.json"
+    banned_file = f"banned_{user_id}_{timestamp}.json"
     
     try:
         with open(taken_file, 'w', encoding='utf-8') as f:
@@ -699,16 +745,26 @@ async def get_db_command(message: types.Message):
         with open(free_file, 'w', encoding='utf-8') as f:
             json.dump(free_db, f, indent=2, ensure_ascii=False)
         
-        await safe_send_message(message.chat.id, f"📊 Занятых: {len(taken_db)}, Свободных: {len(free_db)}")
+        with open(banned_file, 'w', encoding='utf-8') as f:
+            json.dump(banned_db, f, indent=2, ensure_ascii=False)
         
-        await message.answer_document(types.FSInputFile(taken_file), caption=f"📁 Занятые ({len(taken_db)})")
+        await safe_send_message(
+            message.chat.id,
+            f"📊 Свободных: {len(free_db)}\n"
+            f"❌ Занятых: {len(taken_db)}\n"
+            f"🚫 Заблокированных: {len(banned_db)}"
+        )
+        
         await message.answer_document(types.FSInputFile(free_file), caption=f"✅ Свободные ({len(free_db)})")
+        await message.answer_document(types.FSInputFile(taken_file), caption=f"📁 Занятые ({len(taken_db)})")
+        await message.answer_document(types.FSInputFile(banned_file), caption=f"🚫 Заблокированные ({len(banned_db)})")
         
         if os.path.exists(DEBUG_LOG_FILE):
             await message.answer_document(types.FSInputFile(DEBUG_LOG_FILE), caption=f"🔍 Debug")
         
         os.remove(taken_file)
         os.remove(free_file)
+        os.remove(banned_file)
         
     except Exception as e:
         await safe_send_message(message.chat.id, f"❌ Ошибка: {e}")
@@ -723,7 +779,15 @@ async def check_command(message: types.Message):
         
         is_free = await check_username_parallel(username, message.from_user.id)
         
-        if is_free:
+        # Проверяем не заблокирован ли
+        if is_in_banned_db(username):
+            await safe_edit_message(
+                msg,
+                f"🚫 <b>@{username} ЗАБЛОКИРОВАН</b>\n\n"
+                f"Этот юзернейм забанен Telegram",
+                parse_mode=ParseMode.HTML
+            )
+        elif is_free:
             keyboard = InlineKeyboardMarkup(
                 inline_keyboard=[
                     [InlineKeyboardButton(text="✅ Забрать", url=f"https://t.me/{username}")],
@@ -732,8 +796,7 @@ async def check_command(message: types.Message):
             )
             await safe_edit_message(
                 msg,
-                f"✅ <b>@{username} СВОБОДЕН!</b>\n\n"
-                f"(агрессивная проверка)",
+                f"✅ <b>@{username} СВОБОДЕН!</b>",
                 parse_mode=ParseMode.HTML,
                 reply_markup=keyboard
             )
@@ -757,22 +820,15 @@ async def show_stats(callback_query: types.CallbackQuery):
     
     taken_db = load_db(TAKEN_DB_FILE)
     free_db = load_db(FREE_DB_FILE)
-    
-    # Статистика методов для свободных
-    methods_free = {}
-    for username, data in free_db.items():
-        method = data.get("method", "unknown")
-        methods_free[method] = methods_free.get(method, 0) + 1
-    
-    methods_text = "\n".join([f"  • {m}: {c}" for m, c in methods_free.items()])
+    banned_db = load_db(BANNED_DB_FILE)
     
     await safe_edit_message(
         callback_query.message,
         f"📊 <b>Статистика</b>\n\n"
         f"✅ Свободных: {len(free_db)}\n"
-        f"{methods_text if methods_text else '  (нет)'}\n\n"
-        f"❌ Занятых: {len(taken_db)}\n\n"
-        f"⚡️ Агрессивная проверка активна!",
+        f"❌ Занятых: {len(taken_db)}\n"
+        f"🚫 Заблокированных: {len(banned_db)}\n\n"
+        f"⚡️ Заблокированные игнорируются!",
         parse_mode=ParseMode.HTML,
         reply_markup=InlineKeyboardMarkup(
             inline_keyboard=[
@@ -848,15 +904,18 @@ async def reset_settings(callback_query: types.CallbackQuery):
     await callback_query.answer("✅ Сброшено")
     await open_settings(callback_query)
 
+# 🔥 ГЕНЕРАЦИЯ С ОСТАНОВКОЙ
 @dp.callback_query(lambda c: c.data == "generate_username")
 async def process_generate_username(callback_query: types.CallbackQuery):
     await callback_query.answer()
     user_id = callback_query.from_user.id
     settings = get_user_settings(user_id)
     
+    set_stop_flag(user_id, False)  # Сбросить флаг
+    
     waiting_message = await safe_edit_message(
         callback_query.message,
-        "⚡️ <b>ПОИСК...</b>\n\n<i>Агрессивная проверка!</i>",
+        "⚡️ <b>ПОИСК...</b>\n\n<i>Используй /stop для остановки</i>",
         parse_mode=ParseMode.HTML
     )
     
@@ -864,22 +923,40 @@ async def process_generate_username(callback_query: types.CallbackQuery):
     found = False
     
     for i in range(0, max_attempts, BATCH_SIZE):
+        # 🔥 ПРОВЕРКА ФЛАГА ОСТАНОВКИ
+        if is_stopped(user_id):
+            await safe_edit_message(
+                waiting_message,
+                f"🛑 <b>ОСТАНОВЛЕНО</b>\n\n"
+                f"Проверено: {i} попыток\n"
+                f"Найдено: нет",
+                parse_mode=ParseMode.HTML,
+                reply_markup=get_main_keyboard()
+            )
+            set_stop_flag(user_id, False)
+            return
+        
         batch = []
         for _ in range(min(BATCH_SIZE, max_attempts - i)):
             username = generate_username(settings)
-            if not is_in_taken_db(username) and not is_in_free_db(username):
+            if not is_in_taken_db(username) and not is_in_free_db(username) and not is_in_banned_db(username):
                 batch.append(username)
         
         if not batch:
             continue
         
         if i > 0 and i % 10 == 0:
-            await safe_edit_message(waiting_message, f"⚡️ <b>Проверяю...</b> {i}/{max_attempts}", parse_mode=ParseMode.HTML)
+            await safe_edit_message(
+                waiting_message,
+                f"⚡️ <b>Проверяю...</b> {i}/{max_attempts}\n\n"
+                f"<i>/stop для остановки</i>",
+                parse_mode=ParseMode.HTML
+            )
         
         results = await check_usernames_batch(batch, user_id)
         
         for username, is_free in results.items():
-            if is_free:
+            if is_free and not is_in_banned_db(username):
                 keyboard = InlineKeyboardMarkup(
                     inline_keyboard=[
                         [InlineKeyboardButton(text="✅ Забрать", url=f"https://t.me/{username}")],
@@ -892,7 +969,7 @@ async def process_generate_username(callback_query: types.CallbackQuery):
                 )
                 await safe_edit_message(
                     waiting_message,
-                    f"🎉 <b>НАЙДЕН!</b>\n\n✅ <code>@{username}</code>\n\n(агрессивная проверка)",
+                    f"🎉 <b>НАЙДЕН!</b>\n\n✅ <code>@{username}</code>",
                     parse_mode=ParseMode.HTML,
                     reply_markup=keyboard
                 )
@@ -916,6 +993,7 @@ async def process_generate_username(callback_query: types.CallbackQuery):
             reply_markup=keyboard
         )
 
+# 🔥 МАССОВАЯ ПРОВЕРКА С ОСТАНОВКОЙ
 @dp.callback_query(lambda c: c.data == "check_all")
 async def check_all_combinations(callback_query: types.CallbackQuery):
     await callback_query.answer()
@@ -945,7 +1023,7 @@ async def check_all_combinations(callback_query: types.CallbackQuery):
         f"⚡️ <b>МАССОВАЯ ПРОВЕРКА</b>\n\n"
         f"Комбинаций: {total}\n"
         f"Время: ~{estimated_minutes} мин\n\n"
-        f"Агрессивная проверка!\n\n"
+        f"Используй /stop для остановки\n\n"
         f"Продолжить?",
         parse_mode=ParseMode.HTML,
         reply_markup=keyboard
@@ -957,20 +1035,45 @@ async def confirm_check_all(callback_query: types.CallbackQuery):
     user_id = callback_query.from_user.id
     settings = get_user_settings(user_id)
     
+    set_stop_flag(user_id, False)  # Сбросить флаг
+    
     all_usernames = get_all_possible_usernames(settings)
     await perform_mass_check(callback_query.message, user_id, all_usernames)
 
 async def perform_mass_check(message, user_id: int, all_usernames: List[str]):
     total = len(all_usernames)
     
-    await safe_edit_message(message, f"⚡️ <b>СТАРТ!</b>\n\nВсего: {total}", parse_mode=ParseMode.HTML)
+    await safe_edit_message(
+        message,
+        f"⚡️ <b>СТАРТ!</b>\n\nВсего: {total}\n\n<i>/stop для остановки</i>",
+        parse_mode=ParseMode.HTML
+    )
     
     checked = 0
     found_free = []
+    skipped_banned = 0
     last_update = datetime.now()
     start_time = datetime.now()
     
     for i in range(0, len(all_usernames), BATCH_SIZE):
+        # 🔥 ПРОВЕРКА ФЛАГА ОСТАНОВКИ
+        if is_stopped(user_id):
+            elapsed_min = int((datetime.now() - start_time).total_seconds() / 60)
+            await safe_edit_message(
+                message,
+                f"🛑 <b>ОСТАНОВЛЕНО ПОЛЬЗОВАТЕЛЕМ</b>\n\n"
+                f"Проверено: {checked}/{total}\n"
+                f"Найдено: {len(found_free)}\n"
+                f"Заблокировано: {skipped_banned}\n"
+                f"Время: {elapsed_min} мин",
+                parse_mode=ParseMode.HTML,
+                reply_markup=InlineKeyboardMarkup(
+                    inline_keyboard=[[InlineKeyboardButton(text="🏠 Меню", callback_data="main_menu")]]
+                )
+            )
+            set_stop_flag(user_id, False)
+            return
+        
         batch = all_usernames[i:i + BATCH_SIZE]
         
         to_check = []
@@ -982,13 +1085,19 @@ async def perform_mass_check(message, user_id: int, all_usernames: List[str]):
                 found_free.append(username)
                 checked += 1
                 continue
+            if is_in_banned_db(username):
+                checked += 1
+                skipped_banned += 1
+                continue
             to_check.append(username)
         
         if to_check:
             results = await check_usernames_batch(to_check, user_id)
             
             for username, is_free in results.items():
-                if is_free:
+                if is_in_banned_db(username):
+                    skipped_banned += 1
+                elif is_free:
                     found_free.append(username)
                     
                     keyboard = InlineKeyboardMarkup(
@@ -1012,7 +1121,10 @@ async def perform_mass_check(message, user_id: int, all_usernames: List[str]):
             progress = (checked / total) * 100
             await safe_edit_message(
                 message,
-                f"⚡️ {checked}/{total} ({progress:.1f}%)\n✅ Найдено: {len(found_free)}",
+                f"⚡️ {checked}/{total} ({progress:.1f}%)\n"
+                f"✅ Найдено: {len(found_free)}\n"
+                f"🚫 Заблокировано: {skipped_banned}\n\n"
+                f"<i>/stop для остановки</i>",
                 parse_mode=ParseMode.HTML
             )
             last_update = now
@@ -1029,6 +1141,7 @@ async def perform_mass_check(message, user_id: int, all_usernames: List[str]):
             f"✅ <b>ГОТОВО!</b>\n\n"
             f"Проверено: {checked}\n"
             f"Найдено: {len(found_free)}\n"
+            f"Заблокировано: {skipped_banned}\n"
             f"Время: {elapsed_min} мин\n\n"
             f"{samples}",
             parse_mode=ParseMode.HTML,
@@ -1039,7 +1152,10 @@ async def perform_mass_check(message, user_id: int, all_usernames: List[str]):
     else:
         await safe_edit_message(
             message,
-            f"😔 Не найдено\n\nПроверено: {checked}\nВремя: {elapsed_min} мин",
+            f"😔 Не найдено\n\n"
+            f"Проверено: {checked}\n"
+            f"Заблокировано: {skipped_banned}\n"
+            f"Время: {elapsed_min} мин",
             parse_mode=ParseMode.HTML,
             reply_markup=InlineKeyboardMarkup(
                 inline_keyboard=[[InlineKeyboardButton(text="🏠 Меню", callback_data="main_menu")]]
@@ -1054,10 +1170,14 @@ async def get_db_callback(callback_query: types.CallbackQuery):
 @dp.callback_query(lambda c: c.data == "main_menu")
 async def main_menu(callback_query: types.CallbackQuery):
     await callback_query.answer()
+    user_id = callback_query.from_user.id
+    set_stop_flag(user_id, False)  # Сбросить флаг при возврате в меню
     
     await safe_edit_message(
         callback_query.message,
-        f"🏠 <b>Главное меню</b>\n\n⚡️ Агрессивная проверка!",
+        f"🏠 <b>Главное меню</b>\n\n"
+        f"⚡️ Игнорирует заблокированные!\n"
+        f"🛑 Используй /stop для остановки",
         parse_mode=ParseMode.HTML,
         reply_markup=get_main_keyboard()
     )
@@ -1066,13 +1186,15 @@ async def main_menu(callback_query: types.CallbackQuery):
 
 async def on_startup():
     logging.info("🚀 Бот запущен!")
-    logging.info("⚡️ АГРЕССИВНАЯ ЛОГИКА: если хотя бы 1 метод говорит 'свободен' → ВЫДАЕМ!")
-    logging.info(f"🛡 Параллельных проверок: {RATE_LIMITER._value}")
+    logging.info("🚫 Детекция заблокированных активна!")
+    logging.info("🛑 Команда /stop для остановки")
     
     if not os.path.exists(TAKEN_DB_FILE):
         save_db(TAKEN_DB_FILE, {})
     if not os.path.exists(FREE_DB_FILE):
         save_db(FREE_DB_FILE, {})
+    if not os.path.exists(BANNED_DB_FILE):
+        save_db(BANNED_DB_FILE, {})
 
 async def on_shutdown():
     global http_session
