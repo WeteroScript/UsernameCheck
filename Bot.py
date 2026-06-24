@@ -33,7 +33,7 @@ dp = Dispatcher(storage=storage)
 
 # ⚡️ БЕЗОПАСНЫЕ НАСТРОЙКИ (защита от rate limit)
 RATE_LIMITER = Semaphore(5)  # Уменьшено с 10 до 5
-CHECK_DELAY = 0.5  # Увеличено с 0.3 до 0.5
+CHECK_DELAY = 1.0  # Увеличено с 0.3 до 0.5
 BATCH_SIZE = 5  # Уменьшено с 10 до 5
 CONNECTION_LIMIT = 50  # Уменьшено с 100 до 50
 MAX_RETRIES = 3  # Максимум повторов при ошибке
