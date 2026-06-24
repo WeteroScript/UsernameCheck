@@ -32,7 +32,7 @@ dp = Dispatcher(storage=storage)
 
 # ⚡️ ОПТИМИЗИРОВАННЫЕ НАСТРОЙКИ
 RATE_LIMITER = Semaphore(10)
-CHECK_DELAY = 1.1
+CHECK_DELAY = 0.3
 BATCH_SIZE = 10
 CONNECTION_LIMIT = 100
 
@@ -222,7 +222,7 @@ async def get_http_session() -> aiohttp.ClientSession:
         )
     return http_session
 
-# ============ 🔥 ИСПРАВЛЕННАЯ ПРОВЕРКА ЧЕРЕЗ BOT API ============
+# ============ ПРОВЕРКА ЧЕРЕЗ BOT API ============
 
 async def check_username_bot_api_fast(username: str) -> Optional[bool]:
     """
@@ -240,32 +240,25 @@ async def check_username_bot_api_fast(username: str) -> Optional[bool]:
             log_debug(username, "bot_api", f"Response: {data}")
             
             if data.get("ok") is True:
-                # Чат найден = ЗАНЯТ
                 logging.info(f"❌ Bot API: @{username} → ЗАНЯТ (чат найден)")
                 return False
             else:
                 error_desc = data.get("description", "")
                 error_code = data.get("error_code", 0)
                 
-                # КЛЮЧЕВОЕ ИСПРАВЛЕНИЕ: правильная обработка ошибок
                 if "chat not found" in error_desc.lower():
-                    # Чат не найден = СВОБОДЕН!
                     logging.info(f"✅ Bot API: @{username} → СВОБОДЕН (chat not found)")
                     return True
                 elif "username is not occupied" in error_desc.lower():
-                    # Юзернейм не занят = СВОБОДЕН!
                     logging.info(f"✅ Bot API: @{username} → СВОБОДЕН (not occupied)")
                     return True
                 elif "username is occupied" in error_desc.lower():
-                    # Юзернейм занят = ЗАНЯТ
                     logging.info(f"❌ Bot API: @{username} → ЗАНЯТ (is occupied)")
                     return False
                 elif error_code == 400:
-                    # Bad Request часто означает что юзернейм не существует
                     logging.info(f"✅ Bot API: @{username} → СВОБОДЕН (400 error)")
                     return True
                 else:
-                    # Неизвестная ошибка
                     logging.warning(f"⚠️ Bot API: @{username} → НЕИЗВЕСТНО ({error_desc})")
                     return None
                 
@@ -276,12 +269,15 @@ async def check_username_bot_api_fast(username: str) -> Optional[bool]:
         logging.error(f"❌ Bot API error @{username}: {e}")
         return None
 
-# ============ 🔥 ИСПРАВЛЕННАЯ ПРОВЕРКА ЧЕРЕЗ FRAGMENT ============
+# ============ 🔥 УЛУЧШЕННАЯ ПРОВЕРКА FRAGMENT (ИГНОРИРУЕТ ПРОДАЖИ) ============
 
 async def check_username_fragment_fast(username: str) -> Optional[bool]:
     """
-    Проверка через Fragment
-    Returns: True (СВОБОДЕН), False (ЗАНЯТ), None (неизвестно)
+    Проверка через Fragment с детекцией продаж
+    Returns: 
+    - True (СВОБОДЕН и НЕ на продаже)
+    - False (ЗАНЯТ или НА ПРОДАЖЕ/АУКЦИОНЕ)
+    - None (неизвестно)
     """
     try:
         session = await get_http_session()
@@ -300,59 +296,105 @@ async def check_username_fragment_fast(username: str) -> Optional[bool]:
             log_debug(username, "fragment", f"Status {status}", html[:2000])
             
             if status == 404:
-                # Страница не найдена = СВОБОДЕН
                 logging.info(f"✅ Fragment: @{username} → СВОБОДЕН (404)")
                 return True
             
             if status == 200:
                 html_lower = html.lower()
                 
-                # ПРИЗНАКИ ЗАНЯТОСТИ (возвращаем False только если уверены!)
+                # 🔥 ПРОВЕРКА НА ПРОДАЖУ/АУКЦИОН (ГЛАВНОЕ!)
                 
-                # 1. На аукционе (активные торги)
-                if 'tm-section-bid-button' in html or 'place a bid' in html_lower:
-                    logging.info(f"❌ Fragment: @{username} → ЗАНЯТ (на аукционе)")
+                # 1. Кнопка "Place a Bid" или "Buy Now"
+                if any(marker in html_lower for marker in [
+                    'place a bid',
+                    'place bid',
+                    'buy now',
+                    'tm-section-bid-button',
+                    'tm-bid-button'
+                ]):
+                    logging.info(f"🛒 Fragment: @{username} → НА ПРОДАЖЕ (кнопка покупки)")
                     return False
                 
-                # 2. Есть активная цена/ставка
-                if re.search(r'class="table-cell-value[^"]*"[^>]*>\s*[$₽€£]?\s*\d+', html):
-                    logging.info(f"❌ Fragment: @{username} → ЗАНЯТ (есть цена)")
+                # 2. Цена в любом формате
+                if re.search(r'(?:price|bid|cost)[\s\S]{0,50}?(?:\$|USD|TON|₽|€|£)\s*\d+', html, re.IGNORECASE):
+                    logging.info(f"🛒 Fragment: @{username} → НА ПРОДАЖЕ (есть цена)")
                     return False
                 
-                # 3. Статус "Sold"
-                if re.search(r'<div[^>]*class="[^"]*status[^"]*"[^>]*>[^<]*sold[^<]*</div>', html, re.IGNORECASE):
-                    logging.info(f"❌ Fragment: @{username} → ЗАНЯТ (продан)")
+                # 3. Таблица с ценой
+                if re.search(r'<div[^>]*class="[^"]*table-cell-value[^"]*"[^>]*>\s*(?:\$|TON|₽)\s*\d+', html):
+                    logging.info(f"🛒 Fragment: @{username} → НА ПРОДАЖЕ (таблица цен)")
                     return False
                 
-                # 4. Таймер обратного отсчета (аукцион идет)
-                if 'tm-section-countdown' in html:
-                    logging.info(f"❌ Fragment: @{username} → ЗАНЯТ (идет аукцион)")
+                # 4. Таймер аукциона
+                if 'tm-section-countdown' in html or 'auction-timer' in html_lower:
+                    logging.info(f"🛒 Fragment: @{username} → НА АУКЦИОНЕ (таймер)")
                     return False
                 
-                # ПРИЗНАКИ СВОБОДНОСТИ
+                # 5. Статус "On Auction"
+                if re.search(r'(?:status|state)[\s\S]{0,100}?(?:auction|on sale|for sale)', html_lower):
+                    logging.info(f"🛒 Fragment: @{username} → НА АУКЦИОНЕ (статус)")
+                    return False
                 
-                # 1. Явно написано "Available"
+                # 6. Информация о владельце/покупателе
+                if any(marker in html_lower for marker in [
+                    'highest bidder',
+                    'current bid',
+                    'minimum bid',
+                    'starting price',
+                    'reserve price'
+                ]):
+                    logging.info(f"🛒 Fragment: @{username} → НА АУКЦИОНЕ (детали ставок)")
+                    return False
+                
+                # 7. Продан
+                if re.search(r'(?:status|state)[\s\S]{0,100}?sold', html_lower):
+                    logging.info(f"❌ Fragment: @{username} → ПРОДАН")
+                    return False
+                
+                # 8. Занят
+                if re.search(r'(?:status|state)[\s\S]{0,100}?taken', html_lower):
+                    logging.info(f"❌ Fragment: @{username} → ЗАНЯТ")
+                    return False
+                
+                # 9. Не продается (значит занят владельцем)
+                if 'not for sale' in html_lower or 'unavailable' in html_lower:
+                    logging.info(f"❌ Fragment: @{username} → ЗАНЯТ (not for sale)")
+                    return False
+                
+                # 10. Любое упоминание TON или $ с цифрами
+                if re.search(r'(?:TON|USD|\$)\s*[\d,]+', html):
+                    logging.info(f"🛒 Fragment: @{username} → НА ПРОДАЖЕ (найдена валюта)")
+                    return False
+                
+                # ПРИЗНАКИ СВОБОДНОСТИ (только если НЕТ признаков продажи!)
+                
+                # Явный статус "Available"
                 if re.search(r'<div[^>]*class="[^"]*status[^"]*"[^>]*>[^<]*available[^<]*</div>', html, re.IGNORECASE):
-                    logging.info(f"✅ Fragment: @{username} → СВОБОДЕН (status: available)")
-                    return True
+                    # Дополнительно проверяем что нет цены
+                    if not re.search(r'(?:\$|TON)\s*\d+', html):
+                        logging.info(f"✅ Fragment: @{username} → СВОБОДЕН (available, нет цены)")
+                        return True
+                    else:
+                        logging.info(f"🛒 Fragment: @{username} → НА ПРОДАЖЕ (available но есть цена)")
+                        return False
                 
-                # 2. Пустая/минимальная страница
+                # Пустая/минимальная страница
                 if len(html) < 3000 and 'tm-page-username' not in html:
                     logging.info(f"✅ Fragment: @{username} → СВОБОДЕН (пустая страница)")
                     return True
                 
-                # 3. Нет признаков занятости и нет контента
+                # Нет никаких признаков занятости и продажи
                 if all(marker not in html_lower for marker in [
-                    'bid', 'auction', 'sold', 'price', 'owner', 'purchased'
+                    'bid', 'auction', 'sold', 'price', 'owner', 'purchased', 
+                    'ton', 'usd', '$', '₽', 'buy', 'sale'
                 ]):
-                    logging.info(f"✅ Fragment: @{username} → СВОБОДЕН (нет признаков занятости)")
+                    logging.info(f"✅ Fragment: @{username} → СВОБОДЕН (нет признаков)")
                     return True
                 
-                # Если есть сомнения - возвращаем None (не знаем точно)
-                logging.warning(f"⚠️ Fragment: @{username} → НЕОПРЕДЕЛЕННО")
-                return None
+                # Если что-то есть но непонятно что - считаем занятым
+                logging.warning(f"⚠️ Fragment: @{username} → НЕОПРЕДЕЛЕННО (считаем занятым)")
+                return False
             
-            # Другие статусы
             logging.warning(f"⚠️ Fragment: @{username} → Статус {status}")
             return None
                 
@@ -363,7 +405,7 @@ async def check_username_fragment_fast(username: str) -> Optional[bool]:
         logging.error(f"❌ Fragment error @{username}: {e}")
         return None
 
-# ============ 🔥 ИСПРАВЛЕННАЯ ПРОВЕРКА ЧЕРЕЗ T.ME ============
+# ============ ПРОВЕРКА ЧЕРЕЗ T.ME ============
 
 async def check_username_web_fast(username: str) -> Optional[bool]:
     """
@@ -387,11 +429,11 @@ async def check_username_web_fast(username: str) -> Optional[bool]:
             
             if status == 200:
                 html = await response.text()
-                html_short = html[:3000]  # Читаем только начало
+                html_short = html[:3000]
                 
                 log_debug(username, "t.me", f"Status {status}", html_short)
                 
-                # Признаки ЗАНЯТОСТИ (есть профиль)
+                # Признаки ЗАНЯТОСТИ
                 if any(marker in html_short for marker in [
                     'tgme_page_photo',
                     'tgme_page_title',
@@ -401,15 +443,13 @@ async def check_username_web_fast(username: str) -> Optional[bool]:
                     logging.info(f"❌ t.me: @{username} → ЗАНЯТ (есть профиль)")
                     return False
                 
-                # Признаки СВОБОДНОСТИ (пустая страница)
+                # Признаки СВОБОДНОСТИ
                 html_lower = html_short.lower()
                 if "if you have" in html_lower and "telegram" in html_lower:
-                    # Это стандартная пустая страница
                     if f"@{username}" not in html_short or 'tgme_page_title' not in html_short:
                         logging.info(f"✅ t.me: @{username} → СВОБОДЕН (пустая страница)")
                         return True
                 
-                # Неопределенно
                 logging.warning(f"⚠️ t.me: @{username} → НЕОПРЕДЕЛЕННО")
                 return None
             
@@ -422,18 +462,16 @@ async def check_username_web_fast(username: str) -> Optional[bool]:
         logging.error(f"❌ t.me error @{username}: {e}")
         return None
 
-# ============ 🔥 ИСПРАВЛЕННАЯ ГЛАВНАЯ ФУНКЦИЯ ПРОВЕРКИ ============
+# ============ ГЛАВНАЯ ФУНКЦИЯ ПРОВЕРКИ ============
 
 async def check_username_parallel(username: str, user_id=None) -> bool:
     """
-    Параллельная проверка через все методы
+    Параллельная проверка с ФИЛЬТРОМ ПРОДАЖ
     
-    НОВАЯ ЛОГИКА (более мягкая):
-    1. Если ВСЕ методы говорят "свободен" → 100% СВОБОДЕН
-    2. Если большинство говорят "свободен" → СВОБОДЕН
-    3. Если Bot API говорит "свободен" И нет явных "занят" → СВОБОДЕН
-    4. Если есть хотя бы 2 "занят" → ЗАНЯТ
-    5. В остальных случаях смотрим на Bot API (самый надежный)
+    ЛОГИКА:
+    1. Если Fragment говорит "на продаже" → ЗАНЯТ (в БД)
+    2. Если Bot API говорит "свободен" И Fragment НЕ на продаже → СВОБОДЕН
+    3. Если есть противоречия → приоритет Bot API
     """
     
     # Проверяем БД
@@ -447,7 +485,7 @@ async def check_username_parallel(username: str, user_id=None) -> bool:
         
         logging.info(f"\n{'='*60}\n🔍 ПРОВЕРЯЮ: @{username}\n{'='*60}")
         
-        # ⚡️ Запускаем все проверки параллельно
+        # Запускаем все проверки параллельно
         results = await asyncio.gather(
             check_username_bot_api_fast(username),
             check_username_fragment_fast(username),
@@ -474,69 +512,42 @@ async def check_username_parallel(username: str, user_id=None) -> bool:
         logging.info(f"   Fragment: {fragment_result}")
         logging.info(f"   t.me: {web_result}")
         
-        # Подсчет голосов
-        free_votes = sum(1 for v in [bot_api_result, fragment_result, web_result] if v is True)
-        taken_votes = sum(1 for v in [bot_api_result, fragment_result, web_result] if v is False)
-        unknown_votes = sum(1 for v in [bot_api_result, fragment_result, web_result] if v is None)
+        # 🔥 НОВАЯ ЛОГИКА С УЧЕТОМ ПРОДАЖ
         
-        logging.info(f"   ✅ Свободен: {free_votes}")
-        logging.info(f"   ❌ Занят: {taken_votes}")
-        logging.info(f"   ❓ Неизвестно: {unknown_votes}")
+        # 1. Fragment говорит False (занят ИЛИ на продаже) → ПРОПУСКАЕМ
+        if fragment_result is False:
+            add_to_taken_db(username, user_id, "fragment_taken_or_sale", "Fragment: занят или на продаже")
+            logging.info(f"🔴 ИТОГ: @{username} ПРОПУЩЕН ❌ (Fragment: занят/продажа)")
+            return False
         
-        # 🔥 НОВАЯ МЯГКАЯ ЛОГИКА
-        
-        # 1. Все говорят "свободен" → точно свободен
-        if free_votes == 3:
-            add_to_free_db(username, user_id, "all_confirmed")
-            logging.info(f"🟢 ИТОГ: @{username} СВОБОДЕН ✅ (все подтвердили)")
+        # 2. Bot API говорит "свободен" И Fragment НЕ против (True или None)
+        if bot_api_result is True and fragment_result != False:
+            add_to_free_db(username, user_id, "bot_api_confirmed")
+            logging.info(f"🟢 ИТОГ: @{username} СВОБОДЕН ✅ (Bot API + Fragment OK)")
             return True
         
-        # 2. Большинство (2+) говорят "свободен" и нет противоречий
-        if free_votes >= 2 and taken_votes == 0:
+        # 3. Все методы согласны что свободен
+        free_votes = sum(1 for v in [bot_api_result, fragment_result, web_result] if v is True)
+        if free_votes >= 2:
             add_to_free_db(username, user_id, "majority_free")
             logging.info(f"🟢 ИТОГ: @{username} СВОБОДЕН ✅ (большинство)")
             return True
         
-        # 3. Bot API говорит "свободен" и нет явных "занят"
-        if bot_api_result is True and taken_votes == 0:
-            add_to_free_db(username, user_id, "bot_api_confirmed")
-            logging.info(f"🟢 ИТОГ: @{username} СВОБОДЕН ✅ (Bot API)")
-            return True
-        
-        # 4. Bot API говорит "свободен" и только 1 "занят" (может быть ошибка)
-        if bot_api_result is True and taken_votes == 1:
-            add_to_free_db(username, user_id, "bot_api_priority")
-            logging.info(f"🟢 ИТОГ: @{username} СВОБОДЕН ✅ (приоритет Bot API)")
-            return True
-        
-        # 5. Два или больше говорят "занят" → точно занят
-        if taken_votes >= 2:
-            add_to_taken_db(username, user_id, "majority_taken", f"Taken votes: {taken_votes}")
-            logging.info(f"🔴 ИТОГ: @{username} ЗАНЯТ ❌ (большинство)")
-            return False
-        
-        # 6. Bot API говорит "занят" → скорее всего занят
+        # 4. Bot API говорит "занят"
         if bot_api_result is False:
-            add_to_taken_db(username, user_id, "bot_api_taken", "Bot API confirmed taken")
+            add_to_taken_db(username, user_id, "bot_api_taken", "Bot API: occupied")
             logging.info(f"🔴 ИТОГ: @{username} ЗАНЯТ ❌ (Bot API)")
             return False
         
-        # 7. Один говорит "занят", остальные неизвестно → считаем занятым (безопаснее)
-        if taken_votes == 1:
-            add_to_taken_db(username, user_id, "single_taken", "One method confirmed taken")
-            logging.info(f"🔴 ИТОГ: @{username} ЗАНЯТ ❌ (1 метод)")
+        # 5. t.me говорит "занят"
+        if web_result is False:
+            add_to_taken_db(username, user_id, "web_taken", "t.me: has profile")
+            logging.info(f"🔴 ИТОГ: @{username} ЗАНЯТ ❌ (t.me)")
             return False
         
-        # 8. Все неизвестно или смешанные результаты → по Bot API или считаем свободным
-        if bot_api_result is None and free_votes > 0:
-            # Есть хотя бы один "свободен" и Bot API не знает
-            add_to_free_db(username, user_id, "optimistic")
-            logging.info(f"🟢 ИТОГ: @{username} СВОБОДЕН ✅ (оптимистично)")
-            return True
-        
-        # 9. В крайнем случае - считаем занятым
-        add_to_taken_db(username, user_id, "unknown_state", "All methods uncertain")
-        logging.info(f"🔴 ИТОГ: @{username} ЗАНЯТ ❌ (по умолчанию)")
+        # 6. Все неопределенно → по умолчанию считаем занятым
+        add_to_taken_db(username, user_id, "uncertain", "All methods uncertain")
+        logging.info(f"🔴 ИТОГ: @{username} ЗАНЯТ ❌ (неопределенность)")
         return False
 
 # ============ БАТЧ-ПРОВЕРКА ============
@@ -661,12 +672,12 @@ async def start_command(message: types.Message):
     
     await message.answer(
         f"Привет, {user_name}! 👋\n\n"
-        f"🎯 <b>Поиск свободных 5-значных юзернеймов</b>\n\n"
-        f"⚡️ <b>ТУРБО-РЕЖИМ + УМНАЯ ПРОВЕРКА:</b>\n"
-        f"✅ Параллельная проверка (10 одновременно)\n"
-        f"✅ Мягкая логика (не пропускает свободные)\n"
+        f"🎯 <b>Поиск ДЕЙСТВИТЕЛЬНО СВОБОДНЫХ юзернеймов</b>\n\n"
+        f"⚡️ <b>УМНАЯ ПРОВЕРКА:</b>\n"
+        f"✅ Игнорирует юзернеймы на продаже\n"
+        f"✅ Параллельная проверка (10 шт)\n"
         f"✅ 3 метода: Bot API, Fragment, t.me\n"
-        f"✅ Скорость: ~15-30 юзернеймов/мин\n\n"
+        f"✅ Только незанятые и не продающиеся!\n\n"
         f"Выбери действие:",
         parse_mode=ParseMode.HTML,
         reply_markup=get_main_keyboard()
@@ -697,7 +708,7 @@ async def get_db_command(message: types.Message):
         
         await message.answer_document(
             types.FSInputFile(taken_file),
-            caption=f"📁 Занятые ({len(taken_db)})"
+            caption=f"📁 Занятые/На продаже ({len(taken_db)})"
         )
         
         await message.answer_document(
@@ -705,7 +716,6 @@ async def get_db_command(message: types.Message):
             caption=f"✅ Свободные ({len(free_db)})"
         )
         
-        # Отправляем debug лог
         if os.path.exists(DEBUG_LOG_FILE):
             await message.answer_document(
                 types.FSInputFile(DEBUG_LOG_FILE),
@@ -736,13 +746,15 @@ async def check_command(message: types.Message):
                 ]
             )
             await message.answer(
-                f"✅ <b>@{username} СВОБОДЕН!</b>",
+                f"✅ <b>@{username} СВОБОДЕН!</b>\n\n"
+                f"(не занят и не продается)",
                 parse_mode=ParseMode.HTML,
                 reply_markup=keyboard
             )
         else:
             await message.answer(
-                f"❌ <b>@{username} ЗАНЯТ</b>",
+                f"❌ <b>@{username} ЗАНЯТ</b>\n\n"
+                f"(или на продаже на Fragment)",
                 parse_mode=ParseMode.HTML
             )
     except IndexError:
@@ -759,28 +771,21 @@ async def show_stats(callback_query: types.CallbackQuery):
     taken_db = load_db(TAKEN_DB_FILE)
     free_db = load_db(FREE_DB_FILE)
     
-    # Подсчет методов для свободных
-    methods_free = {}
-    for username, data in free_db.items():
-        method = data.get("method", "unknown")
-        methods_free[method] = methods_free.get(method, 0) + 1
-    
-    # Подсчет методов для занятых
-    methods_taken = {}
+    # Подсчет причин для занятых
+    reasons = {}
     for username, data in taken_db.items():
-        method = data.get("method", "unknown")
-        methods_taken[method] = methods_taken.get(method, 0) + 1
+        reason = data.get("reason", "unknown")
+        reasons[reason] = reasons.get(reason, 0) + 1
     
-    methods_free_text = "\n".join([f"  • {m}: {c}" for m, c in methods_free.items()])
-    methods_taken_text = "\n".join([f"  • {m}: {c}" for m, c in methods_taken.items()])
+    reasons_text = "\n".join([f"  • {r[:30]}: {c}" for r, c in list(reasons.items())[:5]])
     
     await callback_query.message.edit_text(
         f"📊 <b>Статистика</b>\n\n"
-        f"✅ <b>Свободных: {len(free_db)}</b>\n"
-        f"{methods_free_text if methods_free_text else '  (нет)'}\n\n"
-        f"❌ <b>Занятых: {len(taken_db)}</b>\n"
-        f"{methods_taken_text if methods_taken_text else '  (нет)'}\n\n"
-        f"⚡️ Турбо + умная проверка активны!",
+        f"✅ Свободных: <code>{len(free_db)}</code>\n"
+        f"❌ Занятых/На продаже: <code>{len(taken_db)}</code>\n\n"
+        f"🛒 Топ причин занятости:\n"
+        f"{reasons_text if reasons_text else '  (нет данных)'}\n\n"
+        f"⚡️ Игнорируются продажи на Fragment!",
         parse_mode=ParseMode.HTML,
         reply_markup=InlineKeyboardMarkup(
             inline_keyboard=[
@@ -876,8 +881,8 @@ async def process_generate_username(callback_query: types.CallbackQuery):
     settings = get_user_settings(user_id)
     
     waiting_message = await callback_query.message.edit_text(
-        "⚡️ <b>ПОИСК СВОБОДНОГО ЮЗЕРНЕЙМА...</b>\n\n"
-        "<i>Умная параллельная проверка!</i>",
+        "⚡️ <b>ПОИСК...</b>\n\n"
+        "<i>Игнорирую продажи на Fragment!</i>",
         parse_mode=ParseMode.HTML
     )
     
@@ -898,7 +903,7 @@ async def process_generate_username(callback_query: types.CallbackQuery):
             try:
                 await waiting_message.edit_text(
                     f"⚡️ <b>Проверяю...</b> {i}/{max_attempts}\n\n"
-                    f"<i>Параллельно: {len(batch)} юзернеймов</i>",
+                    f"<i>Фильтрую продажи...</i>",
                     parse_mode=ParseMode.HTML
                 )
             except:
@@ -919,9 +924,10 @@ async def process_generate_username(callback_query: types.CallbackQuery):
                     ]
                 )
                 await waiting_message.edit_text(
-                    f"🎉 <b>НАЙДЕН СВОБОДНЫЙ!</b>\n\n"
+                    f"🎉 <b>НАЙДЕН!</b>\n\n"
                     f"✅ <code>@{username}</code>\n\n"
-                    f"<b>Проверен всеми методами!</b>",
+                    f"<b>✓ Свободен</b>\n"
+                    f"<b>✓ Не продается</b>",
                     parse_mode=ParseMode.HTML,
                     reply_markup=keyboard
                 )
@@ -941,7 +947,7 @@ async def process_generate_username(callback_query: types.CallbackQuery):
         )
         await waiting_message.edit_text(
             f"😔 Не найдено за {max_attempts} попыток\n\n"
-            f"Попробуй изменить настройки или повтори!",
+            f"Попробуй изменить настройки!",
             parse_mode=ParseMode.HTML,
             reply_markup=keyboard
         )
@@ -984,7 +990,7 @@ async def check_all_combinations(callback_query: types.CallbackQuery):
         f"⚡️ <b>МАССОВАЯ ПРОВЕРКА</b>\n\n"
         f"Комбинаций: <code>{total}</code>\n"
         f"Время: ~<b>{estimated_minutes} мин</b>\n\n"
-        f"<b>Умная проверка {BATCH_SIZE} юзернеймов параллельно!</b>\n\n"
+        f"<b>Будут проигнорированы продажи!</b>\n\n"
         f"Продолжить?",
         parse_mode=ParseMode.HTML,
         reply_markup=keyboard
@@ -1004,9 +1010,9 @@ async def perform_mass_check(message, user_id: int, all_usernames: List[str]):
     total = len(all_usernames)
     
     await message.edit_text(
-        f"⚡️ <b>ЗАПУСК ПРОВЕРКИ!</b>\n\n"
+        f"⚡️ <b>СТАРТ!</b>\n\n"
         f"Всего: {total}\n"
-        f"Параллельно: {BATCH_SIZE}",
+        f"Игнорирую продажи!",
         parse_mode=ParseMode.HTML
     )
     
@@ -1046,8 +1052,10 @@ async def perform_mass_check(message, user_id: int, all_usernames: List[str]):
                     try:
                         await bot.send_message(
                             user_id,
-                            f"🎉 <b>Найден #{len(found_free)}!</b>\n\n"
-                            f"✅ <code>@{username}</code>",
+                            f"🎉 <b>#{len(found_free)}!</b>\n\n"
+                            f"✅ <code>@{username}</code>\n\n"
+                            f"✓ Свободен\n"
+                            f"✓ Не продается",
                             parse_mode=ParseMode.HTML,
                             reply_markup=keyboard
                         )
@@ -1096,10 +1104,11 @@ async def perform_mass_check(message, user_id: int, all_usernames: List[str]):
         await message.edit_text(
             f"✅ <b>ГОТОВО!</b>\n\n"
             f"📊 Проверено: {checked}\n"
-            f"✅ Найдено: <b>{len(found_free)}</b>\n"
+            f"✅ Найдено свободных: <b>{len(found_free)}</b>\n"
             f"⏱ {elapsed_min} мин\n"
             f"⚡️ {avg_speed:.1f}/сек\n\n"
-            f"📝 Примеры:\n{samples}",
+            f"📝 Примеры:\n{samples}\n\n"
+            f"<b>Все не на продаже!</b>",
             parse_mode=ParseMode.HTML,
             reply_markup=keyboard
         )
@@ -1114,8 +1123,7 @@ async def perform_mass_check(message, user_id: int, all_usernames: List[str]):
         await message.edit_text(
             f"😔 Не найдено\n\n"
             f"Проверено: {checked}\n"
-            f"Время: {elapsed_min} мин\n"
-            f"Скорость: {avg_speed:.1f}/сек",
+            f"Время: {elapsed_min} мин",
             parse_mode=ParseMode.HTML,
             reply_markup=keyboard
         )
@@ -1131,8 +1139,8 @@ async def main_menu(callback_query: types.CallbackQuery):
     
     await callback_query.message.edit_text(
         f"🏠 <b>Главное меню</b>\n\n"
-        f"⚡️ Турбо-режим + умная проверка!\n"
-        f"✅ Не пропускает свободные юзернеймы",
+        f"⚡️ Умная проверка активна!\n"
+        f"🛒 Игнорирую продажи на Fragment",
         parse_mode=ParseMode.HTML,
         reply_markup=get_main_keyboard()
     )
@@ -1141,10 +1149,8 @@ async def main_menu(callback_query: types.CallbackQuery):
 
 async def on_startup():
     logging.info("🚀 Бот запущен!")
+    logging.info("🛒 Фильтр продаж Fragment активен!")
     logging.info(f"⚡️ Параллельных проверок: {RATE_LIMITER._value}")
-    logging.info(f"⚡️ Задержка: {CHECK_DELAY} сек")
-    logging.info(f"⚡️ Батч: {BATCH_SIZE}")
-    logging.info("✅ Умная мягкая логика - не пропускает свободные!")
     
     if not os.path.exists(TAKEN_DB_FILE):
         save_db(TAKEN_DB_FILE, {})
