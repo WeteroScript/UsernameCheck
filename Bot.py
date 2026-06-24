@@ -31,12 +31,12 @@ storage = MemoryStorage()
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=storage)
 
-# ⚡️ БЕЗОПАСНЫЕ НАСТРОЙКИ (защита от rate limit)
-RATE_LIMITER = Semaphore(5)  # Уменьшено с 10 до 5
-CHECK_DELAY = 1.0  # Увеличено с 0.3 до 0.5
-BATCH_SIZE = 5  # Уменьшено с 10 до 5
-CONNECTION_LIMIT = 50  # Уменьшено с 100 до 50
-MAX_RETRIES = 3  # Максимум повторов при ошибке
+# ⚡️ БЕЗОПАСНЫЕ НАСТРОЙКИ
+RATE_LIMITER = Semaphore(5)
+CHECK_DELAY = 0.5
+BATCH_SIZE = 5
+CONNECTION_LIMIT = 50
+MAX_RETRIES = 3
 
 # Глобальная HTTP сессия
 http_session: Optional[aiohttp.ClientSession] = None
@@ -224,44 +224,40 @@ async def get_http_session() -> aiohttp.ClientSession:
         )
     return http_session
 
-# ============ 🔥 ПРОВЕРКА С ОБРАБОТКОЙ ОШИБОК ============
+# ============ БЕЗОПАСНЫЕ ЗАПРОСЫ ============
 
 async def safe_request_with_retry(func, *args, **kwargs):
-    """
-    Безопасный запрос с автоматическими повторами
-    """
+    """Безопасный запрос с автоматическими повторами"""
     for attempt in range(MAX_RETRIES):
         try:
             return await func(*args, **kwargs)
         except TelegramRetryAfter as e:
-            # Telegram просит подождать
             wait_time = e.retry_after + 1
-            logging.warning(f"⏱ Rate limit! Жду {wait_time} секунд...")
+            logging.warning(f"⏱ Rate limit! Жду {wait_time} сек...")
             await asyncio.sleep(wait_time)
             continue
         except TelegramAPIError as e:
             logging.error(f"❌ Telegram API error: {e}")
             if attempt < MAX_RETRIES - 1:
-                await asyncio.sleep(2 ** attempt)  # Экспоненциальная задержка
+                await asyncio.sleep(2 ** attempt)
                 continue
             return None
         except aiohttp.ClientResponseError as e:
-            if e.status == 429:  # Too Many Requests
+            if e.status == 429:
                 wait_time = int(e.headers.get('Retry-After', 30))
-                logging.warning(f"⏱ HTTP 429! Жду {wait_time} секунд...")
+                logging.warning(f"⏱ HTTP 429! Жду {wait_time} сек...")
                 await asyncio.sleep(wait_time)
                 continue
-            elif e.status >= 500:  # Server errors
-                logging.error(f"❌ Server error {e.status}")
+            elif e.status >= 500:
                 if attempt < MAX_RETRIES - 1:
                     await asyncio.sleep(3)
                     continue
                 return None
             else:
-                logging.error(f"❌ HTTP error {e.status}: {e.message}")
+                logging.error(f"❌ HTTP {e.status}: {e.message}")
                 return None
         except asyncio.TimeoutError:
-            logging.warning(f"⏱ Timeout (attempt {attempt + 1}/{MAX_RETRIES})")
+            logging.warning(f"⏱ Timeout (попытка {attempt + 1}/{MAX_RETRIES})")
             if attempt < MAX_RETRIES - 1:
                 await asyncio.sleep(2)
                 continue
@@ -279,7 +275,7 @@ async def safe_request_with_retry(func, *args, **kwargs):
 
 async def check_username_bot_api_fast(username: str) -> Optional[bool]:
     """
-    Проверка через Bot API с обработкой ошибок
+    Проверка через Bot API
     """
     async def _check():
         session = await get_http_session()
@@ -292,34 +288,34 @@ async def check_username_bot_api_fast(username: str) -> Optional[bool]:
             log_debug(username, "bot_api", f"Response: {data}")
             
             if data.get("ok") is True:
-                logging.info(f"❌ Bot API: @{username} → ЗАНЯТ")
+                logging.info(f"❌ Bot API: @{username} → ЗАНЯТ (чат существует)")
                 return False
             else:
-                error_desc = data.get("description", "")
+                error_desc = data.get("description", "").lower()
                 
-                if "chat not found" in error_desc.lower():
-                    logging.info(f"✅ Bot API: @{username} → СВОБОДЕН")
+                if "chat not found" in error_desc:
+                    logging.info(f"✅ Bot API: @{username} → СВОБОДЕН (chat not found)")
                     return True
-                elif "username is not occupied" in error_desc.lower():
-                    logging.info(f"✅ Bot API: @{username} → СВОБОДЕН")
+                elif "username is not occupied" in error_desc:
+                    logging.info(f"✅ Bot API: @{username} → СВОБОДЕН (not occupied)")
                     return True
-                elif "username is occupied" in error_desc.lower():
-                    logging.info(f"❌ Bot API: @{username} → ЗАНЯТ")
+                elif "username is occupied" in error_desc:
+                    logging.info(f"❌ Bot API: @{username} → ЗАНЯТ (is occupied)")
                     return False
                 elif data.get("error_code") == 400:
-                    logging.info(f"✅ Bot API: @{username} → СВОБОДЕН")
+                    logging.info(f"✅ Bot API: @{username} → СВОБОДЕН (400 bad request)")
                     return True
                 else:
-                    logging.warning(f"⚠️ Bot API: @{username} → НЕИЗВЕСТНО")
+                    logging.warning(f"⚠️ Bot API: @{username} → НЕИЗВЕСТНО ({error_desc})")
                     return None
     
     return await safe_request_with_retry(_check)
 
-# ============ FRAGMENT ============
+# ============ 🔥 УЛУЧШЕННАЯ FRAGMENT (СТРОГАЯ ДЕТЕКЦИЯ ПРОДАЖ) ============
 
 async def check_username_fragment_fast(username: str) -> Optional[bool]:
     """
-    Проверка Fragment с обработкой ошибок
+    Проверка Fragment - ТОЛЬКО признаки продажи = False
     """
     async def _check():
         session = await get_http_session()
@@ -343,28 +339,64 @@ async def check_username_fragment_fast(username: str) -> Optional[bool]:
                 
                 log_debug(username, "fragment", f"Status {status}", html[:2000])
                 
-                # Проверка на продажу
-                sale_markers = [
-                    'place a bid', 'buy now', 'tm-section-bid-button',
-                    'tm-section-countdown', 'highest bidder', 'current bid'
-                ]
+                # 🔥 ТОЛЬКО ЯВНЫЕ ПРИЗНАКИ ПРОДАЖИ/АУКЦИОНА
                 
-                if any(marker in html_lower for marker in sale_markers):
-                    logging.info(f"🛒 Fragment: @{username} → НА ПРОДАЖЕ")
+                # 1. Кнопка ставки/покупки
+                if re.search(r'<(?:button|a)[^>]*(?:place.*bid|buy.*now|make.*offer)', html_lower):
+                    logging.info(f"🛒 Fragment: @{username} → НА ПРОДАЖЕ (кнопка)")
                     return False
                 
-                if re.search(r'(?:\$|TON|₽)\s*\d+', html):
-                    logging.info(f"🛒 Fragment: @{username} → НА ПРОДАЖЕ (цена)")
+                # 2. Активный аукцион (класс tm-section-bid-button)
+                if 'tm-section-bid-button' in html:
+                    logging.info(f"🛒 Fragment: @{username} → НА АУКЦИОНЕ (bid button)")
                     return False
                 
-                if 'sold' in html_lower or 'taken' in html_lower:
-                    logging.info(f"❌ Fragment: @{username} → ЗАНЯТ")
+                # 3. Таймер обратного отсчета
+                if 'tm-section-countdown' in html or 'data-bid-ts' in html:
+                    logging.info(f"🛒 Fragment: @{username} → НА АУКЦИОНЕ (countdown)")
                     return False
                 
-                if len(html) < 3000:
-                    logging.info(f"✅ Fragment: @{username} → СВОБОДЕН")
+                # 4. Цена в таблице (table-cell-value с TON или $)
+                if re.search(r'table-cell-value[^>]*>\s*(?:TON|USD|\$|₽)\s*[\d,]+', html):
+                    logging.info(f"🛒 Fragment: @{username} → НА ПРОДАЖЕ (цена в таблице)")
+                    return False
+                
+                # 5. Информация о ставках
+                if re.search(r'(?:highest|current|minimum|starting)\s+(?:bid|price)', html_lower):
+                    logging.info(f"🛒 Fragment: @{username} → НА АУКЦИОНЕ (bid info)")
+                    return False
+                
+                # 6. Статус "On Auction" или "For Sale"
+                if re.search(r'<div[^>]*tm-status[^>]*>.*(?:auction|for sale|on sale)', html_lower):
+                    logging.info(f"🛒 Fragment: @{username} → НА ПРОДАЖЕ (status)")
+                    return False
+                
+                # 7. История продаж (значит был продан)
+                if re.search(r'(?:sold for|purchase|bought)', html_lower):
+                    logging.info(f"❌ Fragment: @{username} → ПРОДАН (history)")
+                    return False
+                
+                # 8. Владелец указан (Owned by...)
+                if re.search(r'owned\s+by', html_lower):
+                    logging.info(f"❌ Fragment: @{username} → ЗАНЯТ (has owner)")
+                    return False
+                
+                # ЕСЛИ НЕТ ПРИЗНАКОВ ПРОДАЖИ - считаем свободным!
+                # (Fragment может показывать страницу даже для незарегистрированных)
+                
+                # Пустая страница или минимальный контент
+                if len(html) < 5000 and 'tm-username' not in html:
+                    logging.info(f"✅ Fragment: @{username} → СВОБОДЕН (минимальный контент)")
                     return True
                 
+                # Нет ни одного признака занятости/продажи
+                if not any(marker in html_lower for marker in [
+                    'auction', 'bid', 'price', 'sold', 'owner', 'ton', 'usd', '$'
+                ]):
+                    logging.info(f"✅ Fragment: @{username} → СВОБОДЕН (нет признаков)")
+                    return True
+                
+                # Неопределенно - лучше пропустить другим методам
                 logging.warning(f"⚠️ Fragment: @{username} → НЕОПРЕДЕЛЕННО")
                 return None
             
@@ -376,7 +408,7 @@ async def check_username_fragment_fast(username: str) -> Optional[bool]:
 
 async def check_username_web_fast(username: str) -> Optional[bool]:
     """
-    Проверка t.me с обработкой ошибок
+    Проверка t.me
     """
     async def _check():
         session = await get_http_session()
@@ -400,14 +432,19 @@ async def check_username_web_fast(username: str) -> Optional[bool]:
                 
                 log_debug(username, "t.me", f"Status {status}", html_short)
                 
+                # Признаки занятости
                 if any(marker in html_short for marker in [
-                    'tgme_page_photo', 'tgme_page_title', 'tgme_page_description'
+                    'tgme_page_photo',
+                    'tgme_page_title',
+                    'tgme_page_description',
+                    'tgme_page_extra'
                 ]):
-                    logging.info(f"❌ t.me: @{username} → ЗАНЯТ")
+                    logging.info(f"❌ t.me: @{username} → ЗАНЯТ (есть профиль)")
                     return False
                 
-                if "if you have" in html_short.lower():
-                    logging.info(f"✅ t.me: @{username} → СВОБОДЕН")
+                # Признаки свободности
+                if "if you have" in html_short.lower() and "telegram" in html_short.lower():
+                    logging.info(f"✅ t.me: @{username} → СВОБОДЕН (пустая страница)")
                     return True
                 
                 logging.warning(f"⚠️ t.me: @{username} → НЕОПРЕДЕЛЕННО")
@@ -417,11 +454,19 @@ async def check_username_web_fast(username: str) -> Optional[bool]:
     
     return await safe_request_with_retry(_check)
 
-# ============ ГЛАВНАЯ ПРОВЕРКА ============
+# ============ 🔥 АГРЕССИВНАЯ ЛОГИКА ПРОВЕРКИ ============
 
 async def check_username_parallel(username: str, user_id=None) -> bool:
     """
-    Параллельная проверка с защитой от rate limit
+    НОВАЯ ЛОГИКА:
+    
+    СВОБОДЕН если:
+    ✅ Хотя бы ОДИН метод говорит "свободен" 
+    ✅ И НИ ОДИН не говорит "на продаже/аукционе"
+    
+    ЗАНЯТ если:
+    ❌ Fragment говорит "на продаже/аукционе"
+    ❌ ИЛИ все методы говорят "занят"
     """
     
     if is_in_free_db(username):
@@ -430,12 +475,11 @@ async def check_username_parallel(username: str, user_id=None) -> bool:
         return False
     
     async with RATE_LIMITER:
-        # Задержка для защиты от rate limit
         await asyncio.sleep(CHECK_DELAY)
         
         logging.info(f"\n{'='*60}\n🔍 ПРОВЕРЯЮ: @{username}\n{'='*60}")
         
-        # Запускаем проверки параллельно
+        # Запускаем все проверки параллельно
         results = await asyncio.gather(
             check_username_bot_api_fast(username),
             check_username_fragment_fast(username),
@@ -461,38 +505,61 @@ async def check_username_parallel(username: str, user_id=None) -> bool:
         logging.info(f"   Fragment: {fragment_result}")
         logging.info(f"   t.me: {web_result}")
         
-        # Логика принятия решения
+        # 🔥 НОВАЯ АГРЕССИВНАЯ ЛОГИКА
+        
+        # 1. ПРИОРИТЕТ: Fragment говорит False (на продаже) → БЛОКИРУЕМ
         if fragment_result is False:
-            add_to_taken_db(username, user_id, "fragment", "На продаже или занят")
-            logging.info(f"🔴 ИТОГ: @{username} ЗАНЯТ/ПРОДАЖА ❌")
+            add_to_taken_db(username, user_id, "fragment_sale", "На продаже/аукционе на Fragment")
+            logging.info(f"🔴 ИТОГ: @{username} ЗАНЯТ ❌ (Fragment: продажа)")
             return False
         
-        if bot_api_result is True and fragment_result != False:
-            add_to_free_db(username, user_id, "bot_api")
-            logging.info(f"🟢 ИТОГ: @{username} СВОБОДЕН ✅")
-            return True
+        # 2. АГРЕССИВНО: Хотя бы ОДИН говорит "свободен" → СВОБОДЕН!
+        if bot_api_result is True or fragment_result is True or web_result is True:
+            # Но проверяем что нет явных "занят"
+            taken_count = sum(1 for v in [bot_api_result, fragment_result, web_result] if v is False)
+            
+            if taken_count == 0:
+                # Ни один не говорит "занят" и хотя бы один говорит "свободен"
+                add_to_free_db(username, user_id, "aggressive_check")
+                logging.info(f"🟢 ИТОГ: @{username} СВОБОДЕН ✅ (агрессивная логика)")
+                return True
+            elif taken_count == 1 and bot_api_result is True:
+                # Даже если один говорит "занят", но Bot API говорит "свободен" - доверяем Bot API
+                add_to_free_db(username, user_id, "bot_api_priority")
+                logging.info(f"🟢 ИТОГ: @{username} СВОБОДЕН ✅ (Bot API приоритет)")
+                return True
         
-        free_votes = sum(1 for v in [bot_api_result, fragment_result, web_result] if v is True)
-        if free_votes >= 2:
-            add_to_free_db(username, user_id, "majority")
-            logging.info(f"🟢 ИТОГ: @{username} СВОБОДЕН ✅")
-            return True
-        
-        if bot_api_result is False or web_result is False:
-            add_to_taken_db(username, user_id, "confirmed", "Занят")
-            logging.info(f"🔴 ИТОГ: @{username} ЗАНЯТ ❌")
+        # 3. Все говорят "занят" (False)
+        if all(v is False for v in [bot_api_result, fragment_result, web_result] if v is not None):
+            add_to_taken_db(username, user_id, "all_taken", "Все методы подтвердили занятость")
+            logging.info(f"🔴 ИТОГ: @{username} ЗАНЯТ ❌ (все подтвердили)")
             return False
         
-        add_to_taken_db(username, user_id, "uncertain", "Неопределенно")
+        # 4. Большинство говорит "занят"
+        results_list = [bot_api_result, fragment_result, web_result]
+        taken_votes = sum(1 for v in results_list if v is False)
+        free_votes = sum(1 for v in results_list if v is True)
+        
+        if taken_votes >= 2:
+            add_to_taken_db(username, user_id, "majority_taken", f"Занят: {taken_votes}, Свободен: {free_votes}")
+            logging.info(f"🔴 ИТОГ: @{username} ЗАНЯТ ❌ (большинство: {taken_votes})")
+            return False
+        
+        # 5. Все неопределенно (None) - по умолчанию считаем СВОБОДНЫМ (агрессивно!)
+        if all(v is None for v in results_list):
+            add_to_free_db(username, user_id, "all_unknown_optimistic")
+            logging.info(f"🟢 ИТОГ: @{username} СВОБОДЕН ✅ (все неопределенно, оптимистично)")
+            return True
+        
+        # 6. В остальных случаях - по умолчанию ЗАНЯТ (безопаснее)
+        add_to_taken_db(username, user_id, "default", "Недостаточно данных")
         logging.info(f"🔴 ИТОГ: @{username} ЗАНЯТ ❌ (по умолчанию)")
         return False
 
 # ============ БАТЧ-ПРОВЕРКА ============
 
 async def check_usernames_batch(usernames: List[str], user_id=None) -> Dict[str, bool]:
-    """
-    Проверка пачки с защитой от rate limit
-    """
+    """Проверка пачки юзернеймов"""
     tasks = []
     for username in usernames:
         tasks.append(check_username_parallel(username, user_id))
@@ -509,16 +576,14 @@ async def check_usernames_batch(usernames: List[str], user_id=None) -> Dict[str,
     
     return output
 
-# ============ БЕЗОПАСНАЯ ОТПРАВКА СООБЩЕНИЙ ============
+# ============ БЕЗОПАСНАЯ ОТПРАВКА ============
 
 async def safe_send_message(chat_id: int, text: str, **kwargs):
-    """
-    Отправка с обработкой rate limit
-    """
+    """Отправка с обработкой rate limit"""
     try:
         return await bot.send_message(chat_id, text, **kwargs)
     except TelegramRetryAfter as e:
-        logging.warning(f"⏱ Rate limit при отправке! Жду {e.retry_after} сек")
+        logging.warning(f"⏱ Rate limit! Жду {e.retry_after} сек")
         await asyncio.sleep(e.retry_after + 1)
         return await bot.send_message(chat_id, text, **kwargs)
     except Exception as e:
@@ -526,13 +591,11 @@ async def safe_send_message(chat_id: int, text: str, **kwargs):
         return None
 
 async def safe_edit_message(message: types.Message, text: str, **kwargs):
-    """
-    Редактирование с обработкой rate limit
-    """
+    """Редактирование с обработкой rate limit"""
     try:
         return await message.edit_text(text, **kwargs)
     except TelegramRetryAfter as e:
-        logging.warning(f"⏱ Rate limit при редактировании! Жду {e.retry_after} сек")
+        logging.warning(f"⏱ Rate limit! Жду {e.retry_after} сек")
         await asyncio.sleep(e.retry_after + 1)
         return await message.edit_text(text, **kwargs)
     except Exception as e:
@@ -547,18 +610,9 @@ def get_settings_keyboard(user_id: int):
     
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(
-                text=f"{alphabet_status} Все буквы", 
-                callback_data="toggle_alphabet"
-            )],
-            [InlineKeyboardButton(
-                text=f"🔤 Буква: {settings['letter'].upper()}", 
-                callback_data="change_letter"
-            )],
-            [InlineKeyboardButton(
-                text=f"🔢 Повторений: {settings['repeat_count']}", 
-                callback_data="change_count"
-            )],
+            [InlineKeyboardButton(text=f"{alphabet_status} Все буквы", callback_data="toggle_alphabet")],
+            [InlineKeyboardButton(text=f"🔤 Буква: {settings['letter'].upper()}", callback_data="change_letter")],
+            [InlineKeyboardButton(text=f"🔢 Повторений: {settings['repeat_count']}", callback_data="change_count")],
             [InlineKeyboardButton(text="🔄 Сбросить", callback_data="reset_settings")],
             [InlineKeyboardButton(text="🏠 Меню", callback_data="main_menu")]
         ]
@@ -616,12 +670,12 @@ async def start_command(message: types.Message):
     await safe_send_message(
         message.chat.id,
         f"Привет, {user_name}! 👋\n\n"
-        f"🎯 <b>Поиск свободных юзернеймов</b>\n\n"
-        f"🛡 <b>ЗАЩИТА ОТ RATE LIMIT:</b>\n"
-        f"✅ Автоматические повторы\n"
-        f"✅ Умные задержки\n"
-        f"✅ Безопасная скорость\n"
-        f"✅ Игнорирует продажи\n\n"
+        f"🎯 <b>Поиск СВОБОДНЫХ юзернеймов</b>\n\n"
+        f"⚡️ <b>АГРЕССИВНАЯ ПРОВЕРКА:</b>\n"
+        f"✅ Если хотя бы 1 метод говорит \"свободен\" → ВЫДАЕМ!\n"
+        f"✅ Блокируем только явные продажи\n"
+        f"✅ Защита от rate limit\n"
+        f"✅ 3 метода: Bot API, Fragment, t.me\n\n"
         f"Выбери действие:",
         parse_mode=ParseMode.HTML,
         reply_markup=get_main_keyboard()
@@ -645,11 +699,7 @@ async def get_db_command(message: types.Message):
         with open(free_file, 'w', encoding='utf-8') as f:
             json.dump(free_db, f, indent=2, ensure_ascii=False)
         
-        await safe_send_message(
-            message.chat.id,
-            f"📊 Занятых: {len(taken_db)}, Свободных: {len(free_db)}",
-            parse_mode=ParseMode.HTML
-        )
+        await safe_send_message(message.chat.id, f"📊 Занятых: {len(taken_db)}, Свободных: {len(free_db)}")
         
         await message.answer_document(types.FSInputFile(taken_file), caption=f"📁 Занятые ({len(taken_db)})")
         await message.answer_document(types.FSInputFile(free_file), caption=f"✅ Свободные ({len(free_db)})")
@@ -665,6 +715,7 @@ async def get_db_command(message: types.Message):
 
 @dp.message(Command("check"))
 async def check_command(message: types.Message):
+    """Проверка конкретного юзернейма"""
     try:
         username = message.text.split()[1].replace("@", "")
         
@@ -681,14 +732,16 @@ async def check_command(message: types.Message):
             )
             await safe_edit_message(
                 msg,
-                f"✅ <b>@{username} СВОБОДЕН!</b>",
+                f"✅ <b>@{username} СВОБОДЕН!</b>\n\n"
+                f"(агрессивная проверка)",
                 parse_mode=ParseMode.HTML,
                 reply_markup=keyboard
             )
         else:
             await safe_edit_message(
                 msg,
-                f"❌ <b>@{username} ЗАНЯТ</b>",
+                f"❌ <b>@{username} ЗАНЯТ</b>\n\n"
+                f"(или на продаже)",
                 parse_mode=ParseMode.HTML
             )
     except IndexError:
@@ -705,12 +758,21 @@ async def show_stats(callback_query: types.CallbackQuery):
     taken_db = load_db(TAKEN_DB_FILE)
     free_db = load_db(FREE_DB_FILE)
     
+    # Статистика методов для свободных
+    methods_free = {}
+    for username, data in free_db.items():
+        method = data.get("method", "unknown")
+        methods_free[method] = methods_free.get(method, 0) + 1
+    
+    methods_text = "\n".join([f"  • {m}: {c}" for m, c in methods_free.items()])
+    
     await safe_edit_message(
         callback_query.message,
         f"📊 <b>Статистика</b>\n\n"
         f"✅ Свободных: {len(free_db)}\n"
+        f"{methods_text if methods_text else '  (нет)'}\n\n"
         f"❌ Занятых: {len(taken_db)}\n\n"
-        f"🛡 Защита от rate limit активна!",
+        f"⚡️ Агрессивная проверка активна!",
         parse_mode=ParseMode.HTML,
         reply_markup=InlineKeyboardMarkup(
             inline_keyboard=[
@@ -754,11 +816,7 @@ async def toggle_alphabet(callback_query: types.CallbackQuery):
 @dp.callback_query(lambda c: c.data == "change_letter")
 async def change_letter(callback_query: types.CallbackQuery):
     await callback_query.answer()
-    await safe_edit_message(
-        callback_query.message,
-        "🔤 Выбери букву:",
-        reply_markup=get_letter_keyboard()
-    )
+    await safe_edit_message(callback_query.message, "🔤 Выбери букву:", reply_markup=get_letter_keyboard())
 
 @dp.callback_query(lambda c: c.data.startswith("set_letter_"))
 async def set_letter(callback_query: types.CallbackQuery):
@@ -772,11 +830,7 @@ async def set_letter(callback_query: types.CallbackQuery):
 @dp.callback_query(lambda c: c.data == "change_count")
 async def change_count(callback_query: types.CallbackQuery):
     await callback_query.answer()
-    await safe_edit_message(
-        callback_query.message,
-        "🔢 Количество повторений:",
-        reply_markup=get_count_keyboard()
-    )
+    await safe_edit_message(callback_query.message, "🔢 Количество:", reply_markup=get_count_keyboard())
 
 @dp.callback_query(lambda c: c.data.startswith("set_count_"))
 async def set_count(callback_query: types.CallbackQuery):
@@ -802,11 +856,11 @@ async def process_generate_username(callback_query: types.CallbackQuery):
     
     waiting_message = await safe_edit_message(
         callback_query.message,
-        "⚡️ <b>ПОИСК...</b>\n\n<i>Безопасный режим</i>",
+        "⚡️ <b>ПОИСК...</b>\n\n<i>Агрессивная проверка!</i>",
         parse_mode=ParseMode.HTML
     )
     
-    max_attempts = 30  # Уменьшено для безопасности
+    max_attempts = 30
     found = False
     
     for i in range(0, max_attempts, BATCH_SIZE):
@@ -820,11 +874,7 @@ async def process_generate_username(callback_query: types.CallbackQuery):
             continue
         
         if i > 0 and i % 10 == 0:
-            await safe_edit_message(
-                waiting_message,
-                f"⚡️ <b>Проверяю...</b> {i}/{max_attempts}",
-                parse_mode=ParseMode.HTML
-            )
+            await safe_edit_message(waiting_message, f"⚡️ <b>Проверяю...</b> {i}/{max_attempts}", parse_mode=ParseMode.HTML)
         
         results = await check_usernames_batch(batch, user_id)
         
@@ -842,7 +892,7 @@ async def process_generate_username(callback_query: types.CallbackQuery):
                 )
                 await safe_edit_message(
                     waiting_message,
-                    f"🎉 <b>НАЙДЕН!</b>\n\n✅ <code>@{username}</code>",
+                    f"🎉 <b>НАЙДЕН!</b>\n\n✅ <code>@{username}</code>\n\n(агрессивная проверка)",
                     parse_mode=ParseMode.HTML,
                     reply_markup=keyboard
                 )
@@ -895,6 +945,7 @@ async def check_all_combinations(callback_query: types.CallbackQuery):
         f"⚡️ <b>МАССОВАЯ ПРОВЕРКА</b>\n\n"
         f"Комбинаций: {total}\n"
         f"Время: ~{estimated_minutes} мин\n\n"
+        f"Агрессивная проверка!\n\n"
         f"Продолжить?",
         parse_mode=ParseMode.HTML,
         reply_markup=keyboard
@@ -912,11 +963,7 @@ async def confirm_check_all(callback_query: types.CallbackQuery):
 async def perform_mass_check(message, user_id: int, all_usernames: List[str]):
     total = len(all_usernames)
     
-    await safe_edit_message(
-        message,
-        f"⚡️ <b>ЗАПУСК!</b>\n\nВсего: {total}",
-        parse_mode=ParseMode.HTML
-    )
+    await safe_edit_message(message, f"⚡️ <b>СТАРТ!</b>\n\nВсего: {total}", parse_mode=ParseMode.HTML)
     
     checked = 0
     found_free = []
@@ -965,9 +1012,7 @@ async def perform_mass_check(message, user_id: int, all_usernames: List[str]):
             progress = (checked / total) * 100
             await safe_edit_message(
                 message,
-                f"⚡️ <b>ПРОВЕРКА...</b>\n\n"
-                f"📊 {checked}/{total} ({progress:.1f}%)\n"
-                f"✅ Найдено: {len(found_free)}",
+                f"⚡️ {checked}/{total} ({progress:.1f}%)\n✅ Найдено: {len(found_free)}",
                 parse_mode=ParseMode.HTML
             )
             last_update = now
@@ -985,7 +1030,7 @@ async def perform_mass_check(message, user_id: int, all_usernames: List[str]):
             f"Проверено: {checked}\n"
             f"Найдено: {len(found_free)}\n"
             f"Время: {elapsed_min} мин\n\n"
-            f"Примеры:\n{samples}",
+            f"{samples}",
             parse_mode=ParseMode.HTML,
             reply_markup=InlineKeyboardMarkup(
                 inline_keyboard=[[InlineKeyboardButton(text="🏠 Меню", callback_data="main_menu")]]
@@ -1012,7 +1057,7 @@ async def main_menu(callback_query: types.CallbackQuery):
     
     await safe_edit_message(
         callback_query.message,
-        f"🏠 <b>Главное меню</b>\n\n🛡 Защита от rate limit активна!",
+        f"🏠 <b>Главное меню</b>\n\n⚡️ Агрессивная проверка!",
         parse_mode=ParseMode.HTML,
         reply_markup=get_main_keyboard()
     )
@@ -1021,10 +1066,8 @@ async def main_menu(callback_query: types.CallbackQuery):
 
 async def on_startup():
     logging.info("🚀 Бот запущен!")
-    logging.info("🛡 Защита от rate limit активна!")
-    logging.info(f"⚡️ Параллельных проверок: {RATE_LIMITER._value}")
-    logging.info(f"⚡️ Задержка: {CHECK_DELAY} сек")
-    logging.info(f"⚡️ Батч: {BATCH_SIZE}")
+    logging.info("⚡️ АГРЕССИВНАЯ ЛОГИКА: если хотя бы 1 метод говорит 'свободен' → ВЫДАЕМ!")
+    logging.info(f"🛡 Параллельных проверок: {RATE_LIMITER._value}")
     
     if not os.path.exists(TAKEN_DB_FILE):
         save_db(TAKEN_DB_FILE, {})
