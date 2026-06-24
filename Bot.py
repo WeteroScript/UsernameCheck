@@ -33,7 +33,7 @@ dp = Dispatcher(storage=storage)
 
 # Rate limiting
 RATE_LIMITER = Semaphore(2)
-CHECK_DELAY = 2.0  # Увеличена задержка для надежности
+CHECK_DELAY = 1.0  # Увеличена задержка для надежности
 
 # Класс для состояний
 class SettingsStates(StatesGroup):
