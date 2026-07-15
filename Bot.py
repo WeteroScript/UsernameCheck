@@ -14,7 +14,7 @@ from aiogram.fsm.state import State, StatesGroup
 from dotenv import load_dotenv
 
 from username_bot import router as username_router, init_username_bot
-from gram_bot import router as gram_router, init_gram_bot, active_clients, active_tasks
+from gram_bot import router as gram_router, init_gram_bot, active_clients, active_tasks, set_user_chat_id
 
 load_dotenv()
 
@@ -29,33 +29,51 @@ storage = MemoryStorage()
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=storage)
 
+# Храним активные сессии пользователей
+user_sessions: Dict[int, str] = {}  # user_id -> phone
+
 
 # ============ КЛАВИАТУРЫ ============
 
 def get_main_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🤖 Боты", callback_data="bots")],
+        [InlineKeyboardButton(text="🤖 Gram Бот", callback_data="gram")],
         [InlineKeyboardButton(text="👤 Юзернеймы", callback_data="users")],
-        [InlineKeyboardButton(text="📱 Сессии", callback_data="sessions")],
+        [InlineKeyboardButton(text="📱 Мои сессии", callback_data="sessions")],
     ])
 
-def get_bots_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📱 Gram", callback_data="gram")],
-        [InlineKeyboardButton(text="⬅️ Назад", callback_data="main")],
-    ])
+def get_gram_main_keyboard(has_session: bool = False) -> InlineKeyboardMarkup:
+    """Клавиатура Gram бота"""
+    buttons = []
+    if has_session:
+        buttons.append([InlineKeyboardButton(text="🔄 Запустить авто-просмотры", callback_data="gram_start")])
+        buttons.append([InlineKeyboardButton(text="⏹ Остановить", callback_data="gram_stop")])
+    else:
+        buttons.append([InlineKeyboardButton(text="❌ Нет активной сессии", callback_data="no_session")])
+    buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="main")])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
 
-def get_gram_bots_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="@gram_piarbot", callback_data="g_piar")],
-        [InlineKeyboardButton(text="@gram_prbot", callback_data="g_pr")],
-        [InlineKeyboardButton(text="⬅️ Назад", callback_data="bots")],
-    ])
+def get_sessions_keyboard(user_id: int) -> InlineKeyboardMarkup:
+    """Клавиатура сессий"""
+    buttons = []
+    
+    # Если есть активная сессия
+    if user_id in user_sessions:
+        phone = user_sessions[user_id]
+        buttons.append([InlineKeyboardButton(text=f"📱 {phone}", callback_data=f"sess_info")])
+        buttons.append([InlineKeyboardButton(text="🗑 Удалить сессию", callback_data="sess_delete")])
+    else:
+        buttons.append([InlineKeyboardButton(text="➕ Добавить сессию", callback_data="sess_add")])
+    
+    buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="main")])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
 
-def get_gram_action_keyboard(bot_type: str) -> InlineKeyboardMarkup:
+def get_session_actions_keyboard() -> InlineKeyboardMarkup:
+    """Клавиатура действий с сессией"""
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🔄 Авто-Просмотры", callback_data=f"gstart_{bot_type}")],
-        [InlineKeyboardButton(text="⬅️ Назад", callback_data="gram")],
+        [InlineKeyboardButton(text="🚪 Выйти со всех каналов", callback_data="sess_leave_channels")],
+        [InlineKeyboardButton(text="🚪 Выйти со всех групп", callback_data="sess_leave_groups")],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="sessions")],
     ])
 
 def get_username_keyboard() -> InlineKeyboardMarkup:
@@ -67,25 +85,10 @@ def get_username_keyboard() -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="⬅️ Назад", callback_data="main")],
     ])
 
-def get_session_manage_keyboard(phone: str) -> InlineKeyboardMarkup:
-    """Клавиатура управления сессией"""
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🔄 Управление сессией", callback_data=f"sess_manage_{phone}")],
-        [InlineKeyboardButton(text="⬅️ Назад", callback_data="sessions")],
-    ])
-
-def get_session_actions_keyboard(phone: str) -> InlineKeyboardMarkup:
-    """Клавиатура действий с сессией"""
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🚪 Выйти со всех каналов", callback_data=f"sess_leave_channels_{phone}")],
-        [InlineKeyboardButton(text="🚪 Выйти со всех групп", callback_data=f"sess_leave_groups_{phone}")],
-        [InlineKeyboardButton(text="⬅️ Назад", callback_data=f"sess_info_{phone}")],
-    ])
-
 
 # ============ СОСТОЯНИЯ ============
 
-class GramStates(StatesGroup):
+class SessionStates(StatesGroup):
     waiting_phone = State()
     waiting_code = State()
 
@@ -115,79 +118,195 @@ async def main_menu(callback: types.CallbackQuery):
     )
 
 
-# ============ CALLBACK: БОТЫ ============
-
-@dp.callback_query(lambda c: c.data == "bots")
-async def bots_menu(callback: types.CallbackQuery):
-    await callback.answer()
-    await callback.message.edit_text(
-        "🤖 <b>Раздел Ботов</b>\n\nВыбери категорию:",
-        parse_mode=ParseMode.HTML,
-        reply_markup=get_bots_keyboard()
-    )
-
-
-# ============ CALLBACK: GRAM БОТЫ ============
+# ============ CALLBACK: GRAM БОТ ============
 
 @dp.callback_query(lambda c: c.data == "gram")
-async def gram_bots(callback: types.CallbackQuery):
+async def gram_menu(callback: types.CallbackQuery):
     await callback.answer()
+    user_id = callback.from_user.id
+    has_session = user_id in user_sessions
+    
+    text = "🤖 <b>Gram Бот</b>\n\n"
+    
+    if has_session:
+        phone = user_sessions[user_id]
+        text += f"✅ Активная сессия: <b>{phone}</b>\n\n"
+        text += "Нажми 'Запустить авто-просмотры' для начала работы."
+    else:
+        text += "❌ Нет активной сессии.\n\n"
+        text += "Сначала добавь сессию в разделе 'Мои сессии'."
+    
     await callback.message.edit_text(
-        "📱 <b>Gram Боты</b>\n\n"
-        "Выбери бота для заработка:\n\n"
-        "• <b>@gram_piarbot</b> - основной бот\n"
-        "• <b>@gram_prbot</b> - резервный бот",
+        text,
         parse_mode=ParseMode.HTML,
-        reply_markup=get_gram_bots_keyboard()
+        reply_markup=get_gram_main_keyboard(has_session)
     )
 
 
-# ============ CALLBACK: ВЫБОР GRAM БОТА ============
-
-@dp.callback_query(lambda c: c.data in ["g_piar", "g_pr"])
-async def select_gram_bot(callback: types.CallbackQuery):
-    bot_type = callback.data
+@dp.callback_query(lambda c: c.data == "gram_start")
+async def gram_start(callback: types.CallbackQuery):
     await callback.answer()
+    user_id = callback.from_user.id
     
-    if bot_type == "g_piar":
-        bot_name = "@gram_piarbot"
-    else:
-        bot_name = "@gram_prbot"
+    if user_id not in user_sessions:
+        await callback.answer("❌ Нет активной сессии")
+        return
+    
+    phone = user_sessions[user_id]
+    
+    # Проверяем, есть ли клиент
+    if phone not in active_clients:
+        await callback.answer("❌ Сессия не активна. Пересоздайте.")
+        return
+    
+    # Запускаем Gram бота
+    from gram_bot import start_gram_worker, set_user_chat_id
+    
+    set_user_chat_id(user_id)
+    client = active_clients[phone]
+    
+    # Сохраняем bot_username (по умолчанию gram_prbot)
+    bot_username = "@gram_prbot"
+    
+    # Запускаем воркер
+    task = asyncio.create_task(start_gram_worker(client, bot_username, phone))
+    active_tasks[phone] = task
     
     await callback.message.edit_text(
-        f"📱 <b>{bot_name}</b>\n\n"
-        f"Выбери действие:",
+        f"✅ <b>Gram бот запущен!</b>\n\n"
+        f"📱 {phone}\n"
+        f"🤖 {bot_username}\n\n"
+        f"Авто-просмотры работают в фоне.\n"
+        f"Для остановки используй /stop_gram",
         parse_mode=ParseMode.HTML,
-        reply_markup=get_gram_action_keyboard(bot_type)
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data="gram")]
+        ])
     )
 
 
-# ============ CALLBACK: ЗАПУСК GRAM АВТО-ПРОСМОТРОВ ============
-
-@dp.callback_query(lambda c: c.data.startswith("gstart_"))
-async def gram_start(callback: types.CallbackQuery, state: FSMContext):
-    bot_type = callback.data.replace("gstart_", "")
+@dp.callback_query(lambda c: c.data == "gram_stop")
+async def gram_stop(callback: types.CallbackQuery):
     await callback.answer()
+    user_id = callback.from_user.id
     
-    if bot_type == "g_piar":
-        bot_username = "@gram_piarbot"
+    if user_id not in user_sessions:
+        await callback.answer("❌ Нет активной сессии")
+        return
+    
+    phone = user_sessions[user_id]
+    
+    from gram_bot import stop_gram_bot
+    result = await stop_gram_bot(phone)
+    
+    if result:
+        await callback.message.edit_text(
+            f"⏹ <b>Gram бот остановлен</b>\n\n"
+            f"📱 {phone}",
+            parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="⬅️ Назад", callback_data="gram")]
+            ])
+        )
     else:
-        bot_username = "@gram_prbot"
+        await callback.answer("❌ Ошибка остановки")
+
+
+@dp.callback_query(lambda c: c.data == "no_session")
+async def no_session(callback: types.CallbackQuery):
+    await callback.answer("Сначала добавь сессию в разделе 'Мои сессии'", show_alert=True)
+
+
+@dp.message(Command("stop_gram"))
+async def stop_gram_command(message: types.Message):
+    user_id = message.from_user.id
     
-    await state.update_data(bot_username=bot_username, bot_type=bot_type)
-    await state.set_state(GramStates.waiting_phone)
+    if user_id not in user_sessions:
+        await message.answer("❌ Нет активной сессии")
+        return
+    
+    phone = user_sessions[user_id]
+    
+    from gram_bot import stop_gram_bot
+    result = await stop_gram_bot(phone)
+    
+    if result:
+        await message.answer(f"✅ Gram бот остановлен для {phone}")
+    else:
+        await message.answer("❌ Gram бот не был запущен")
+
+
+@dp.message(Command("continue_gram"))
+async def continue_gram(message: types.Message):
+    """Продолжить работу после капчи"""
+    user_id = message.from_user.id
+    
+    if user_id not in user_sessions:
+        await message.answer("❌ Нет активной сессии")
+        return
+    
+    phone = user_sessions[user_id]
+    
+    from gram_bot import continue_gram_bot
+    result = await continue_gram_bot(phone)
+    
+    if result:
+        await message.answer(
+            "✅ Gram бот продолжен!\n\n"
+            "Если капча еще активна, пройдите её вручную в Telegram и нажмите /continue_gram снова."
+        )
+    else:
+        await message.answer("❌ Ошибка продолжения. Попробуйте перезапустить бота.")
+
+
+# ============ CALLBACK: СЕССИИ ============
+
+@dp.callback_query(lambda c: c.data == "sessions")
+async def sessions_menu(callback: types.CallbackQuery):
+    await callback.answer()
+    user_id = callback.from_user.id
+    
+    text = "📱 <b>Мои сессии</b>\n\n"
+    
+    if user_id in user_sessions:
+        phone = user_sessions[user_id]
+        text += f"✅ Активная сессия:\n"
+        text += f"📱 <b>{phone}</b>\n\n"
+        
+        # Проверяем статус
+        if phone in active_clients:
+            text += "🟢 Сессия активна\n"
+        else:
+            text += "🔴 Сессия не активна (пересоздайте)\n"
+        
+        text += "\n<i>Нажми на номер для управления</i>"
+    else:
+        text += "❌ Нет активных сессий\n\n"
+        text += "Нажми 'Добавить сессию' для авторизации"
     
     await callback.message.edit_text(
-        f"📱 <b>Настройка {bot_username}</b>\n\n"
-        f"Введите номер телефона в формате:\n"
-        f"<code>+79172993848</code>\n\n"
-        f"или отправьте /cancel для отмены",
+        text,
+        parse_mode=ParseMode.HTML,
+        reply_markup=get_sessions_keyboard(user_id)
+    )
+
+
+@dp.callback_query(lambda c: c.data == "sess_add")
+async def session_add(callback: types.CallbackQuery, state: FSMContext):
+    await callback.answer()
+    await state.set_state(SessionStates.waiting_phone)
+    
+    await callback.message.edit_text(
+        "📱 <b>Добавление сессии</b>\n\n"
+        "Введите номер телефона в формате:\n"
+        "<code>+79172993848</code>\n\n"
+        "или отправьте /cancel для отмены",
         parse_mode=ParseMode.HTML
     )
 
 
-@dp.message(GramStates.waiting_phone)
-async def gram_phone(message: types.Message, state: FSMContext):
+@dp.message(SessionStates.waiting_phone)
+async def session_phone(message: types.Message, state: FSMContext):
     phone = message.text.strip()
     
     if not re.match(r'^\+?\d{10,15}$', phone):
@@ -199,14 +318,11 @@ async def gram_phone(message: types.Message, state: FSMContext):
         return
     
     await state.update_data(phone=phone)
-    await state.set_state(GramStates.waiting_code)
-    
-    data = await state.get_data()
-    bot_username = data.get("bot_username")
+    await state.set_state(SessionStates.waiting_code)
     
     from gram_bot import send_code, set_user_chat_id
     set_user_chat_id(message.chat.id)
-    result = await send_code(phone, bot_username)
+    result = await send_code(phone, "gram_prbot")
     
     if result:
         await message.answer(
@@ -223,29 +339,31 @@ async def gram_phone(message: types.Message, state: FSMContext):
         await state.clear()
 
 
-@dp.message(GramStates.waiting_code)
-async def gram_code(message: types.Message, state: FSMContext):
+@dp.message(SessionStates.waiting_code)
+async def session_code(message: types.Message, state: FSMContext):
     code = message.text.strip()
+    user_id = message.from_user.id
     
     data = await state.get_data()
     phone = data.get("phone")
-    bot_username = data.get("bot_username")
     
     from gram_bot import start_gram_bot
-    result = await start_gram_bot(phone, code, bot_username, message.chat.id)
+    result = await start_gram_bot(phone, code, "gram_prbot", message.chat.id)
     
     await state.clear()
     
     if result:
+        # Сохраняем сессию для пользователя
+        user_sessions[user_id] = phone
+        
         await message.answer(
-            f"✅ <b>Бот запущен!</b>\n\n"
-            f"🤖 {bot_username}\n"
+            f"✅ <b>Сессия добавлена!</b>\n\n"
             f"📱 {phone}\n\n"
-            f"Авто-просмотры работают в фоне.\n"
-            f"Для остановки используйте /stop_gram",
+            f"Теперь можно использовать её в Gram боте.",
             parse_mode=ParseMode.HTML,
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="⬅️ В меню", callback_data="main")]
+                [InlineKeyboardButton(text="🤖 Перейти в Gram", callback_data="gram")],
+                [InlineKeyboardButton(text="📱 Мои сессии", callback_data="sessions")],
             ])
         )
     else:
@@ -256,44 +374,274 @@ async def gram_code(message: types.Message, state: FSMContext):
         )
 
 
-@dp.message(Command("cancel"))
-async def cancel_command(message: types.Message, state: FSMContext):
-    await state.clear()
-    await message.answer(
-        "❌ Отменено.",
-        reply_markup=get_main_keyboard()
+@dp.callback_query(lambda c: c.data == "sess_info")
+async def session_info(callback: types.CallbackQuery):
+    await callback.answer()
+    user_id = callback.from_user.id
+    
+    if user_id not in user_sessions:
+        await callback.answer("❌ Сессия не найдена")
+        return
+    
+    phone = user_sessions[user_id]
+    
+    if phone not in active_clients:
+        await callback.answer("❌ Сессия не активна")
+        return
+    
+    client = active_clients[phone]
+    
+    try:
+        me = await client.get_me()
+        username = f"@{me.username}" if me.username else "Нет юзернейма"
+        user_id_telegram = me.id
+        first_name = me.first_name or ""
+        last_name = me.last_name or ""
+        name = f"{first_name} {last_name}".strip()
+        
+        # Проверяем активна ли задача
+        is_active = phone in active_tasks and not active_tasks[phone].done()
+        
+        text = f"📱 <b>Информация о сессии</b>\n\n"
+        text += f"👤 <b>{name or 'Без имени'}</b>\n"
+        text += f"📱 {phone}\n"
+        text += f"🆔 {user_id_telegram}\n"
+        text += f"👤 {username}\n"
+        text += f"📊 Статус: {'🟢 Активна' if is_active else '🟡 Остановлена'}\n"
+        
+    except Exception as e:
+        text = f"📱 <b>Информация о сессии</b>\n\n"
+        text += f"📱 {phone}\n"
+        text += f"❌ Ошибка получения данных: {e}\n"
+    
+    await callback.message.edit_text(
+        text,
+        parse_mode=ParseMode.HTML,
+        reply_markup=get_session_actions_keyboard()
     )
 
 
-@dp.message(Command("stop_gram"))
-async def stop_gram(message: types.Message):
-    from gram_bot import stop_gram_bot
-    result = await stop_gram_bot()
-    if result:
-        await message.answer("✅ Gram бот остановлен.")
-    else:
-        await message.answer("❌ Gram бот не был запущен.")
-
-
-@dp.message(Command("continue_gram"))
-async def continue_gram(message: types.Message):
-    """Продолжить работу после капчи"""
-    from gram_bot import continue_gram_bot, active_clients
+@dp.callback_query(lambda c: c.data == "sess_delete")
+async def session_delete(callback: types.CallbackQuery):
+    await callback.answer()
+    user_id = callback.from_user.id
     
-    if not active_clients:
-        await message.answer("❌ Нет активных сессий. Запустите бота сначала.")
+    if user_id not in user_sessions:
+        await callback.answer("❌ Сессия не найдена")
         return
     
-    phone = list(active_clients.keys())[0]
-    result = await continue_gram_bot(phone)
+    phone = user_sessions[user_id]
     
-    if result:
-        await message.answer(
-            "✅ Gram бот продолжен!\n\n"
-            "Если капча еще активна, пройдите её вручную в Telegram и нажмите /continue_gram снова."
+    # Останавливаем если запущена
+    from gram_bot import stop_gram_bot
+    await stop_gram_bot(phone)
+    
+    # Удаляем
+    if phone in active_clients:
+        try:
+            await active_clients[phone].disconnect()
+        except:
+            pass
+        del active_clients[phone]
+    
+    if phone in active_tasks:
+        del active_tasks[phone]
+    
+    del user_sessions[user_id]
+    
+    await callback.message.edit_text(
+        f"🗑 <b>Сессия удалена</b>\n\n"
+        f"📱 {phone}\n\n"
+        f"Сессия успешно удалена.",
+        parse_mode=ParseMode.HTML,
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="📱 Мои сессии", callback_data="sessions")],
+            [InlineKeyboardButton(text="🏠 Меню", callback_data="main")]
+        ])
+    )
+
+
+# ============ ВЫХОД ИЗ КАНАЛОВ/ГРУПП ============
+
+@dp.callback_query(lambda c: c.data == "sess_leave_channels")
+async def session_leave_channels(callback: types.CallbackQuery):
+    await callback.answer("⏳ Выхожу из каналов...")
+    user_id = callback.from_user.id
+    
+    if user_id not in user_sessions:
+        await callback.answer("❌ Нет активной сессии")
+        return
+    
+    phone = user_sessions[user_id]
+    
+    if phone not in active_clients:
+        await callback.answer("❌ Сессия не активна")
+        return
+    
+    client = active_clients[phone]
+    
+    try:
+        left_count = 0
+        error_count = 0
+        skipped_count = 0
+        
+        await callback.message.edit_text(
+            f"⏳ <b>Выход из каналов...</b>\n\n"
+            f"📱 {phone}\n"
+            f"Это может занять некоторое время",
+            parse_mode=ParseMode.HTML
         )
-    else:
-        await message.answer("❌ Ошибка продолжения. Попробуйте перезапустить бота.")
+        
+        # Получаем все диалоги
+        async for dialog in client.iter_dialogs():
+            try:
+                # Проверяем что это канал
+                if dialog.is_channel:
+                    # Пропускаем личный канал (Saved Messages)
+                    if dialog.entity.username == "me":
+                        skipped_count += 1
+                        logging.info(f"⏭ Пропускаю личный канал: {dialog.name}")
+                        continue
+                    
+                    # Пробуем выйти
+                    try:
+                        await client.leave_channel(dialog.entity)
+                        left_count += 1
+                        logging.info(f"🚪 Вышел из канала: {dialog.name} (ID: {dialog.id})")
+                        await asyncio.sleep(1)  # Задержка чтобы не спамить
+                    except Exception as e:
+                        error_msg = str(e).lower()
+                        if "not a member" in error_msg or "already left" in error_msg:
+                            skipped_count += 1
+                            logging.info(f"⏭ Уже не участник: {dialog.name}")
+                        else:
+                            error_count += 1
+                            logging.error(f"❌ Ошибка выхода из {dialog.name}: {e}")
+                                
+            except Exception as e:
+                error_count += 1
+                logging.error(f"❌ Ошибка обработки диалога: {e}")
+                continue
+        
+        # Итоговое сообщение
+        result_text = (
+            f"✅ <b>Выход из каналов завершен!</b>\n\n"
+            f"📱 {phone}\n"
+            f"🚪 Вышел из: {left_count} каналов\n"
+            f"⏭ Пропущено (личные/уже вышел): {skipped_count}\n"
+            f"❌ Ошибок: {error_count}\n\n"
+            f"<i>Личные чаты не были затронуты</i>"
+        )
+        
+        if error_count > 0:
+            result_text += f"\n\n⚠️ <b>Возможные причины ошибок:</b>\n"
+            result_text += f"• Вы администратор канала (нельзя выйти)\n"
+            result_text += f"• Канал был удален или заблокирован\n"
+            result_text += f"• Нет прав на выход из канала"
+        
+        await callback.message.edit_text(
+            result_text,
+            parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="⬅️ Назад к сессии", callback_data="sess_info")],
+                [InlineKeyboardButton(text="🏠 Меню", callback_data="main")]
+            ])
+        )
+        
+    except Exception as e:
+        await callback.message.edit_text(
+            f"❌ Критическая ошибка: {e}",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="⬅️ Назад", callback_data="sessions")]
+            ])
+        )
+
+
+@dp.callback_query(lambda c: c.data == "sess_leave_groups")
+async def session_leave_groups(callback: types.CallbackQuery):
+    await callback.answer("⏳ Выхожу из групп...")
+    user_id = callback.from_user.id
+    
+    if user_id not in user_sessions:
+        await callback.answer("❌ Нет активной сессии")
+        return
+    
+    phone = user_sessions[user_id]
+    
+    if phone not in active_clients:
+        await callback.answer("❌ Сессия не активна")
+        return
+    
+    client = active_clients[phone]
+    
+    try:
+        left_count = 0
+        error_count = 0
+        skipped_count = 0
+        
+        await callback.message.edit_text(
+            f"⏳ <b>Выход из групп...</b>\n\n"
+            f"📱 {phone}\n"
+            f"Это может занять некоторое время",
+            parse_mode=ParseMode.HTML
+        )
+        
+        async for dialog in client.iter_dialogs():
+            try:
+                # Проверяем что это группа
+                if dialog.is_group:
+                    # Пробуем выйти
+                    try:
+                        await client.leave_group(dialog.entity)
+                        left_count += 1
+                        logging.info(f"🚪 Вышел из группы: {dialog.name} (ID: {dialog.id})")
+                        await asyncio.sleep(1)  # Задержка чтобы не спамить
+                    except Exception as e:
+                        error_msg = str(e).lower()
+                        if "not a member" in error_msg or "already left" in error_msg:
+                            skipped_count += 1
+                            logging.info(f"⏭ Уже не участник: {dialog.name}")
+                        else:
+                            error_count += 1
+                            logging.error(f"❌ Ошибка выхода из группы {dialog.name}: {e}")
+                                
+            except Exception as e:
+                error_count += 1
+                logging.error(f"❌ Ошибка обработки диалога: {e}")
+                continue
+        
+        # Итоговое сообщение
+        result_text = (
+            f"✅ <b>Выход из групп завершен!</b>\n\n"
+            f"📱 {phone}\n"
+            f"🚪 Вышел из: {left_count} групп\n"
+            f"⏭ Пропущено (уже вышел): {skipped_count}\n"
+            f"❌ Ошибок: {error_count}\n\n"
+            f"<i>Личные чаты не были затронуты</i>"
+        )
+        
+        if error_count > 0:
+            result_text += f"\n\n⚠️ <b>Возможные причины ошибок:</b>\n"
+            result_text += f"• Вы администратор группы (нельзя выйти)\n"
+            result_text += f"• Группа была удалена или заблокирована\n"
+            result_text += f"• Нет прав на выход из группы"
+        
+        await callback.message.edit_text(
+            result_text,
+            parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="⬅️ Назад к сессии", callback_data="sess_info")],
+                [InlineKeyboardButton(text="🏠 Меню", callback_data="main")]
+            ])
+        )
+        
+    except Exception as e:
+        await callback.message.edit_text(
+            f"❌ Критическая ошибка: {e}",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="⬅️ Назад", callback_data="sessions")]
+            ])
+        )
 
 
 # ============ CALLBACK: ЮЗЕРНЕЙМЫ ============
@@ -310,242 +658,13 @@ async def username_menu(callback: types.CallbackQuery):
     )
 
 
-# ============ CALLBACK: СЕССИИ ============
-
-@dp.callback_query(lambda c: c.data == "sessions")
-async def sessions_menu(callback: types.CallbackQuery):
-    await callback.answer()
-    
-    if not active_clients:
-        await callback.message.edit_text(
-            "📱 <b>Сессии</b>\n\n"
-            "Нет активных сессий.\n\n"
-            "Запустите Gram бота, чтобы создать сессию.",
-            parse_mode=ParseMode.HTML,
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="⬅️ Назад", callback_data="main")]
-            ])
-        )
-        return
-    
-    # Строим список сессий
-    text = "📱 <b>Активные сессии</b>\n\n"
-    
-    for phone, client in active_clients.items():
-        # Пытаемся получить информацию об аккаунте
-        try:
-            me = await client.get_me()
-            username = f"@{me.username}" if me.username else "Нет юзернейма"
-            user_id = me.id
-            first_name = me.first_name or ""
-            last_name = me.last_name or ""
-            name = f"{first_name} {last_name}".strip()
-            
-            text += f"┌ <b>{name or 'Без имени'}</b>\n"
-            text += f"├ 📱 {phone}\n"
-            text += f"├ 🆔 {user_id}\n"
-            text += f"└ 👤 {username}\n\n"
-        except Exception as e:
-            text += f"┌ <b>Сессия</b>\n"
-            text += f"├ 📱 {phone}\n"
-            text += f"└ ❌ Ошибка получения данных\n\n"
-    
-    text += "\nВыбери сессию для управления:"
-    
-    # Создаем кнопки для каждой сессии
-    buttons = []
-    for phone in active_clients.keys():
-        # Обрезаем номер для callback_data (максимум 64 символа)
-        short_phone = phone.replace('+', '')[-12:]
-        buttons.append([InlineKeyboardButton(
-            text=f"📱 {phone}", 
-            callback_data=f"sess_info_{short_phone}"
-        )])
-    
-    buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="main")])
-    
-    await callback.message.edit_text(
-        text,
-        parse_mode=ParseMode.HTML,
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons)
+@dp.message(Command("cancel"))
+async def cancel_command(message: types.Message, state: FSMContext):
+    await state.clear()
+    await message.answer(
+        "❌ Отменено.",
+        reply_markup=get_main_keyboard()
     )
-
-
-@dp.callback_query(lambda c: c.data.startswith("sess_info_"))
-async def session_info(callback: types.CallbackQuery):
-    await callback.answer()
-    
-    phone_short = callback.data.replace("sess_info_", "")
-    
-    # Находим полный номер
-    phone = None
-    for p in active_clients.keys():
-        if p.replace('+', '')[-12:] == phone_short:
-            phone = p
-            break
-    
-    if not phone or phone not in active_clients:
-        await callback.answer("❌ Сессия не найдена")
-        return
-    
-    client = active_clients[phone]
-    
-    try:
-        me = await client.get_me()
-        username = f"@{me.username}" if me.username else "Нет юзернейма"
-        user_id = me.id
-        first_name = me.first_name or ""
-        last_name = me.last_name or ""
-        name = f"{first_name} {last_name}".strip()
-        
-        # Проверяем активна ли задача
-        is_active = phone in active_tasks and not active_tasks[phone].done()
-        
-        text = f"📱 <b>Информация о сессии</b>\n\n"
-        text += f"👤 <b>{name or 'Без имени'}</b>\n"
-        text += f"📱 {phone}\n"
-        text += f"🆔 {user_id}\n"
-        text += f"👤 {username}\n"
-        text += f"📊 Статус: {'🟢 Активна' if is_active else '🔴 Остановлена'}\n"
-        
-    except Exception as e:
-        text = f"📱 <b>Информация о сессии</b>\n\n"
-        text += f"📱 {phone}\n"
-        text += f"❌ Ошибка получения данных: {e}\n"
-    
-    await callback.message.edit_text(
-        text,
-        parse_mode=ParseMode.HTML,
-        reply_markup=get_session_manage_keyboard(phone)
-    )
-
-
-@dp.callback_query(lambda c: c.data.startswith("sess_manage_"))
-async def session_manage(callback: types.CallbackQuery):
-    await callback.answer()
-    phone = callback.data.replace("sess_manage_", "")
-    
-    # Проверяем существование сессии
-    if phone not in active_clients:
-        await callback.answer("❌ Сессия не найдена")
-        return
-    
-    await callback.message.edit_text(
-        f"📱 <b>Управление сессией</b>\n\n"
-        f"Выбери действие для {phone}:",
-        parse_mode=ParseMode.HTML,
-        reply_markup=get_session_actions_keyboard(phone)
-    )
-
-
-# ============ ВЫХОД ИЗ КАНАЛОВ/ГРУПП ============
-
-@dp.callback_query(lambda c: c.data.startswith("sess_leave_channels_"))
-async def session_leave_channels(callback: types.CallbackQuery):
-    await callback.answer("⏳ Выхожу из каналов...")
-    
-    phone = callback.data.replace("sess_leave_channels_", "")
-    
-    if phone not in active_clients:
-        await callback.answer("❌ Сессия не найдена")
-        return
-    
-    client = active_clients[phone]
-    
-    try:
-        left_count = 0
-        error_count = 0
-        
-        # Получаем все диалоги
-        async for dialog in client.iter_dialogs():
-            # Проверяем что это канал (не личный чат и не группа)
-            if dialog.is_channel:
-                try:
-                    # Проверяем что это не личный чат
-                    if dialog.entity.username and dialog.entity.username.lower() != "me":
-                        # Выходим из канала
-                        await client.leave_channel(dialog.entity)
-                        left_count += 1
-                        logging.info(f"🚪 Вышел из канала: {dialog.name}")
-                        # Небольшая задержка чтобы не спамить
-                        await asyncio.sleep(0.5)
-                except Exception as e:
-                    error_count += 1
-                    logging.error(f"❌ Ошибка выхода из канала {dialog.name}: {e}")
-        
-        await callback.message.edit_text(
-            f"✅ <b>Выход из каналов завершен!</b>\n\n"
-            f"📱 {phone}\n"
-            f"🚪 Вышел из: {left_count} каналов\n"
-            f"❌ Ошибок: {error_count}\n\n"
-            f"<i>Личные чаты не были затронуты</i>",
-            parse_mode=ParseMode.HTML,
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="⬅️ Назад к сессии", callback_data=f"sess_info_{phone.replace('+', '')[-12:]}")],
-                [InlineKeyboardButton(text="🏠 Меню", callback_data="main")]
-            ])
-        )
-        
-    except Exception as e:
-        await callback.message.edit_text(
-            f"❌ Ошибка: {e}",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="⬅️ Назад", callback_data=f"sess_manage_{phone}")]
-            ])
-        )
-
-
-@dp.callback_query(lambda c: c.data.startswith("sess_leave_groups_"))
-async def session_leave_groups(callback: types.CallbackQuery):
-    await callback.answer("⏳ Выхожу из групп...")
-    
-    phone = callback.data.replace("sess_leave_groups_", "")
-    
-    if phone not in active_clients:
-        await callback.answer("❌ Сессия не найдена")
-        return
-    
-    client = active_clients[phone]
-    
-    try:
-        left_count = 0
-        error_count = 0
-        
-        # Получаем все диалоги
-        async for dialog in client.iter_dialogs():
-            # Проверяем что это группа (не канал и не личный чат)
-            if dialog.is_group:
-                try:
-                    # Выходим из группы
-                    await client.leave_group(dialog.entity)
-                    left_count += 1
-                    logging.info(f"🚪 Вышел из группы: {dialog.name}")
-                    # Небольшая задержка чтобы не спамить
-                    await asyncio.sleep(0.5)
-                except Exception as e:
-                    error_count += 1
-                    logging.error(f"❌ Ошибка выхода из группы {dialog.name}: {e}")
-        
-        await callback.message.edit_text(
-            f"✅ <b>Выход из групп завершен!</b>\n\n"
-            f"📱 {phone}\n"
-            f"🚪 Вышел из: {left_count} групп\n"
-            f"❌ Ошибок: {error_count}\n\n"
-            f"<i>Личные чаты не были затронуты</i>",
-            parse_mode=ParseMode.HTML,
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="⬅️ Назад к сессии", callback_data=f"sess_info_{phone.replace('+', '')[-12:]}")],
-                [InlineKeyboardButton(text="🏠 Меню", callback_data="main")]
-            ])
-        )
-        
-    except Exception as e:
-        await callback.message.edit_text(
-            f"❌ Ошибка: {e}",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="⬅️ Назад", callback_data=f"sess_manage_{phone}")]
-            ])
-        )
 
 
 # ============ ИНИЦИАЛИЗАЦИЯ ============
