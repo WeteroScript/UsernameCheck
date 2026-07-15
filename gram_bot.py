@@ -1,6 +1,6 @@
 """
 Модуль для Gram ботов
-Полная версия с prgrambot.py
+Полная версия с prgrambot.py + обработка капчи
 """
 
 import asyncio
@@ -22,6 +22,100 @@ API_HASH = "b18441a1ff607e10a989891a5462e627"
 active_clients: Dict[str, TelegramClient] = {}
 active_tasks: Dict[str, asyncio.Task] = {}
 gram_bot_initialized = False
+user_chat_id: Optional[int] = None  # ID чата пользователя для отправки капчи
+
+
+# ============ УСТАНОВКА USER CHAT ID ============
+
+def set_user_chat_id(chat_id: int):
+    """Установка ID чата пользователя для отправки капчи"""
+    global user_chat_id
+    user_chat_id = chat_id
+    logging.info(f"✅ User chat ID установлен: {chat_id}")
+
+
+# ============ ПРОВЕРКА КАПЧИ ============
+
+def is_captcha_message(msg) -> bool:
+    """Проверка, является ли сообщение капчей"""
+    if not msg:
+        return False
+    
+    text = (msg.raw_text or "").lower()
+    
+    # Ключевые слова капчи
+    captcha_keywords = [
+        "подтвердите, что вы человек",
+        "подтвердите что вы человек",
+        "captcha",
+        "verify you are human",
+        "are you human",
+        "проверка на человека",
+        "докажите, что вы не робот",
+        "пожалуйста, подтвердите",
+        "complete the verification",
+        "human verification"
+    ]
+    
+    for keyword in captcha_keywords:
+        if keyword in text:
+            return True
+    
+    # Проверяем наличие кнопки с капчей
+    if msg.buttons:
+        for row in msg.buttons:
+            for btn in row:
+                btn_text = (btn.text or "").lower()
+                if "капч" in btn_text or "captch" in btn_text or "подтверд" in btn_text:
+                    return True
+    
+    return False
+
+async def send_captcha_to_user(msg, chat_id: int) -> bool:
+    """Отправка сообщения с капчей пользователю"""
+    if not chat_id:
+        logging.error("❌ Chat ID не установлен")
+        return False
+    
+    try:
+        from bot import bot  # Импортируем бота из главного файла
+        
+        text = f"🚨 <b>Обнаружена капча!</b>\n\n"
+        text += f"📝 <b>Текст:</b>\n<code>{msg.raw_text[:500]}</code>\n\n"
+        text += f"⚠️ <b>Действие необходимо!</b>\n"
+        text += f"Пройдите капчу вручную, затем нажмите /continue_gram"
+        
+        # Отправляем текст
+        await bot.send_message(chat_id, text, parse_mode="HTML")
+        
+        # Если есть кнопки, отправляем их описание
+        if msg.buttons:
+            buttons_text = "📋 <b>Кнопки:</b>\n"
+            for row in msg.buttons:
+                for btn in row:
+                    buttons_text += f"  • {btn.text}\n"
+            await bot.send_message(chat_id, buttons_text, parse_mode="HTML")
+        
+        # Отправляем ссылку на капчу (если есть)
+        if msg.raw_text:
+            # Ищем ссылку
+            link_match = re.search(r"(https?://\S+)", msg.raw_text)
+            if link_match:
+                await bot.send_message(chat_id, f"🔗 <b>Ссылка:</b>\n{link_match.group()}", parse_mode="HTML")
+        
+        # Пытаемся переслать само сообщение (если это возможно)
+        try:
+            await bot.send_message(chat_id, "📩 <b>Оригинальное сообщение:</b>", parse_mode="HTML")
+            await bot.forward_message(chat_id, msg.chat_id, msg.id)
+        except:
+            pass
+        
+        logging.info(f"✅ Капча отправлена пользователю {chat_id}")
+        return True
+        
+    except Exception as e:
+        logging.error(f"❌ Ошибка отправки капчи: {e}")
+        return False
 
 
 # ============ ОТПРАВКА КОДА ============
@@ -29,15 +123,12 @@ gram_bot_initialized = False
 async def send_code(phone: str, bot_username: str) -> bool:
     """Отправка кода подтверждения"""
     try:
-        # Нормализуем номер
         phone = phone.strip()
         if not phone.startswith('+'):
             phone = '+' + phone
         
-        # Создаем папку для сессий
         os.makedirs("sessions", exist_ok=True)
         
-        # Создаем клиент с уникальным именем сессии
         session_name = f"sessions/{phone.replace('+', '')}"
         client = TelegramClient(session_name, API_ID, API_HASH)
         
@@ -66,10 +157,12 @@ async def send_code(phone: str, bot_username: str) -> bool:
 
 # ============ ЗАПУСК GRAM БОТА ============
 
-async def start_gram_bot(phone: str, code: str, bot_username: str) -> bool:
+async def start_gram_bot(phone: str, code: str, bot_username: str, chat_id: int = None) -> bool:
     """Запуск Gram бота"""
     try:
-        # Нормализуем номер
+        if chat_id:
+            set_user_chat_id(chat_id)
+        
         phone = phone.strip()
         if not phone.startswith('+'):
             phone = '+' + phone
@@ -81,11 +174,9 @@ async def start_gram_bot(phone: str, code: str, bot_username: str) -> bool:
             await client.connect()
             active_clients[phone] = client
         
-        # Авторизация
         await client.sign_in(phone, code)
         logging.info(f"✅ Авторизован: {phone}")
         
-        # Запускаем фоновую задачу
         task = asyncio.create_task(run_gram_worker(client, bot_username))
         active_tasks[phone] = task
         
@@ -250,10 +341,21 @@ async def go_to_earn_menu(client: TelegramClient, bot_username: str):
     return await get_last_message(client, bot_username)
 
 
-# ============ ОБРАБОТКА ПОСТОВ ============
+# ============ ОБРАБОТКА ПОСТОВ С КАПЧЕЙ ============
 
 async def process_single_post(client: TelegramClient, bot_username: str, msg):
-    """Обработка одного поста"""
+    """Обработка одного поста с проверкой капчи"""
+    # Проверяем на капчу ПЕРЕД обработкой
+    if is_captcha_message(msg):
+        logging.warning("🚨 Обнаружена капча!")
+        
+        # Отправляем капчу пользователю
+        await send_captcha_to_user(msg, user_chat_id)
+        
+        # Останавливаем выполнение
+        logging.info("⏹ Бот остановлен из-за капчи")
+        return None
+    
     log_message(msg, "Пост / Задание")
     
     if not msg:
@@ -275,18 +377,32 @@ async def process_single_post(client: TelegramClient, bot_username: str, msg):
     updated = await click_button(client, bot_username, msg, confirm_keywords, wait=2)
     
     if updated:
+        # Проверяем капчу после подтверждения
+        if is_captcha_message(updated):
+            logging.warning("🚨 Капча после подтверждения!")
+            await send_captcha_to_user(updated, user_chat_id)
+            logging.info("⏹ Бот остановлен из-за капчи")
+            return None
         log_message(updated, "После подтверждения")
         return updated
     else:
         logging.info("⚠️ Кнопка не найдена, отправляю ✅")
         await send_text(client, bot_username, "✅", 2)
         updated = await get_last_message(client, bot_username)
+        
+        # Проверяем капчу после отправки
+        if updated and is_captcha_message(updated):
+            logging.warning("🚨 Капча после отправки!")
+            await send_captcha_to_user(updated, user_chat_id)
+            logging.info("⏹ Бот остановлен из-за капчи")
+            return None
+        
         log_message(updated, "После текстового подтверждения")
         return updated
 
 
 async def view_all_posts(client: TelegramClient, bot_username: str, msg):
-    """Просмотр всех постов"""
+    """Просмотр всех постов с проверкой капчи"""
     posts_viewed = 0
     current_msg = msg
     
@@ -296,8 +412,20 @@ async def view_all_posts(client: TelegramClient, bot_username: str, msg):
         
         current_msg = await process_single_post(client, bot_username, current_msg)
         
+        # Если капча - останавливаемся
+        if current_msg is None:
+            logging.warning("⏹ Остановка из-за капчи")
+            break
+        
         if not current_msg:
             logging.info("⚠️ Не удалось получить сообщение")
+            break
+        
+        # Проверяем капчу перед следующим постом
+        if is_captcha_message(current_msg):
+            logging.warning("🚨 Капча перед следующим постом!")
+            await send_captcha_to_user(current_msg, user_chat_id)
+            logging.info("⏹ Бот остановлен из-за капчи")
             break
         
         if has_next_post_button(current_msg):
@@ -306,6 +434,14 @@ async def view_all_posts(client: TelegramClient, bot_username: str, msg):
                 client, bot_username, current_msg,
                 ["следующ", "⏩"], wait=2
             )
+            
+            # Проверяем капчу после клика
+            if next_msg and is_captcha_message(next_msg):
+                logging.warning("🚨 Капча после перехода!")
+                await send_captcha_to_user(next_msg, user_chat_id)
+                logging.info("⏹ Бот остановлен из-за капчи")
+                break
+            
             if next_msg:
                 current_msg = next_msg
                 continue
@@ -323,8 +459,16 @@ async def view_all_posts(client: TelegramClient, bot_username: str, msg):
 # ============ ОСНОВНОЙ ЦИКЛ ============
 
 async def do_one_cycle(client: TelegramClient, bot_username: str):
-    """Один полный цикл"""
+    """Один полный цикл с проверкой капчи"""
     msg = await get_last_message(client, bot_username)
+    
+    # Проверяем капчу в текущем сообщении
+    if msg and is_captcha_message(msg):
+        logging.warning("🚨 Капча в текущем меню!")
+        await send_captcha_to_user(msg, user_chat_id)
+        logging.info("⏹ Бот остановлен из-за капчи")
+        return
+    
     log_message(msg, "Текущее меню")
     
     updated = await click_button(
@@ -333,14 +477,30 @@ async def do_one_cycle(client: TelegramClient, bot_username: str):
         wait=2
     )
     
+    # Проверяем капчу после клика
+    if updated and is_captcha_message(updated):
+        logging.warning("🚨 Капча после клика!")
+        await send_captcha_to_user(updated, user_chat_id)
+        logging.info("⏹ Бот остановлен из-за капчи")
+        return
+    
     if not updated:
         logging.info("⚠️ Не нашёл кнопку 'Просмотр постов'")
         msg = await go_to_earn_menu(client, bot_username)
+        
+        # Проверяем капчу в меню
+        if msg and is_captcha_message(msg):
+            logging.warning("🚨 Капча в меню!")
+            await send_captcha_to_user(msg, user_chat_id)
+            logging.info("⏹ Бот остановлен из-за капчи")
+            return
+        
         updated = await click_button(
             client, bot_username, msg,
             ["Просмотр постов", "Посты", "👁"],
             wait=2
         )
+        
         if not updated:
             logging.info("❌ Кнопка не найдена")
             return
@@ -352,6 +512,14 @@ async def do_one_cycle(client: TelegramClient, bot_username: str):
         await view_all_posts(client, bot_username, updated)
     else:
         post_msg = await click_first_post_button(client, bot_username, updated, wait=2)
+        
+        # Проверяем капчу
+        if post_msg and is_captcha_message(post_msg):
+            logging.warning("🚨 Капча в посте!")
+            await send_captcha_to_user(post_msg, user_chat_id)
+            logging.info("⏹ Бот остановлен из-за капчи")
+            return
+        
         if not post_msg:
             logging.info("⚠️ Постов нет")
             await go_to_earn_menu(client, bot_username)
@@ -404,6 +572,32 @@ async def run_gram_worker(client: TelegramClient, bot_username: str):
             pass
 
 
+# ============ КОМАНДА ПРОДОЛЖИТЬ ============
+
+async def continue_gram_bot(phone: str = None) -> bool:
+    """Продолжить работу Gram бота после капчи"""
+    if not phone:
+        # Если телефон не указан, берем первый
+        if active_clients:
+            phone = list(active_clients.keys())[0]
+        else:
+            logging.error("❌ Нет активных клиентов")
+            return False
+    
+    if phone in active_clients:
+        client = active_clients[phone]
+        bot_username = None  # Нужно сохранять bot_username
+        # TODO: сохранять bot_username при запуске
+        
+        # Перезапускаем воркер
+        task = asyncio.create_task(run_gram_worker(client, bot_username))
+        active_tasks[phone] = task
+        logging.info(f"✅ Gram бот продолжен: {phone}")
+        return True
+    
+    return False
+
+
 # ============ ИНИЦИАЛИЗАЦИЯ ============
 
 def init_gram_bot(dp):
@@ -422,6 +616,8 @@ __all__ = [
     'send_code', 
     'start_gram_bot', 
     'stop_gram_bot',
+    'continue_gram_bot',
+    'set_user_chat_id',
     'active_clients',
     'active_tasks'
-        ]
+                    ]
