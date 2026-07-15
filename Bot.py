@@ -2,6 +2,7 @@ import logging
 import os
 import asyncio
 import json
+import re
 from datetime import datetime
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
@@ -12,7 +13,6 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from dotenv import load_dotenv
 
-# Импорты из других модулей
 from username_bot import router as username_router, init_username_bot
 from gram_bot import router as gram_router, init_gram_bot
 
@@ -34,36 +34,36 @@ dp = Dispatcher(storage=storage)
 
 def get_main_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🤖 Боты", callback_data="bots_menu")],
-        [InlineKeyboardButton(text="👤 Юзернеймы", callback_data="username_menu")],
+        [InlineKeyboardButton(text="🤖 Боты", callback_data="bots")],
+        [InlineKeyboardButton(text="👤 Юзернеймы", callback_data="users")],
     ])
 
 def get_bots_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📱 Gram Боты", callback_data="gram_bots")],
-        [InlineKeyboardButton(text="⬅️ Назад", callback_data="main_menu")],
+        [InlineKeyboardButton(text="📱 Gram", callback_data="gram")],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="main")],
     ])
 
 def get_gram_bots_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="@gram_piarbot", callback_data="gram_piarbot")],
-        [InlineKeyboardButton(text="@gram_prbot", callback_data="gram_prbot")],
-        [InlineKeyboardButton(text="⬅️ Назад", callback_data="bots_menu")],
+        [InlineKeyboardButton(text="@gram_piarbot", callback_data="g_piar")],
+        [InlineKeyboardButton(text="@gram_prbot", callback_data="g_pr")],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="bots")],
     ])
 
-def get_gram_action_keyboard(bot_username: str) -> InlineKeyboardMarkup:
+def get_gram_action_keyboard(bot_type: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🔄 Авто-Просмотры", callback_data=f"gram_start_{bot_username}")],
-        [InlineKeyboardButton(text="⬅️ Назад", callback_data="gram_bots")],
+        [InlineKeyboardButton(text="🔄 Авто-Просмотры", callback_data=f"gstart_{bot_type}")],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="gram")],
     ])
 
 def get_username_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✨ Генерировать", callback_data="gen_username")],
-        [InlineKeyboardButton(text="🔍 Проверить все", callback_data="check_all")],
-        [InlineKeyboardButton(text="⚙️ Настройки", callback_data="open_settings")],
-        [InlineKeyboardButton(text="📊 Статистика", callback_data="show_stats")],
-        [InlineKeyboardButton(text="⬅️ Назад", callback_data="main_menu")],
+        [InlineKeyboardButton(text="✨ Генерировать", callback_data="gen")],
+        [InlineKeyboardButton(text="🔍 Проверить все", callback_data="check")],
+        [InlineKeyboardButton(text="⚙️ Настройки", callback_data="settings")],
+        [InlineKeyboardButton(text="📊 Статистика", callback_data="stats")],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="main")],
     ])
 
 
@@ -89,7 +89,7 @@ async def start_command(message: types.Message):
 
 # ============ CALLBACK: ГЛАВНОЕ МЕНЮ ============
 
-@dp.callback_query(lambda c: c.data == "main_menu")
+@dp.callback_query(lambda c: c.data == "main")
 async def main_menu(callback: types.CallbackQuery):
     await callback.answer()
     await callback.message.edit_text(
@@ -101,7 +101,7 @@ async def main_menu(callback: types.CallbackQuery):
 
 # ============ CALLBACK: БОТЫ ============
 
-@dp.callback_query(lambda c: c.data == "bots_menu")
+@dp.callback_query(lambda c: c.data == "bots")
 async def bots_menu(callback: types.CallbackQuery):
     await callback.answer()
     await callback.message.edit_text(
@@ -113,7 +113,7 @@ async def bots_menu(callback: types.CallbackQuery):
 
 # ============ CALLBACK: GRAM БОТЫ ============
 
-@dp.callback_query(lambda c: c.data == "gram_bots")
+@dp.callback_query(lambda c: c.data == "gram")
 async def gram_bots(callback: types.CallbackQuery):
     await callback.answer()
     await callback.message.edit_text(
@@ -128,26 +128,39 @@ async def gram_bots(callback: types.CallbackQuery):
 
 # ============ CALLBACK: ВЫБОР GRAM БОТА ============
 
-@dp.callback_query(lambda c: c.data.startswith("gram_") and c.data not in ["gram_bots", "gram_start"])
+@dp.callback_query(lambda c: c.data in ["g_piar", "g_pr"])
 async def select_gram_bot(callback: types.CallbackQuery):
-    bot_username = callback.data
+    bot_type = callback.data
     await callback.answer()
+    
+    # Преобразуем короткий код в полное имя
+    if bot_type == "g_piar":
+        bot_name = "@gram_piarbot"
+    else:
+        bot_name = "@gram_prbot"
+    
     await callback.message.edit_text(
-        f"📱 <b>{bot_username}</b>\n\n"
+        f"📱 <b>{bot_name}</b>\n\n"
         f"Выбери действие:",
         parse_mode=ParseMode.HTML,
-        reply_markup=get_gram_action_keyboard(bot_username)
+        reply_markup=get_gram_action_keyboard(bot_type)
     )
 
 
 # ============ CALLBACK: ЗАПУСК GRAM АВТО-ПРОСМОТРОВ ============
 
-@dp.callback_query(lambda c: c.data.startswith("gram_start_"))
+@dp.callback_query(lambda c: c.data.startswith("gstart_"))
 async def gram_start(callback: types.CallbackQuery, state: FSMContext):
-    bot_username = callback.data.replace("gram_start_", "")
+    bot_type = callback.data.replace("gstart_", "")
     await callback.answer()
     
-    await state.update_data(bot_username=bot_username)
+    # Преобразуем короткий код в полное имя
+    if bot_type == "g_piar":
+        bot_username = "@gram_piarbot"
+    else:
+        bot_username = "@gram_prbot"
+    
+    await state.update_data(bot_username=bot_username, bot_type=bot_type)
     await state.set_state(GramStates.waiting_phone)
     
     await callback.message.edit_text(
@@ -163,7 +176,6 @@ async def gram_start(callback: types.CallbackQuery, state: FSMContext):
 async def gram_phone(message: types.Message, state: FSMContext):
     phone = message.text.strip()
     
-    # Простая валидация
     if not re.match(r'^\+?\d{10,15}$', phone):
         await message.answer(
             "❌ Неверный формат номера.\n"
@@ -175,7 +187,6 @@ async def gram_phone(message: types.Message, state: FSMContext):
     await state.update_data(phone=phone)
     await state.set_state(GramStates.waiting_code)
     
-    # Инициализируем клиент и отправляем код
     data = await state.get_data()
     bot_username = data.get("bot_username")
     
@@ -219,7 +230,7 @@ async def gram_code(message: types.Message, state: FSMContext):
             f"Для остановки используйте /stop_gram",
             parse_mode=ParseMode.HTML,
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="⬅️ В меню", callback_data="main_menu")]
+                [InlineKeyboardButton(text="⬅️ В меню", callback_data="main")]
             ])
         )
     else:
@@ -251,7 +262,7 @@ async def stop_gram(message: types.Message):
 
 # ============ CALLBACK: ЮЗЕРНЕЙМЫ ============
 
-@dp.callback_query(lambda c: c.data == "username_menu")
+@dp.callback_query(lambda c: c.data == "users")
 async def username_menu(callback: types.CallbackQuery):
     await callback.answer()
     await callback.message.edit_text(
