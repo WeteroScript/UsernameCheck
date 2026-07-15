@@ -1,3 +1,8 @@
+"""
+Модуль для поиска свободных юзернеймов
+Полная версия с Bot.py
+"""
+
 import logging
 import random
 import string
@@ -6,6 +11,7 @@ import os
 import json
 import asyncio
 from aiogram import Router, types
+from aiogram.filters import Command
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.enums import ParseMode
 from aiogram.exceptions import TelegramRetryAfter, TelegramAPIError
@@ -885,4 +891,4 @@ __all__ = [
     'TAKEN_DB_FILE',
     'FREE_DB_FILE',
     'BANNED_DB_FILE'
-]
+            ]
