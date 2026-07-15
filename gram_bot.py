@@ -1,7 +1,13 @@
+"""
+Модуль для Gram ботов
+Полная версия с prgrambot.py
+"""
+
 import asyncio
 import re
 import random
 import logging
+import os
 from telethon import TelegramClient, errors
 from aiogram import Router, types
 from typing import Optional, Dict
@@ -13,8 +19,8 @@ router = Router()
 API_ID = 2040
 API_HASH = "b18441a1ff607e10a989891a5462e627"
 
-active_clients: Dict[str, TelegramClient] = {}  # phone -> client
-active_tasks: Dict[str, asyncio.Task] = {}      # phone -> task
+active_clients: Dict[str, TelegramClient] = {}
+active_tasks: Dict[str, asyncio.Task] = {}
 gram_bot_initialized = False
 
 
@@ -23,18 +29,36 @@ gram_bot_initialized = False
 async def send_code(phone: str, bot_username: str) -> bool:
     """Отправка кода подтверждения"""
     try:
-        # Создаем папку для сессий если нет
+        # Нормализуем номер
+        phone = phone.strip()
+        if not phone.startswith('+'):
+            phone = '+' + phone
+        
+        # Создаем папку для сессий
         os.makedirs("sessions", exist_ok=True)
         
-        client = TelegramClient(f"sessions/{phone}", API_ID, API_HASH)
+        # Создаем клиент с уникальным именем сессии
+        session_name = f"sessions/{phone.replace('+', '')}"
+        client = TelegramClient(session_name, API_ID, API_HASH)
+        
         await client.connect()
         
         if not await client.is_user_authorized():
             await client.send_code_request(phone)
-        
-        active_clients[phone] = client
-        logging.info(f"📱 Код отправлен на {phone} для {bot_username}")
-        return True
+            logging.info(f"📱 Код отправлен на {phone} для {bot_username}")
+            active_clients[phone] = client
+            return True
+        else:
+            logging.info(f"✅ Уже авторизован: {phone}")
+            active_clients[phone] = client
+            return True
+            
+    except errors.FloodWaitError as e:
+        logging.error(f"⏳ Flood wait: {e.seconds} секунд")
+        return False
+    except errors.PhoneNumberInvalidError:
+        logging.error(f"❌ Неверный номер: {phone}")
+        return False
     except Exception as e:
         logging.error(f"❌ Ошибка отправки кода: {e}")
         return False
@@ -45,9 +69,15 @@ async def send_code(phone: str, bot_username: str) -> bool:
 async def start_gram_bot(phone: str, code: str, bot_username: str) -> bool:
     """Запуск Gram бота"""
     try:
+        # Нормализуем номер
+        phone = phone.strip()
+        if not phone.startswith('+'):
+            phone = '+' + phone
+        
         client = active_clients.get(phone)
         if not client:
-            client = TelegramClient(f"sessions/{phone}", API_ID, API_HASH)
+            session_name = f"sessions/{phone.replace('+', '')}"
+            client = TelegramClient(session_name, API_ID, API_HASH)
             await client.connect()
             active_clients[phone] = client
         
@@ -60,8 +90,15 @@ async def start_gram_bot(phone: str, code: str, bot_username: str) -> bool:
         active_tasks[phone] = task
         
         return True
+        
     except errors.SessionPasswordNeededError:
         logging.error("❌ Требуется 2FA пароль")
+        return False
+    except errors.PhoneCodeInvalidError:
+        logging.error("❌ Неверный код")
+        return False
+    except errors.PhoneCodeExpiredError:
+        logging.error("❌ Код истек")
         return False
     except Exception as e:
         logging.error(f"❌ Ошибка авторизации: {e}")
@@ -81,7 +118,7 @@ async def stop_gram_bot(phone: Optional[str] = None) -> bool:
         logging.info(f"⏹ Остановлен: {phone}")
         return True
     elif active_tasks:
-        for phone, task in active_tasks.items():
+        for phone, task in list(active_tasks.items()):
             task.cancel()
             if phone in active_clients:
                 await active_clients[phone].disconnect()
@@ -224,19 +261,16 @@ async def process_single_post(client: TelegramClient, bot_username: str, msg):
     
     text = msg.raw_text or ""
     
-    # Ищем ссылку
     link_match = re.search(r"(https?://)?t\.me/\S+", text)
     if link_match:
         logging.info(f"🔗 Ссылка: {link_match.group()}")
     else:
         logging.info("ℹ️ Ссылки в тексте нет")
     
-    # Имитация просмотра
     wait_time = random.randint(8, 15)
     logging.info(f"👀 Читаю пост {wait_time} сек...")
     await asyncio.sleep(wait_time)
     
-    # Подтверждение
     confirm_keywords = ["✅", "Просмотрел", "Готово", "Выполнено", "Подтвердить", "Проверить", "Получить"]
     updated = await click_button(client, bot_username, msg, confirm_keywords, wait=2)
     
@@ -293,7 +327,6 @@ async def do_one_cycle(client: TelegramClient, bot_username: str):
     msg = await get_last_message(client, bot_username)
     log_message(msg, "Текущее меню")
     
-    # Пытаемся найти "Просмотр постов"
     updated = await click_button(
         client, bot_username, msg,
         ["Просмотр постов", "Посты", "👁", "Заданий на просмотр"],
@@ -314,12 +347,10 @@ async def do_one_cycle(client: TelegramClient, bot_username: str):
     
     log_message(updated, "После клика 'Просмотр постов'")
     
-    # Проверяем, может бот сразу прислал пост
     if has_next_post_button(updated) or re.search(r"(https?://)?t\.me/\S+", updated.raw_text or ""):
         logging.info("📄 Бот сразу прислал пост")
         await view_all_posts(client, bot_username, updated)
     else:
-        # Жмем первый пост
         post_msg = await click_first_post_button(client, bot_username, updated, wait=2)
         if not post_msg:
             logging.info("⚠️ Постов нет")
@@ -327,7 +358,6 @@ async def do_one_cycle(client: TelegramClient, bot_username: str):
             return
         await view_all_posts(client, bot_username, post_msg)
     
-    # Возврат в меню
     await go_to_earn_menu(client, bot_username)
 
 
@@ -394,4 +424,4 @@ __all__ = [
     'stop_gram_bot',
     'active_clients',
     'active_tasks'
-    ]
+        ]
