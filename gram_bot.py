@@ -1,6 +1,6 @@
 """
 Модуль для Gram ботов
-С выбором типа заданий и авто-подпиской
+С выбором типа заданий и авто-подпиской через кнопки
 """
 
 import asyncio
@@ -9,11 +9,11 @@ import random
 import logging
 import os
 import io
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 from telethon import TelegramClient, errors
 from telethon.tl.functions.channels import JoinChannelRequest
 from telethon.tl.functions.messages import ImportChatInviteRequest
-from telethon.tl.types import InputChannel, KeyboardButtonWebView
+from telethon.tl.types import InputChannel, KeyboardButtonWebView, KeyboardButtonUrl
 from telethon.tl.functions.messages import RequestWebViewRequest
 from aiogram import Router, types
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, BufferedInputFile
@@ -69,7 +69,19 @@ def is_webapp_button(btn) -> bool:
     except:
         return False
 
-def get_webapp_url(btn) -> Optional[str]:
+def is_url_button(btn) -> bool:
+    """Проверка, является ли кнопка URL-кнопкой"""
+    try:
+        if hasattr(btn, "url"):
+            return btn.url is not None
+        if hasattr(btn, "button"):
+            return hasattr(btn.button, "url") and btn.button.url is not None
+        return False
+    except:
+        return False
+
+def get_button_url(btn) -> Optional[str]:
+    """Получение URL из кнопки"""
     try:
         if hasattr(btn, "url") and btn.url:
             return btn.url
@@ -91,7 +103,8 @@ def get_button_data(btn) -> dict:
     return {
         "text": get_button_text(btn),
         "is_webapp": is_webapp_button(btn),
-        "url": get_webapp_url(btn) if is_webapp_button(btn) else None
+        "is_url": is_url_button(btn),
+        "url": get_button_url(btn) if is_url_button(btn) or is_webapp_button(btn) else None
     }
 
 
@@ -122,31 +135,93 @@ def get_task_choice_keyboard(user_id: int) -> InlineKeyboardMarkup:
 # ============ АВТО-ПОДПИСКА ============
 
 async def subscribe_to_channel(client: TelegramClient, bot_username: str, link: str) -> bool:
+    """Подписка на канал по ссылке"""
     try:
         logging.info(f"📢 Подписываюсь на канал: {link}")
         
+        # Очищаем ссылку от лишних параметров
+        if "?" in link:
+            link = link.split("?")[0]
+        
         if "t.me/" in link:
             if "+" in link:
+                # Приватный канал с invite link
                 invite_hash = link.split("+")[-1]
+                if "/" in invite_hash:
+                    invite_hash = invite_hash.split("/")[0]
                 await client(ImportChatInviteRequest(invite_hash))
             else:
-                username = link.split("t.me/")[-1].split("/")[0].split("?")[0]
+                # Публичный канал
+                username = link.split("t.me/")[-1].split("/")[0]
                 if username:
                     entity = await client.get_entity(f"@{username}")
                     await client(JoinChannelRequest(entity))
         else:
+            # Прямой username
             entity = await client.get_entity(f"@{link}")
             await client(JoinChannelRequest(entity))
         
         logging.info(f"✅ Подписался на канал: {link}")
         return True
         
+    except errors.FloodWaitError as e:
+        logging.error(f"⏳ Flood wait: {e.seconds} секунд")
+        return False
     except Exception as e:
         logging.error(f"❌ Ошибка подписки на {link}: {e}")
         return False
 
 
-async def find_and_subscribe_channels(client: TelegramClient, bot_username: str, msg) -> int:
+async def find_and_subscribe_channels_from_buttons(client: TelegramClient, bot_username: str, msg) -> int:
+    """
+    Поиск ссылок на каналы в кнопках и подписка на них
+    """
+    try:
+        subscribed = 0
+        processed_urls = set()
+        
+        if not msg or not msg.buttons:
+            logging.info("ℹ️ Нет кнопок для подписки")
+            return 0
+        
+        logging.info(f"📋 Найдено {len(msg.buttons)} рядов кнопок")
+        
+        for row in msg.buttons:
+            for btn in row:
+                btn_data = get_button_data(btn)
+                
+                # Проверяем, что это URL-кнопка (не WebApp)
+                if btn_data['is_url'] and btn_data['url']:
+                    url = btn_data['url']
+                    
+                    # Проверяем, что ссылка ведет на канал
+                    if "t.me/" in url and url not in processed_urls:
+                        processed_urls.add(url)
+                        
+                        # Проверяем, что это не ссылка на бота или капчу
+                        if "captcha" not in url.lower() and "webapp" not in url.lower():
+                            logging.info(f"🔗 Найдена кнопка с ссылкой: {btn_data['text']} -> {url}")
+                            success = await subscribe_to_channel(client, bot_username, url)
+                            if success:
+                                subscribed += 1
+                                await asyncio.sleep(1.5)
+        
+        if subscribed > 0:
+            logging.info(f"✅ Подписался на {subscribed} каналов через кнопки")
+        else:
+            logging.info("ℹ️ Не найдено ссылок на каналы в кнопках")
+        
+        return subscribed
+        
+    except Exception as e:
+        logging.error(f"❌ Ошибка поиска каналов в кнопках: {e}")
+        return 0
+
+
+async def find_and_subscribe_channels_from_text(client: TelegramClient, bot_username: str, msg) -> int:
+    """
+    Поиск ссылок на каналы в тексте (запасной вариант)
+    """
     try:
         subscribed = 0
         text = msg.raw_text or ""
@@ -157,7 +232,7 @@ async def find_and_subscribe_channels(client: TelegramClient, bot_username: str,
         if not channel_links:
             return 0
         
-        logging.info(f"📢 Найдено {len(channel_links)} ссылок на каналы")
+        logging.info(f"📢 Найдено {len(channel_links)} ссылок в тексте")
         
         for link in channel_links:
             try:
@@ -170,12 +245,29 @@ async def find_and_subscribe_channels(client: TelegramClient, bot_username: str,
                 logging.error(f"❌ Ошибка подписки: {e}")
                 continue
         
-        logging.info(f"✅ Подписался на {subscribed} каналов")
         return subscribed
         
     except Exception as e:
-        logging.error(f"❌ Ошибка поиска каналов: {e}")
+        logging.error(f"❌ Ошибка поиска каналов в тексте: {e}")
         return 0
+
+
+async def find_and_subscribe_channels(client: TelegramClient, bot_username: str, msg) -> int:
+    """
+    Комбинированный поиск каналов (сначала в кнопках, потом в тексте)
+    """
+    total_subscribed = 0
+    
+    # Сначала ищем в кнопках
+    subscribed_buttons = await find_and_subscribe_channels_from_buttons(client, bot_username, msg)
+    total_subscribed += subscribed_buttons
+    
+    # Потом в тексте (запасной вариант)
+    if total_subscribed == 0:
+        subscribed_text = await find_and_subscribe_channels_from_text(client, bot_username, msg)
+        total_subscribed += subscribed_text
+    
+    return total_subscribed
 
 
 # ============ ФУНКЦИИ СЕССИЙ ============
@@ -294,7 +386,7 @@ async def continue_gram_bot(phone: str) -> bool:
 # ============ ПРОВЕРКА КАПЧИ ============
 
 def is_captcha_message(msg) -> bool:
-    """Проверка на капчу ТОЛЬКО по ключевым словам"""
+    """Проверка на капчу по ключевым словам"""
     if not msg:
         return False
     
@@ -362,7 +454,6 @@ async def send_captcha_to_user(msg, chat_id: int, client: TelegramClient) -> boo
                 if captcha_url:
                     break
         
-        # Если нет WebApp кнопки, ищем ссылку в тексте
         if not captcha_url and msg.raw_text:
             url_match = re.search(r'https?://[^\s]+', msg.raw_text)
             if url_match:
@@ -496,8 +587,7 @@ async def task_choose_callback(callback: types.CallbackQuery):
             await callback.message.edit_text(
                 f"✅ <b>Выбран тип заданий:</b>\n"
                 f"{task_names[task_type]}\n\n"
-                f"Теперь запусти бота и он будет выполнять задания этого типа.\n"
-                f"Для смены типа вернись в это меню.",
+                f"Теперь запусти бота и он будет выполнять задания этого типа.",
                 parse_mode=ParseMode.HTML,
                 reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                     [InlineKeyboardButton(text="⬅️ Назад", callback_data="gram")]
@@ -546,6 +636,8 @@ def log_message(msg, title="Сообщение"):
                 btn_text = btn_data['text']
                 if btn_data['is_webapp']:
                     btn_text += " (WebApp)"
+                elif btn_data['is_url']:
+                    btn_text += f" (URL: {btn_data['url'][:30]}...)"
                 logging.info(f"   └─ '{btn_text}'")
     logging.info(f"{'='*50}")
 
@@ -578,7 +670,7 @@ async def click_first_post_button(client: TelegramClient, bot_username: str, msg
     
     for row in msg.buttons:
         for btn in row:
-            if is_webapp_button(btn):
+            if is_webapp_button(btn) or is_url_button(btn):
                 continue
             btn_text = get_button_text(btn).lower()
             if any(s in btn_text for s in skip):
@@ -599,7 +691,7 @@ def has_next_post_button(msg) -> bool:
         return False
     for row in msg.buttons:
         for btn in row:
-            if is_webapp_button(btn):
+            if is_webapp_button(btn) or is_url_button(btn):
                 continue
             btn_text = get_button_text(btn).lower()
             if "следующ" in btn_text or "⏩" in btn_text:
@@ -626,6 +718,7 @@ async def process_single_post(client: TelegramClient, bot_username: str, msg, ta
     
     text = msg.raw_text or ""
     
+    # Авто-подписка (сначала в кнопках, потом в тексте)
     if AUTO_SUBSCRIBE and task_type in ["channels", "posts"]:
         subscribed = await find_and_subscribe_channels(client, bot_username, msg)
         if subscribed > 0:
@@ -633,7 +726,7 @@ async def process_single_post(client: TelegramClient, bot_username: str, msg, ta
     
     link_match = re.search(r"(https?://)?t\.me/\S+", text)
     if link_match:
-        logging.info(f"🔗 Ссылка: {link_match.group()}")
+        logging.info(f"🔗 Ссылка в тексте: {link_match.group()}")
     
     wait_time = random.randint(8, 15)
     logging.info(f"👀 Читаю пост {wait_time} сек...")
@@ -757,7 +850,7 @@ async def do_one_cycle(client: TelegramClient, bot_username: str, user_id: int =
         updated = await click_button(client, bot_username, msg, task_buttons_list, wait=2)
         
         if not updated:
-            logging.info(f"❌ Кнопка не найдена")
+            logging.info(f"❌ Кнопка '{task_buttons_list[0]}' не найдена")
             return
     
     if has_next_post_button(updated) or re.search(r"(https?://)?t\.me/\S+", updated.raw_text or ""):
@@ -843,6 +936,7 @@ __all__ = [
     'continue_gram_bot',
     'set_user_chat_id',
     'set_bot_instance',
+    'get_task_choice_keyboard',
     'active_clients',
     'active_tasks'
-    ]
+        ]
