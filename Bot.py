@@ -34,26 +34,24 @@ dp = Dispatcher(storage=storage)
 user_sessions: Dict[int, str] = {}  # user_id -> phone
 user_bot_choice: Dict[int, str] = {}  # user_id -> bot_username
 
-# Файл для сохранения сессий
+# Файлы для сохранения
 SESSIONS_FILE = "user_sessions.json"
+BOT_CHOICE_FILE = "user_bot_choice.json"
 
 
 # ============ СОХРАНЕНИЕ СЕССИЙ ============
 
 def load_sessions() -> Dict[int, str]:
-    """Загрузка сессий из файла"""
     if os.path.exists(SESSIONS_FILE):
         try:
             with open(SESSIONS_FILE, 'r', encoding='utf-8') as f:
                 data = json.load(f)
-                # Преобразуем ключи обратно в int
                 return {int(k): v for k, v in data.items()}
         except Exception as e:
             logging.error(f"Ошибка загрузки сессий: {e}")
     return {}
 
 def save_sessions():
-    """Сохранение сессий в файл"""
     try:
         with open(SESSIONS_FILE, 'w', encoding='utf-8') as f:
             json.dump(user_sessions, f, indent=2, ensure_ascii=False)
@@ -62,11 +60,9 @@ def save_sessions():
         logging.error(f"Ошибка сохранения сессий: {e}")
 
 def load_bot_choices() -> Dict[int, str]:
-    """Загрузка выбора ботов из файла"""
-    bot_file = "user_bot_choice.json"
-    if os.path.exists(bot_file):
+    if os.path.exists(BOT_CHOICE_FILE):
         try:
-            with open(bot_file, 'r', encoding='utf-8') as f:
+            with open(BOT_CHOICE_FILE, 'r', encoding='utf-8') as f:
                 data = json.load(f)
                 return {int(k): v for k, v in data.items()}
         except Exception as e:
@@ -74,10 +70,8 @@ def load_bot_choices() -> Dict[int, str]:
     return {}
 
 def save_bot_choices():
-    """Сохранение выбора ботов в файл"""
-    bot_file = "user_bot_choice.json"
     try:
-        with open(bot_file, 'w', encoding='utf-8') as f:
+        with open(BOT_CHOICE_FILE, 'w', encoding='utf-8') as f:
             json.dump(user_bot_choice, f, indent=2, ensure_ascii=False)
         logging.info("✅ Выбор ботов сохранен")
     except Exception as e:
@@ -94,9 +88,7 @@ def get_main_keyboard() -> InlineKeyboardMarkup:
     ])
 
 def get_gram_main_keyboard(has_session: bool = False, is_running: bool = False, bot_name: str = "@gram_prbot") -> InlineKeyboardMarkup:
-    """Клавиатура Gram бота"""
     buttons = []
-    
     buttons.append([InlineKeyboardButton(text=f"🤖 {bot_name}", callback_data="no_action")])
     
     if has_session:
@@ -113,7 +105,6 @@ def get_gram_main_keyboard(has_session: bool = False, is_running: bool = False, 
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 def get_bot_choice_keyboard(current_bot: str) -> InlineKeyboardMarkup:
-    """Клавиатура выбора бота"""
     bots = [
         ("@gram_piarbot", "g_piar"),
         ("@gram_prbot", "g_pr"),
@@ -131,7 +122,6 @@ def get_bot_choice_keyboard(current_bot: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 def get_sessions_keyboard(user_id: int) -> InlineKeyboardMarkup:
-    """Клавиатура сессий"""
     buttons = []
     
     if user_id in user_sessions:
@@ -145,7 +135,6 @@ def get_sessions_keyboard(user_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 def get_session_actions_keyboard() -> InlineKeyboardMarkup:
-    """Клавиатура действий с сессией"""
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🚪 Выйти со всех каналов", callback_data="sess_leave_channels")],
         [InlineKeyboardButton(text="🚪 Выйти со всех групп", callback_data="sess_leave_groups")],
@@ -175,7 +164,6 @@ class SessionStates(StatesGroup):
 async def start_command(message: types.Message):
     user_id = message.from_user.id
     
-    # Загружаем сохраненные данные
     global user_sessions, user_bot_choice
     
     if not user_sessions:
@@ -485,7 +473,7 @@ async def session_code(message: types.Message, state: FSMContext):
     
     if result:
         user_sessions[user_id] = phone
-        save_sessions()  # Сохраняем сессию
+        save_sessions()
         
         bot_name = user_bot_choice.get(user_id, "@gram_prbot")
         
@@ -578,7 +566,7 @@ async def session_delete(callback: types.CallbackQuery):
         del active_tasks[phone]
     
     del user_sessions[user_id]
-    save_sessions()  # Сохраняем изменения
+    save_sessions()
     
     await callback.message.edit_text(
         f"🗑 <b>Сессия удалена</b>\n\n"
@@ -633,11 +621,24 @@ async def session_leave_channels(callback: types.CallbackQuery):
                     try:
                         await client.leave_channel(dialog.entity)
                         left_count += 1
-                        await asyncio.sleep(1)
+                        logging.info(f"🚪 Вышел из канала: {dialog.name}")
+                        await asyncio.sleep(1.5)
+                    except AttributeError:
+                        try:
+                            await client.send_message(dialog.entity, "/leave")
+                            left_count += 1
+                            logging.info(f"🚪 Вышел из канала (/leave): {dialog.name}")
+                            await asyncio.sleep(1.5)
+                        except Exception as e2:
+                            error_count += 1
+                            logging.error(f"❌ Ошибка выхода из {dialog.name}: {e2}")
                     except Exception as e:
                         error_msg = str(e).lower()
-                        if "not a member" in error_msg or "already left" in error_msg:
+                        if "not a member" in error_msg or "already left" in error_msg or "user not found" in error_msg:
                             skipped_count += 1
+                        elif "admin" in error_msg:
+                            skipped_count += 1
+                            logging.info(f"⏭ Администратор: {dialog.name}")
                         else:
                             error_count += 1
                             logging.error(f"❌ Ошибка выхода из {dialog.name}: {e}")
@@ -654,6 +655,11 @@ async def session_leave_channels(callback: types.CallbackQuery):
             f"❌ Ошибок: {error_count}\n\n"
             f"<i>Личные чаты не были затронуты</i>"
         )
+        
+        if error_count > 0:
+            result_text += f"\n\n⚠️ <b>Возможные причины:</b>\n"
+            result_text += f"• Вы администратор канала\n"
+            result_text += f"• Канал удален или заблокирован"
         
         await callback.message.edit_text(
             result_text,
@@ -708,11 +714,24 @@ async def session_leave_groups(callback: types.CallbackQuery):
                     try:
                         await client.leave_group(dialog.entity)
                         left_count += 1
-                        await asyncio.sleep(1)
+                        logging.info(f"🚪 Вышел из группы: {dialog.name}")
+                        await asyncio.sleep(1.5)
+                    except AttributeError:
+                        try:
+                            await client.send_message(dialog.entity, "/leave")
+                            left_count += 1
+                            logging.info(f"🚪 Вышел из группы (/leave): {dialog.name}")
+                            await asyncio.sleep(1.5)
+                        except Exception as e2:
+                            error_count += 1
+                            logging.error(f"❌ Ошибка выхода из {dialog.name}: {e2}")
                     except Exception as e:
                         error_msg = str(e).lower()
-                        if "not a member" in error_msg or "already left" in error_msg:
+                        if "not a member" in error_msg or "already left" in error_msg or "user not found" in error_msg:
                             skipped_count += 1
+                        elif "admin" in error_msg:
+                            skipped_count += 1
+                            logging.info(f"⏭ Администратор: {dialog.name}")
                         else:
                             error_count += 1
                             logging.error(f"❌ Ошибка выхода из группы {dialog.name}: {e}")
@@ -729,6 +748,11 @@ async def session_leave_groups(callback: types.CallbackQuery):
             f"❌ Ошибок: {error_count}\n\n"
             f"<i>Личные чаты не были затронуты</i>"
         )
+        
+        if error_count > 0:
+            result_text += f"\n\n⚠️ <b>Возможные причины:</b>\n"
+            result_text += f"• Вы администратор группы\n"
+            result_text += f"• Группа удалена или заблокирована"
         
         await callback.message.edit_text(
             result_text,
@@ -774,7 +798,6 @@ async def cancel_command(message: types.Message, state: FSMContext):
 # ============ ИНИЦИАЛИЗАЦИЯ ============
 
 async def main():
-    # Загружаем сохраненные сессии
     global user_sessions, user_bot_choice
     user_sessions.update(load_sessions())
     user_bot_choice.update(load_bot_choices())
