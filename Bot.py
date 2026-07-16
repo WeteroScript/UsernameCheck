@@ -580,7 +580,7 @@ async def session_delete(callback: types.CallbackQuery):
     )
 
 
-# ============ ВЫХОД ИЗ КАНАЛОВ/ГРУПП ============
+# ============ ВЫХОД ИЗ КАНАЛОВ (ПРАВИЛЬНЫЙ TELEHON) ============
 
 @dp.callback_query(lambda c: c.data == "sess_leave_channels")
 async def session_leave_channels(callback: types.CallbackQuery):
@@ -600,6 +600,9 @@ async def session_leave_channels(callback: types.CallbackQuery):
     client = active_clients[phone]
     
     try:
+        from telethon.tl.functions.channels import LeaveChannelRequest
+        from telethon.tl.types import InputChannel
+        
         left_count = 0
         error_count = 0
         skipped_count = 0
@@ -616,35 +619,33 @@ async def session_leave_channels(callback: types.CallbackQuery):
                 if dialog.is_channel:
                     if dialog.entity.username == "me":
                         skipped_count += 1
+                        logging.info(f"⏭ Пропускаю личный канал: {dialog.name}")
                         continue
                     
                     try:
-                        await client.leave_channel(dialog.entity)
+                        input_channel = InputChannel(
+                            channel_id=dialog.entity.id,
+                            access_hash=dialog.entity.access_hash
+                        )
+                        await client(LeaveChannelRequest(input_channel))
                         left_count += 1
                         logging.info(f"🚪 Вышел из канала: {dialog.name}")
                         await asyncio.sleep(1.5)
-                    except AttributeError:
-                        try:
-                            await client.send_message(dialog.entity, "/leave")
-                            left_count += 1
-                            logging.info(f"🚪 Вышел из канала (/leave): {dialog.name}")
-                            await asyncio.sleep(1.5)
-                        except Exception as e2:
-                            error_count += 1
-                            logging.error(f"❌ Ошибка выхода из {dialog.name}: {e2}")
                     except Exception as e:
                         error_msg = str(e).lower()
                         if "not a member" in error_msg or "already left" in error_msg or "user not found" in error_msg:
                             skipped_count += 1
-                        elif "admin" in error_msg:
+                            logging.info(f"⏭ Уже не участник: {dialog.name}")
+                        elif "admin" in error_msg or "creator" in error_msg:
                             skipped_count += 1
-                            logging.info(f"⏭ Администратор: {dialog.name}")
+                            logging.info(f"⏭ Администратор/создатель: {dialog.name} (нельзя выйти)")
                         else:
                             error_count += 1
                             logging.error(f"❌ Ошибка выхода из {dialog.name}: {e}")
                                 
             except Exception as e:
                 error_count += 1
+                logging.error(f"❌ Ошибка обработки диалога: {e}")
                 continue
         
         result_text = (
@@ -657,8 +658,8 @@ async def session_leave_channels(callback: types.CallbackQuery):
         )
         
         if error_count > 0:
-            result_text += f"\n\n⚠️ <b>Возможные причины:</b>\n"
-            result_text += f"• Вы администратор канала\n"
+            result_text += f"\n\n⚠️ <b>Возможные причины ошибок:</b>\n"
+            result_text += f"• Вы администратор/создатель канала (нельзя выйти)\n"
             result_text += f"• Канал удален или заблокирован"
         
         await callback.message.edit_text(
@@ -679,6 +680,8 @@ async def session_leave_channels(callback: types.CallbackQuery):
         )
 
 
+# ============ ВЫХОД ИЗ ГРУПП (ПРАВИЛЬНЫЙ TELEHON) ============
+
 @dp.callback_query(lambda c: c.data == "sess_leave_groups")
 async def session_leave_groups(callback: types.CallbackQuery):
     await callback.answer("⏳ Выхожу из групп...")
@@ -697,6 +700,9 @@ async def session_leave_groups(callback: types.CallbackQuery):
     client = active_clients[phone]
     
     try:
+        from telethon.tl.functions.messages import DeleteChatUserRequest
+        from telethon.tl.types import InputUserSelf
+        
         left_count = 0
         error_count = 0
         skipped_count = 0
@@ -712,32 +718,30 @@ async def session_leave_groups(callback: types.CallbackQuery):
             try:
                 if dialog.is_group:
                     try:
-                        await client.leave_group(dialog.entity)
+                        # Для выхода из группы используем DeleteChatUserRequest
+                        # Передаем себя как пользователя для удаления
+                        await client(DeleteChatUserRequest(
+                            chat_id=dialog.id,
+                            user_id=InputUserSelf()
+                        ))
                         left_count += 1
                         logging.info(f"🚪 Вышел из группы: {dialog.name}")
                         await asyncio.sleep(1.5)
-                    except AttributeError:
-                        try:
-                            await client.send_message(dialog.entity, "/leave")
-                            left_count += 1
-                            logging.info(f"🚪 Вышел из группы (/leave): {dialog.name}")
-                            await asyncio.sleep(1.5)
-                        except Exception as e2:
-                            error_count += 1
-                            logging.error(f"❌ Ошибка выхода из {dialog.name}: {e2}")
                     except Exception as e:
                         error_msg = str(e).lower()
                         if "not a member" in error_msg or "already left" in error_msg or "user not found" in error_msg:
                             skipped_count += 1
-                        elif "admin" in error_msg:
+                            logging.info(f"⏭ Уже не участник: {dialog.name}")
+                        elif "admin" in error_msg or "creator" in error_msg:
                             skipped_count += 1
-                            logging.info(f"⏭ Администратор: {dialog.name}")
+                            logging.info(f"⏭ Администратор/создатель: {dialog.name} (нельзя выйти)")
                         else:
                             error_count += 1
                             logging.error(f"❌ Ошибка выхода из группы {dialog.name}: {e}")
                                 
             except Exception as e:
                 error_count += 1
+                logging.error(f"❌ Ошибка обработки диалога: {e}")
                 continue
         
         result_text = (
@@ -750,8 +754,8 @@ async def session_leave_groups(callback: types.CallbackQuery):
         )
         
         if error_count > 0:
-            result_text += f"\n\n⚠️ <b>Возможные причины:</b>\n"
-            result_text += f"• Вы администратор группы\n"
+            result_text += f"\n\n⚠️ <b>Возможные причины ошибок:</b>\n"
+            result_text += f"• Вы администратор/создатель группы (нельзя выйти)\n"
             result_text += f"• Группа удалена или заблокирована"
         
         await callback.message.edit_text(
