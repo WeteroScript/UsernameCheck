@@ -158,10 +158,11 @@ async def subscribe_to_channel(client: TelegramClient, link: str) -> bool:
     except errors.FloodWaitError as e:
         logging.error(f"⏳ Flood wait: {e.seconds} сек")
         return False
-    except errors.AlreadyInChannelError:
-        logging.info(f"✅ Уже подписан: {link}")
-        return True
     except Exception as e:
+        error_msg = str(e).lower()
+        if "already" in error_msg or "already participant" in error_msg or "already in channel" in error_msg:
+            logging.info(f"✅ Уже подписан: {link}")
+            return True
         logging.error(f"❌ Ошибка подписки {link}: {e}")
         return False
 
@@ -870,4 +871,4 @@ __all__ = [
     'get_task_choice_keyboard',
     'active_clients',
     'active_tasks'
-]
+        ]
