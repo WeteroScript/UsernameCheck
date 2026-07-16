@@ -190,11 +190,19 @@ async def start_command(message: types.Message):
 @dp.callback_query(lambda c: c.data == "main")
 async def main_menu(callback: types.CallbackQuery):
     await callback.answer()
-    await callback.message.edit_text(
-        "🏠 <b>Главное меню</b>\n\nВыбери раздел:",
-        parse_mode=ParseMode.HTML,
-        reply_markup=get_main_keyboard()
-    )
+    try:
+        await callback.message.edit_text(
+            "🏠 <b>Главное меню</b>\n\nВыбери раздел:",
+            parse_mode=ParseMode.HTML,
+            reply_markup=get_main_keyboard()
+        )
+    except Exception as e:
+        logging.error(f"Ошибка main_menu: {e}")
+        await callback.message.answer(
+            "🏠 <b>Главное меню</b>\n\nВыбери раздел:",
+            parse_mode=ParseMode.HTML,
+            reply_markup=get_main_keyboard()
+        )
 
 
 # ============ CALLBACK: GRAM БОТ ============
@@ -228,26 +236,43 @@ async def gram_menu(callback: types.CallbackQuery):
         text += "❌ Нет активной сессии.\n\n"
         text += "Сначала добавь сессию в разделе 'Мои сессии'."
     
-    await callback.message.edit_text(
-        text,
-        parse_mode=ParseMode.HTML,
-        reply_markup=get_gram_main_keyboard(has_session, is_running, bot_name)
-    )
+    try:
+        await callback.message.edit_text(
+            text,
+            parse_mode=ParseMode.HTML,
+            reply_markup=get_gram_main_keyboard(has_session, is_running, bot_name)
+        )
+    except Exception as e:
+        logging.error(f"Ошибка gram_menu: {e}")
+        await callback.message.answer(
+            text,
+            parse_mode=ParseMode.HTML,
+            reply_markup=get_gram_main_keyboard(has_session, is_running, bot_name)
+        )
 
 
 @dp.callback_query(lambda c: c.data == "gram_choose_task")
 async def gram_choose_task(callback: types.CallbackQuery):
-    """Выбор типа заданий"""
     await callback.answer()
     user_id = callback.from_user.id
     
-    await callback.message.edit_text(
-        "📋 <b>Выбор типа заданий</b>\n\n"
-        "Выбери тип заданий, которые будет выполнять бот:\n\n"
-        "✅ - текущий выбранный тип",
-        parse_mode=ParseMode.HTML,
-        reply_markup=get_task_choice_keyboard(user_id)
-    )
+    try:
+        await callback.message.edit_text(
+            "📋 <b>Выбор типа заданий</b>\n\n"
+            "Выбери тип заданий, которые будет выполнять бот:\n\n"
+            "✅ - текущий выбранный тип",
+            parse_mode=ParseMode.HTML,
+            reply_markup=get_task_choice_keyboard(user_id)
+        )
+    except Exception as e:
+        logging.error(f"Ошибка gram_choose_task: {e}")
+        await callback.message.answer(
+            "📋 <b>Выбор типа заданий</b>\n\n"
+            "Выбери тип заданий, которые будет выполнять бот:\n\n"
+            "✅ - текущий выбранный тип",
+            parse_mode=ParseMode.HTML,
+            reply_markup=get_task_choice_keyboard(user_id)
+        )
 
 
 @dp.callback_query(lambda c: c.data == "gram_change_bot")
@@ -256,12 +281,21 @@ async def gram_change_bot(callback: types.CallbackQuery):
     user_id = callback.from_user.id
     current_bot = user_bot_choice.get(user_id, "@gram_prbot")
     
-    await callback.message.edit_text(
-        "🔄 <b>Выбор Gram бота</b>\n\n"
-        "Выбери бота для работы:",
-        parse_mode=ParseMode.HTML,
-        reply_markup=get_bot_choice_keyboard(current_bot)
-    )
+    try:
+        await callback.message.edit_text(
+            "🔄 <b>Выбор Gram бота</b>\n\n"
+            "Выбери бота для работы:",
+            parse_mode=ParseMode.HTML,
+            reply_markup=get_bot_choice_keyboard(current_bot)
+        )
+    except Exception as e:
+        logging.error(f"Ошибка gram_change_bot: {e}")
+        await callback.message.answer(
+            "🔄 <b>Выбор Gram бота</b>\n\n"
+            "Выбери бота для работы:",
+            parse_mode=ParseMode.HTML,
+            reply_markup=get_bot_choice_keyboard(current_bot)
+        )
 
 
 @dp.callback_query(lambda c: c.data.startswith("bot_choice_"))
@@ -290,11 +324,19 @@ async def bot_choice(callback: types.CallbackQuery):
                 client = active_clients[phone]
                 await start_gram_worker(client, bot_name, phone)
     
-    await callback.message.edit_text(
-        f"✅ <b>Бот изменен!</b>\n\n"
-        f"🤖 Выбран: <b>{bot_name}</b>",
-        parse_mode=ParseMode.HTML
-    )
+    try:
+        await callback.message.edit_text(
+            f"✅ <b>Бот изменен!</b>\n\n"
+            f"🤖 Выбран: <b>{bot_name}</b>",
+            parse_mode=ParseMode.HTML
+        )
+    except Exception as e:
+        logging.error(f"Ошибка bot_choice: {e}")
+        await callback.message.answer(
+            f"✅ <b>Бот изменен!</b>\n\n"
+            f"🤖 Выбран: <b>{bot_name}</b>",
+            parse_mode=ParseMode.HTML
+        )
     
     await gram_menu(callback)
 
@@ -419,11 +461,19 @@ async def sessions_menu(callback: types.CallbackQuery):
         text += "❌ Нет активных сессий\n\n"
         text += "Нажми 'Добавить сессию' для авторизации"
     
-    await callback.message.edit_text(
-        text,
-        parse_mode=ParseMode.HTML,
-        reply_markup=get_sessions_keyboard(user_id)
-    )
+    try:
+        await callback.message.edit_text(
+            text,
+            parse_mode=ParseMode.HTML,
+            reply_markup=get_sessions_keyboard(user_id)
+        )
+    except Exception as e:
+        logging.error(f"Ошибка sessions_menu: {e}")
+        await callback.message.answer(
+            text,
+            parse_mode=ParseMode.HTML,
+            reply_markup=get_sessions_keyboard(user_id)
+        )
 
 
 @dp.callback_query(lambda c: c.data == "sess_add")
@@ -431,13 +481,23 @@ async def session_add(callback: types.CallbackQuery, state: FSMContext):
     await callback.answer()
     await state.set_state(SessionStates.waiting_phone)
     
-    await callback.message.edit_text(
-        "📱 <b>Добавление сессии</b>\n\n"
-        "Введите номер телефона в формате:\n"
-        "<code>+79172993848</code>\n\n"
-        "или отправьте /cancel для отмены",
-        parse_mode=ParseMode.HTML
-    )
+    try:
+        await callback.message.edit_text(
+            "📱 <b>Добавление сессии</b>\n\n"
+            "Введите номер телефона в формате:\n"
+            "<code>+79172993848</code>\n\n"
+            "или отправьте /cancel для отмены",
+            parse_mode=ParseMode.HTML
+        )
+    except Exception as e:
+        logging.error(f"Ошибка session_add: {e}")
+        await callback.message.answer(
+            "📱 <b>Добавление сессии</b>\n\n"
+            "Введите номер телефона в формате:\n"
+            "<code>+79172993848</code>\n\n"
+            "или отправьте /cancel для отмены",
+            parse_mode=ParseMode.HTML
+        )
 
 
 @dp.message(SessionStates.waiting_phone)
@@ -551,11 +611,19 @@ async def session_info(callback: types.CallbackQuery):
         text += f"📱 {phone}\n"
         text += f"❌ Ошибка получения данных: {e}\n"
     
-    await callback.message.edit_text(
-        text,
-        parse_mode=ParseMode.HTML,
-        reply_markup=get_session_actions_keyboard()
-    )
+    try:
+        await callback.message.edit_text(
+            text,
+            parse_mode=ParseMode.HTML,
+            reply_markup=get_session_actions_keyboard()
+        )
+    except Exception as e:
+        logging.error(f"Ошибка session_info: {e}")
+        await callback.message.answer(
+            text,
+            parse_mode=ParseMode.HTML,
+            reply_markup=get_session_actions_keyboard()
+        )
 
 
 @dp.callback_query(lambda c: c.data == "sess_delete")
@@ -584,16 +652,29 @@ async def session_delete(callback: types.CallbackQuery):
     del user_sessions[user_id]
     save_sessions()
     
-    await callback.message.edit_text(
-        f"🗑 <b>Сессия удалена</b>\n\n"
-        f"📱 {phone}\n\n"
-        f"Сессия успешно удалена.",
-        parse_mode=ParseMode.HTML,
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="📱 Мои сессии", callback_data="sessions")],
-            [InlineKeyboardButton(text="🏠 Меню", callback_data="main")]
-        ])
-    )
+    try:
+        await callback.message.edit_text(
+            f"🗑 <b>Сессия удалена</b>\n\n"
+            f"📱 {phone}\n\n"
+            f"Сессия успешно удалена.",
+            parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="📱 Мои сессии", callback_data="sessions")],
+                [InlineKeyboardButton(text="🏠 Меню", callback_data="main")]
+            ])
+        )
+    except Exception as e:
+        logging.error(f"Ошибка session_delete: {e}")
+        await callback.message.answer(
+            f"🗑 <b>Сессия удалена</b>\n\n"
+            f"📱 {phone}\n\n"
+            f"Сессия успешно удалена.",
+            parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="📱 Мои сессии", callback_data="sessions")],
+                [InlineKeyboardButton(text="🏠 Меню", callback_data="main")]
+            ])
+        )
 
 
 # ============ ВЫХОД ИЗ КАНАЛОВ ============
@@ -669,14 +750,25 @@ async def session_leave_channels(callback: types.CallbackQuery):
             f"<i>Личные чаты не были затронуты</i>"
         )
         
-        await callback.message.edit_text(
-            result_text,
-            parse_mode=ParseMode.HTML,
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="⬅️ Назад к сессии", callback_data="sess_info")],
-                [InlineKeyboardButton(text="🏠 Меню", callback_data="main")]
-            ])
-        )
+        try:
+            await callback.message.edit_text(
+                result_text,
+                parse_mode=ParseMode.HTML,
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="⬅️ Назад к сессии", callback_data="sess_info")],
+                    [InlineKeyboardButton(text="🏠 Меню", callback_data="main")]
+                ])
+            )
+        except Exception as e:
+            logging.error(f"Ошибка session_leave_channels: {e}")
+            await callback.message.answer(
+                result_text,
+                parse_mode=ParseMode.HTML,
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="⬅️ Назад к сессии", callback_data="sess_info")],
+                    [InlineKeyboardButton(text="🏠 Меню", callback_data="main")]
+                ])
+            )
         
     except Exception as e:
         await callback.message.edit_text(
@@ -767,14 +859,25 @@ async def session_leave_groups(callback: types.CallbackQuery):
             f"<i>Личные чаты не были затронуты</i>"
         )
         
-        await callback.message.edit_text(
-            result_text,
-            parse_mode=ParseMode.HTML,
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="⬅️ Назад к сессии", callback_data="sess_info")],
-                [InlineKeyboardButton(text="🏠 Меню", callback_data="main")]
-            ])
-        )
+        try:
+            await callback.message.edit_text(
+                result_text,
+                parse_mode=ParseMode.HTML,
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="⬅️ Назад к сессии", callback_data="sess_info")],
+                    [InlineKeyboardButton(text="🏠 Меню", callback_data="main")]
+                ])
+            )
+        except Exception as e:
+            logging.error(f"Ошибка session_leave_groups: {e}")
+            await callback.message.answer(
+                result_text,
+                parse_mode=ParseMode.HTML,
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="⬅️ Назад к сессии", callback_data="sess_info")],
+                    [InlineKeyboardButton(text="🏠 Меню", callback_data="main")]
+                ])
+            )
         
     except Exception as e:
         await callback.message.edit_text(
@@ -790,13 +893,23 @@ async def session_leave_groups(callback: types.CallbackQuery):
 @dp.callback_query(lambda c: c.data == "users")
 async def username_menu(callback: types.CallbackQuery):
     await callback.answer()
-    await callback.message.edit_text(
-        "👤 <b>Раздел Юзернеймы</b>\n\n"
-        "🔍 Поиск свободных 5-значных юзернеймов\n\n"
-        "Выбери действие:",
-        parse_mode=ParseMode.HTML,
-        reply_markup=get_username_keyboard()
-    )
+    try:
+        await callback.message.edit_text(
+            "👤 <b>Раздел Юзернеймы</b>\n\n"
+            "🔍 Поиск свободных 5-значных юзернеймов\n\n"
+            "Выбери действие:",
+            parse_mode=ParseMode.HTML,
+            reply_markup=get_username_keyboard()
+        )
+    except Exception as e:
+        logging.error(f"Ошибка username_menu: {e}")
+        await callback.message.answer(
+            "👤 <b>Раздел Юзернеймы</b>\n\n"
+            "🔍 Поиск свободных 5-значных юзернеймов\n\n"
+            "Выбери действие:",
+            parse_mode=ParseMode.HTML,
+            reply_markup=get_username_keyboard()
+        )
 
 
 @dp.message(Command("cancel"))
