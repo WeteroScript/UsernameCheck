@@ -547,7 +547,7 @@ def get_settings_keyboard(user_id: int) -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text=f"🔤 Буква: {s['letter'].upper()}", callback_data="change_letter")],
         [InlineKeyboardButton(text=f"🔢 Повторений: {s['repeat_count']}", callback_data="change_count")],
         [InlineKeyboardButton(text="🔄 Сбросить", callback_data="reset_settings")],
-        [InlineKeyboardButton(text="⬅️ Назад", callback_data="username_menu")],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="users")],
     ])
 
 def get_letter_keyboard() -> InlineKeyboardMarkup:
@@ -559,19 +559,19 @@ def get_letter_keyboard() -> InlineKeyboardMarkup:
             row = []
     if row:
         rows.append(row)
-    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="open_settings")])
+    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="settings")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 def get_count_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="2", callback_data="set_count_2"), InlineKeyboardButton(text="3", callback_data="set_count_3"), InlineKeyboardButton(text="4", callback_data="set_count_4")],
-        [InlineKeyboardButton(text="⬅️ Назад", callback_data="open_settings")],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="settings")],
     ])
 
 
-# ============ CALLBACK ОБРАБОТЧИКИ ============
+# ============ CALLBACK ============
 
-@router.callback_query(lambda c: c.data == "gen_username")
+@router.callback_query(lambda c: c.data == "gen")
 async def generate_username_callback(callback: types.CallbackQuery):
     await callback.answer()
     user_id = callback.from_user.id
@@ -608,7 +608,7 @@ async def generate_username_callback(callback: types.CallbackQuery):
                     reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                         [InlineKeyboardButton(text="✅ Забрать", url=f"https://t.me/{username}")],
                         [InlineKeyboardButton(text="🔎 Fragment", url=f"https://fragment.com/username/{username}")],
-                        [InlineKeyboardButton(text="🔄 Ещё", callback_data="gen_username"), InlineKeyboardButton(text="⬅️ Назад", callback_data="username_menu")],
+                        [InlineKeyboardButton(text="🔄 Ещё", callback_data="gen"), InlineKeyboardButton(text="⬅️ Назад", callback_data="users")],
                     ])
                 )
                 found = True
@@ -621,13 +621,13 @@ async def generate_username_callback(callback: types.CallbackQuery):
             f"😔 Не найдено за {max_attempts} попыток\n\n<i>Попробуй изменить настройки</i>",
             parse_mode=ParseMode.HTML,
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="🔄 Снова", callback_data="gen_username")],
-                [InlineKeyboardButton(text="⚙️ Настройки", callback_data="open_settings")],
-                [InlineKeyboardButton(text="⬅️ Назад", callback_data="username_menu")],
+                [InlineKeyboardButton(text="🔄 Снова", callback_data="gen")],
+                [InlineKeyboardButton(text="⚙️ Настройки", callback_data="settings")],
+                [InlineKeyboardButton(text="⬅️ Назад", callback_data="users")],
             ])
         )
 
-@router.callback_query(lambda c: c.data == "check_all")
+@router.callback_query(lambda c: c.data == "check")
 async def check_all_callback(callback: types.CallbackQuery):
     await callback.answer()
     user_id = callback.from_user.id
@@ -650,7 +650,7 @@ async def check_all_callback(callback: types.CallbackQuery):
         f"Продолжить?",
         parse_mode=ParseMode.HTML,
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="✅ Начать", callback_data="confirm_check_all"), InlineKeyboardButton(text="❌ Отмена", callback_data="username_menu")],
+            [InlineKeyboardButton(text="✅ Начать", callback_data="confirm_check_all"), InlineKeyboardButton(text="❌ Отмена", callback_data="users")],
         ])
     )
 
@@ -733,11 +733,11 @@ async def perform_mass_check(message: types.Message, user_id: int, all_usernames
         parse_mode=ParseMode.HTML,
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="📥 Скачать БД", callback_data="get_db")],
-            [InlineKeyboardButton(text="⬅️ Назад", callback_data="username_menu")]
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data="users")]
         ])
     )
 
-@router.callback_query(lambda c: c.data == "open_settings")
+@router.callback_query(lambda c: c.data == "settings")
 async def open_settings_callback(callback: types.CallbackQuery):
     await callback.answer()
     user_id = callback.from_user.id
@@ -753,7 +753,7 @@ async def open_settings_callback(callback: types.CallbackQuery):
         reply_markup=get_settings_keyboard(user_id)
     )
 
-@router.callback_query(lambda c: c.data == "show_stats")
+@router.callback_query(lambda c: c.data == "stats")
 async def show_stats_callback(callback: types.CallbackQuery):
     await callback.answer()
     taken = load_db(TAKEN_DB_FILE)
@@ -776,7 +776,7 @@ async def show_stats_callback(callback: types.CallbackQuery):
         parse_mode=ParseMode.HTML,
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="📥 Скачать БД", callback_data="get_db")],
-            [InlineKeyboardButton(text="⬅️ Назад", callback_data="username_menu")],
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data="users")],
         ])
     )
 
@@ -891,4 +891,4 @@ __all__ = [
     'TAKEN_DB_FILE',
     'FREE_DB_FILE',
     'BANNED_DB_FILE'
-            ]
+]
