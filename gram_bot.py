@@ -1,6 +1,6 @@
 """
 Модуль для Gram ботов
-С авто-прохождением капчи через Playwright
+С авто-прохождением капчи через Playwright (headless)
 """
 
 import asyncio
@@ -41,7 +41,7 @@ captcha_storage: Dict[int, Dict[str, Any]] = {}  # chat_id -> {client, bot_usern
 # Настройки авто-прохождения
 AUTO_SOLVE_CAPTCHA = True
 MAX_CAPTCHA_ATTEMPTS = 3
-CAPTCHA_HEADLESS = False  # False - показывать браузер, True - скрытый
+CAPTCHA_HEADLESS = True  # True для сервера (без GUI)
 
 
 # ============ УСТАНОВКА BOT ============
@@ -291,14 +291,14 @@ async def solve_captcha_auto(client: TelegramClient, bot_username: str, msg) -> 
             if webapp_btn:
                 break
         
-        # Пробуем WebApp через Playwright
+        # Пробуем WebApp через Playwright (headless)
         if webapp_btn:
             url = get_webapp_url(webapp_btn)
             if url:
                 try:
-                    logging.info(f"🌐 Пытаюсь решить капчу через WebApp: {url}")
+                    logging.info(f"🌐 Пытаюсь решить капчу через WebApp (headless): {url[:80]}...")
                     
-                    # Решаем капчу через Playwright
+                    # Решаем капчу через Playwright в headless режиме
                     solved = await solve_webapp_captcha(url, headless=CAPTCHA_HEADLESS)
                     
                     if solved:
@@ -552,12 +552,11 @@ async def captcha_click_callback(callback: types.CallbackQuery):
                             if url:
                                 await callback.message.answer(
                                     f"🌐 <b>Решаю WebApp капчу...</b>\n\n"
-                                    f"URL: <code>{url}</code>\n\n"
                                     f"⏳ Это может занять 10-30 секунд",
                                     parse_mode=ParseMode.HTML
                                 )
                                 
-                                # Решаем капчу
+                                # Решаем капчу в headless режиме
                                 solved = await solve_webapp_captcha(url, headless=CAPTCHA_HEADLESS)
                                 
                                 if solved:
@@ -1041,7 +1040,7 @@ async def run_gram_worker(client: TelegramClient, bot_username: str):
     try:
         logging.info(f"🚀 Запуск {bot_username}...")
         logging.info(f"🤖 Авто-прохождение: {'ВКЛ' if AUTO_SOLVE_CAPTCHA else 'ВЫКЛ'}")
-        logging.info(f"🌐 Режим браузера: {'Скрытый' if CAPTCHA_HEADLESS else 'Видимый'}")
+        logging.info(f"🌐 Режим браузера: {'Headless' if CAPTCHA_HEADLESS else 'Видимый'}")
         
         await send_text(client, bot_username, "/start", 3)
         await send_text(client, bot_username, "👨‍💻 Заработать", 2)
