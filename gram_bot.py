@@ -1,6 +1,6 @@
 """
 Модуль для Gram ботов
-С авто-прохождением капчи и интерактивными кнопками
+С авто-прохождением капчи через Playwright
 """
 
 import asyncio
@@ -12,13 +12,14 @@ import io
 from typing import Optional, Dict, Any
 from telethon import TelegramClient, errors
 from telethon.tl.functions.channels import LeaveChannelRequest
-from telethon.tl.types import InputChannel, KeyboardButtonWebView, KeyboardButton
+from telethon.tl.types import InputChannel, KeyboardButtonWebView
 from telethon.tl.functions.messages import RequestWebViewRequest
-from telethon.tl.custom import Button
-from aiogram import Router, types, F
+from aiogram import Router, types
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, BufferedInputFile
-from aiogram.filters import Command
 from aiogram.enums import ParseMode
+
+# Импорт солвера капчи
+from captcha_solver import solve_webapp_captcha
 
 router = Router()
 
@@ -40,6 +41,7 @@ captcha_storage: Dict[int, Dict[str, Any]] = {}  # chat_id -> {client, bot_usern
 # Настройки авто-прохождения
 AUTO_SOLVE_CAPTCHA = True
 MAX_CAPTCHA_ATTEMPTS = 3
+CAPTCHA_HEADLESS = False  # False - показывать браузер, True - скрытый
 
 
 # ============ УСТАНОВКА BOT ============
@@ -60,14 +62,10 @@ def set_user_chat_id(chat_id: int):
 def is_webapp_button(btn) -> bool:
     """Проверка, является ли кнопка WebApp"""
     try:
-        # Проверяем наличие url напрямую
         if hasattr(btn, "url") and btn.url is not None:
             return True
-        
-        # Проверяем через button
         if hasattr(btn, "button"):
             return hasattr(btn.button, "url") and btn.button.url is not None
-        
         return False
     except:
         return False
@@ -271,7 +269,9 @@ def is_captcha_message(msg) -> bool:
 # ============ АВТО-ПРОХОЖДЕНИЕ КАПЧИ ============
 
 async def solve_captcha_auto(client: TelegramClient, bot_username: str, msg) -> bool:
-    """Автоматическое прохождение капчи через кнопки"""
+    """
+    Автоматическое прохождение капчи через кнопки или WebApp
+    """
     try:
         logging.info("🔄 Пытаюсь автоматически пройти капчу...")
         
@@ -291,28 +291,34 @@ async def solve_captcha_auto(client: TelegramClient, bot_username: str, msg) -> 
             if webapp_btn:
                 break
         
-        # Пробуем WebApp (только если есть URL)
+        # Пробуем WebApp через Playwright
         if webapp_btn:
             url = get_webapp_url(webapp_btn)
             if url:
                 try:
-                    bot_entity = await client.get_entity(bot_username)
-                    webview = await client(
-                        RequestWebViewRequest(
-                            peer=bot_entity,
-                            bot=bot_entity,
-                            url=url
-                        )
-                    )
-                    logging.info(f"✅ WebApp открыт: {webview.url}")
-                    await asyncio.sleep(5)
+                    logging.info(f"🌐 Пытаюсь решить капчу через WebApp: {url}")
                     
-                    new_msg = await get_last_message(client, bot_username)
-                    if new_msg and not is_captcha_message(new_msg):
-                        logging.info("✅ Капча пройдена (WebApp)!")
-                        return True
+                    # Решаем капчу через Playwright
+                    solved = await solve_webapp_captcha(url, headless=CAPTCHA_HEADLESS)
+                    
+                    if solved:
+                        logging.info("✅ Капча решена через WebApp!")
+                        await asyncio.sleep(3)
+                        new_msg = await get_last_message(client, bot_username)
+                        if new_msg and not is_captcha_message(new_msg):
+                            return True
+                    else:
+                        logging.warning("❌ Не удалось решить капчу через WebApp")
+                        
                 except Exception as e:
-                    logging.error(f"❌ Ошибка WebApp: {e}")
+                    logging.error(f"❌ Ошибка WebApp солвера: {e}")
+                    # Отправляем ошибку пользователю
+                    if bot_instance and user_chat_id:
+                        await bot_instance.send_message(
+                            user_chat_id,
+                            f"❌ Ошибка при решении капчи через WebApp:\n<code>{str(e)[:200]}</code>",
+                            parse_mode=ParseMode.HTML
+                        )
         
         # Пробуем обычные кнопки
         for row in msg.buttons:
@@ -327,7 +333,7 @@ async def solve_captcha_auto(client: TelegramClient, bot_username: str, msg) -> 
                     await asyncio.sleep(3)
                     new_msg = await get_last_message(client, bot_username)
                     if new_msg and not is_captcha_message(new_msg):
-                        logging.info("✅ Капча пройдена!")
+                        logging.info("✅ Капча пройдена через кнопку!")
                         return True
                 
                 elif "продолж" in btn_text or "continue" in btn_text:
@@ -336,8 +342,18 @@ async def solve_captcha_auto(client: TelegramClient, bot_username: str, msg) -> 
                     await asyncio.sleep(3)
                     new_msg = await get_last_message(client, bot_username)
                     if new_msg and not is_captcha_message(new_msg):
-                        logging.info("✅ Капча пройдена!")
+                        logging.info("✅ Капча пройдена через кнопку!")
                         return True
+        
+        # Отправляем "✅" как запасной вариант
+        logging.info("🔄 Отправляю '✅'...")
+        await client.send_message(bot_username, "✅")
+        await asyncio.sleep(3)
+        
+        new_msg = await get_last_message(client, bot_username)
+        if new_msg and not is_captcha_message(new_msg):
+            logging.info("✅ Капча пройдена через '✅'!")
+            return True
         
         return False
         
@@ -427,7 +443,7 @@ async def send_captcha_to_user(msg, chat_id: int, client: TelegramClient) -> boo
                 if btn_row:
                     buttons.append(btn_row.copy())
         
-        # Кнопка для ручного перехода в бота (если кнопки не работают)
+        # Кнопка для ручного перехода в бота
         buttons.append([
             InlineKeyboardButton(
                 text=f"🔗 Перейти в @{bot_username}",
@@ -531,32 +547,40 @@ async def captcha_click_callback(callback: types.CallbackQuery):
                 if btn_data['text'].lower() in btn_text.lower() or btn_text.lower() in btn_data['text'].lower():
                     try:
                         if btn_data['is_webapp']:
-                            # WebApp кнопка - открываем и отправляем ссылку пользователю
+                            # WebApp кнопка - пробуем решить через Playwright
                             url = btn_data['url']
                             if url:
                                 await callback.message.answer(
-                                    f"🌐 <b>WebApp кнопка</b>\n\n"
-                                    f"Нажми на ссылку, чтобы открыть:\n"
-                                    f"<code>{url}</code>\n\n"
-                                    f"После прохождения капчи нажми 'Проверить статус'",
+                                    f"🌐 <b>Решаю WebApp капчу...</b>\n\n"
+                                    f"URL: <code>{url}</code>\n\n"
+                                    f"⏳ Это может занять 10-30 секунд",
                                     parse_mode=ParseMode.HTML
                                 )
-                                # Пробуем открыть через Telethon
-                                try:
-                                    bot_entity = await client.get_entity(bot_username)
-                                    webview = await client(
-                                        RequestWebViewRequest(
-                                            peer=bot_entity,
-                                            bot=bot_entity,
-                                            url=url
-                                        )
-                                    )
-                                    await callback.message.answer(
-                                        f"✅ WebApp открыт через Telethon\n"
-                                        f"🔗 {webview.url}"
-                                    )
-                                except Exception as e:
-                                    logging.error(f"❌ Ошибка открытия WebApp: {e}")
+                                
+                                # Решаем капчу
+                                solved = await solve_webapp_captcha(url, headless=CAPTCHA_HEADLESS)
+                                
+                                if solved:
+                                    await callback.message.answer("✅ Капча успешно решена через WebApp!")
+                                    
+                                    # Проверяем результат
+                                    await asyncio.sleep(2)
+                                    new_msg = await get_last_message(client, bot_username)
+                                    if new_msg and not is_captcha_message(new_msg):
+                                        await callback.message.answer("✅ Капча пройдена! Продолжаю работу...")
+                                        del captcha_storage[chat_id]
+                                        
+                                        # Перезапускаем бота
+                                        phone = None
+                                        for p, c in active_clients.items():
+                                            if c == client:
+                                                phone = p
+                                                break
+                                        if phone:
+                                            await continue_gram_bot(phone)
+                                        return
+                                else:
+                                    await callback.message.answer("❌ Не удалось решить капчу через WebApp")
                             else:
                                 await callback.message.answer("❌ URL WebApp не найден")
                         else:
@@ -572,7 +596,6 @@ async def captcha_click_callback(callback: types.CallbackQuery):
                                 await callback.message.answer("✅ Капча пройдена! Продолжаю работу...")
                                 del captcha_storage[chat_id]
                                 
-                                # Перезапускаем бота
                                 phone = None
                                 for p, c in active_clients.items():
                                     if c == client:
@@ -1018,6 +1041,7 @@ async def run_gram_worker(client: TelegramClient, bot_username: str):
     try:
         logging.info(f"🚀 Запуск {bot_username}...")
         logging.info(f"🤖 Авто-прохождение: {'ВКЛ' if AUTO_SOLVE_CAPTCHA else 'ВЫКЛ'}")
+        logging.info(f"🌐 Режим браузера: {'Скрытый' if CAPTCHA_HEADLESS else 'Видимый'}")
         
         await send_text(client, bot_username, "/start", 3)
         await send_text(client, bot_username, "👨‍💻 Заработать", 2)
@@ -1079,4 +1103,4 @@ __all__ = [
     'set_bot_instance',
     'active_clients',
     'active_tasks'
-        ]
+            ]
