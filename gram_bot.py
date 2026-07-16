@@ -1,6 +1,6 @@
 """
 Модуль для Gram ботов
-С улучшенной проверкой капчи по кнопкам
+С улучшенной проверкой капчи и отправкой пользователю
 """
 
 import asyncio
@@ -9,6 +9,8 @@ import random
 import logging
 import os
 from telethon import TelegramClient, errors
+from telethon.tl.functions.channels import LeaveChannelRequest
+from telethon.tl.types import InputChannel
 from aiogram import Router, types
 from typing import Optional, Dict
 
@@ -178,7 +180,6 @@ def is_captcha_message(msg) -> bool:
             break
     
     # Проверяем кнопки
-    buttons_text = []
     has_confirm_button = False
     has_continue_button = False
     
@@ -186,7 +187,6 @@ def is_captcha_message(msg) -> bool:
         for row in msg.buttons:
             for btn in row:
                 btn_text = (btn.text or "").lower()
-                buttons_text.append(btn_text)
                 
                 if "подтверд" in btn_text or "confirm" in btn_text or "verify" in btn_text:
                     has_confirm_button = True
@@ -215,7 +215,7 @@ def is_captcha_message(msg) -> bool:
 
 
 async def send_captcha_to_user(msg, chat_id: int) -> bool:
-    """Отправка сообщения с капчей пользователю"""
+    """Отправка сообщения с капчей пользователю (без forward_message)"""
     if not chat_id:
         logging.error("❌ Chat ID не установлен")
         return False
@@ -223,8 +223,13 @@ async def send_captcha_to_user(msg, chat_id: int) -> bool:
     try:
         from bot import bot
         
+        bot_username = msg.chat.username if msg.chat else "gram_prbot"
+        
+        # Формируем текст сообщения
         text = f"🚨 <b>Обнаружена капча!</b>\n\n"
-        text += f"📝 <b>Текст:</b>\n<code>{msg.raw_text[:500]}</code>\n\n"
+        text += f"🤖 <b>Бот:</b> @{bot_username}\n\n"
+        text += f"📝 <b>Текст сообщения:</b>\n"
+        text += f"<code>{msg.raw_text[:1000]}</code>\n\n"
         
         if msg.buttons:
             text += f"📋 <b>Кнопки:</b>\n"
@@ -233,21 +238,29 @@ async def send_captcha_to_user(msg, chat_id: int) -> bool:
                     text += f"  • {btn.text}\n"
             text += "\n"
         
-        text += f"⚠️ <b>Действие необходимо!</b>\n"
-        text += f"1. Перейди в @gram_prbot или @gram_piarbot\n"
-        text += f"2. Пройди капчу вручную\n"
-        text += f"3. Вернись сюда и отправь /continue_gram"
+        text += f"⚠️ <b>Что делать:</b>\n"
+        text += f"1️⃣ Перейди в бота @{bot_username}\n"
+        text += f"2️⃣ Найди сообщение с капчей\n"
+        text += f"3️⃣ Пройди капчу вручную (нажми кнопки)\n"
+        text += f"4️⃣ Вернись сюда и отправь <b>/continue_gram</b>"
         
+        # Отправляем текст
         await bot.send_message(chat_id, text, parse_mode="HTML")
         
-        # Пытаемся переслать само сообщение
-        try:
-            await bot.send_message(chat_id, "📩 <b>Оригинальное сообщение:</b>", parse_mode="HTML")
-            await bot.forward_message(chat_id, msg.chat_id, msg.id)
-        except:
-            pass
+        # Отправляем кнопку-ссылку на бота
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(
+                text=f"🔗 Перейти в @{bot_username}", 
+                url=f"https://t.me/{bot_username}"
+            )]
+        ])
+        await bot.send_message(
+            chat_id, 
+            "👆 Нажми кнопку, чтобы открыть бота с капчей",
+            reply_markup=keyboard
+        )
         
-        logging.info(f"✅ Капча отправлена пользователю {chat_id}")
+        logging.info(f"✅ Капча отправлена пользователю {chat_id} (бот: @{bot_username})")
         return True
         
     except Exception as e:
@@ -595,4 +608,4 @@ __all__ = [
     'set_user_chat_id',
     'active_clients',
     'active_tasks'
-            ]
+        ]
