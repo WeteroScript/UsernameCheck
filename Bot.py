@@ -15,7 +15,7 @@ from aiogram.fsm.state import State, StatesGroup
 from dotenv import load_dotenv
 
 from username_bot import router as username_router, init_username_bot
-from gram_bot import router as gram_router, init_gram_bot, active_clients, active_tasks, set_user_chat_id, start_gram_worker, stop_gram_bot, set_bot_instance
+from gram_bot import router as gram_router, init_gram_bot, active_clients, active_tasks, set_user_chat_id, start_gram_worker, stop_gram_bot, set_bot_instance, get_task_choice_keyboard
 
 load_dotenv()
 
@@ -100,6 +100,7 @@ def get_gram_main_keyboard(has_session: bool = False, is_running: bool = False, 
         buttons.append([InlineKeyboardButton(text="❌ Нет активной сессии", callback_data="no_session")])
     
     buttons.append([InlineKeyboardButton(text="🔄 Сменить бота", callback_data="gram_change_bot")])
+    buttons.append([InlineKeyboardButton(text="📋 Выбрать задание", callback_data="gram_choose_task")])
     buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="main")])
     
     return InlineKeyboardMarkup(inline_keyboard=buttons)
@@ -234,6 +235,21 @@ async def gram_menu(callback: types.CallbackQuery):
     )
 
 
+@dp.callback_query(lambda c: c.data == "gram_choose_task")
+async def gram_choose_task(callback: types.CallbackQuery):
+    """Выбор типа заданий"""
+    await callback.answer()
+    user_id = callback.from_user.id
+    
+    await callback.message.edit_text(
+        "📋 <b>Выбор типа заданий</b>\n\n"
+        "Выбери тип заданий, которые будет выполнять бот:\n\n"
+        "✅ - текущий выбранный тип",
+        parse_mode=ParseMode.HTML,
+        reply_markup=get_task_choice_keyboard(user_id)
+    )
+
+
 @dp.callback_query(lambda c: c.data == "gram_change_bot")
 async def gram_change_bot(callback: types.CallbackQuery):
     await callback.answer()
@@ -304,7 +320,7 @@ async def gram_start(callback: types.CallbackQuery):
     set_user_chat_id(user_id)
     client = active_clients[phone]
     
-    await start_gram_worker(client, bot_name, phone)
+    await start_gram_worker(client, bot_name, phone, user_id)
     
     await gram_menu(callback)
 
@@ -797,19 +813,15 @@ async def cancel_command(message: types.Message, state: FSMContext):
 async def main():
     global user_sessions, user_bot_choice
     
-    # Загружаем сохраненные данные
     user_sessions.update(load_sessions())
     user_bot_choice.update(load_bot_choices())
     
-    # Устанавливаем экземпляр бота для gram_bot
     set_bot_instance(bot)
     logging.info("✅ Экземпляр бота передан в gram_bot")
     
-    # Инициализируем модули
     init_username_bot(dp)
     init_gram_bot(dp)
     
-    # Запускаем бота
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
