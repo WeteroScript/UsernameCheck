@@ -1,6 +1,6 @@
 """
 Модуль для Gram ботов
-С улучшенной проверкой капчи и отправкой пользователю
+С авто-прохождением капчи и интерактивными кнопками
 """
 
 import asyncio
@@ -8,32 +8,43 @@ import re
 import random
 import logging
 import os
+import io
+from typing import Optional, Dict, Any
 from telethon import TelegramClient, errors
 from telethon.tl.functions.channels import LeaveChannelRequest
-from telethon.tl.types import InputChannel
-from aiogram import Router, types
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-from typing import Optional, Dict
+from telethon.tl.types import InputChannel, KeyboardButtonWebView, KeyboardButton
+from telethon.tl.functions.messages import RequestWebViewRequest
+from telethon.tl.custom import Button
+from aiogram import Router, types, F
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, BufferedInputFile
+from aiogram.filters import Command
+from aiogram.enums import ParseMode
 
 router = Router()
 
 # ============ КОНФИГ ============
 
 API_ID = 2040
-API_HASH = "b18441a1ff607e10a989891a5462e627"
+API_HASH = "b18441a1ff607e10a989891a5462e627"  # ЗАМЕНИТЬ НА СВОЙ!
 
 active_clients: Dict[str, TelegramClient] = {}
 active_tasks: Dict[str, asyncio.Task] = {}
 gram_bot_initialized = False
 user_chat_id: Optional[int] = None
 bot_username_for_task: Dict[str, str] = {}  # phone -> bot_username
-bot_instance = None  # Будет установлен из main
+bot_instance = None
+
+# Хранилище для капч
+captcha_storage: Dict[int, Dict[str, Any]] = {}  # chat_id -> {client, bot_username, msg_id}
+
+# Настройки авто-прохождения
+AUTO_SOLVE_CAPTCHA = True
+MAX_CAPTCHA_ATTEMPTS = 3
 
 
-# ============ УСТАНОВКА BOT И USER CHAT ID ============
+# ============ УСТАНОВКА BOT ============
 
 def set_bot_instance(bot):
-    """Установка экземпляра бота для отправки сообщений"""
     global bot_instance
     bot_instance = bot
     logging.info("✅ Экземпляр бота установлен")
@@ -42,6 +53,52 @@ def set_user_chat_id(chat_id: int):
     global user_chat_id
     user_chat_id = chat_id
     logging.info(f"✅ User chat ID установлен: {chat_id}")
+
+
+# ============ РАБОТА С КНОПКАМИ ============
+
+def is_webapp_button(btn) -> bool:
+    """Проверка, является ли кнопка WebApp"""
+    try:
+        # Проверяем наличие url напрямую
+        if hasattr(btn, "url") and btn.url is not None:
+            return True
+        
+        # Проверяем через button
+        if hasattr(btn, "button"):
+            return hasattr(btn.button, "url") and btn.button.url is not None
+        
+        return False
+    except:
+        return False
+
+def get_webapp_url(btn) -> Optional[str]:
+    """Получение URL из WebApp кнопки"""
+    try:
+        if hasattr(btn, "url") and btn.url:
+            return btn.url
+        if hasattr(btn, "button") and hasattr(btn.button, "url"):
+            return btn.button.url
+        return None
+    except:
+        return None
+
+def get_button_text(btn) -> str:
+    """Получение текста кнопки"""
+    try:
+        if hasattr(btn, 'text'):
+            return btn.text
+        return str(btn)
+    except:
+        return "Неизвестно"
+
+def get_button_data(btn) -> dict:
+    """Получение полных данных кнопки"""
+    return {
+        "text": get_button_text(btn),
+        "is_webapp": is_webapp_button(btn),
+        "url": get_webapp_url(btn) if is_webapp_button(btn) else None
+    }
 
 
 # ============ ФУНКЦИИ СЕССИЙ ============
@@ -183,33 +240,132 @@ def is_captcha_message(msg) -> bool:
             logging.info(f"🔍 Найдено ключевое слово в тексте: '{keyword}'")
             break
     
-    has_confirm_button = False
-    has_continue_button = False
+    has_confirm = False
+    has_continue = False
+    has_webapp = False
     
     if msg.buttons:
         for row in msg.buttons:
             for btn in row:
-                btn_text = (btn.text or "").lower()
+                btn_text = get_button_text(btn).lower()
                 
-                if "подтверд" in btn_text or "confirm" in btn_text or "verify" in btn_text:
-                    has_confirm_button = True
-                    logging.info(f"🔍 Найдена кнопка подтверждения: '{btn.text}'")
-                
-                if "продолж" in btn_text or "continue" in btn_text or "next" in btn_text:
-                    has_continue_button = True
-                    logging.info(f"🔍 Найдена кнопка продолжения: '{btn.text}'")
+                if "подтверд" in btn_text or "confirm" in btn_text:
+                    has_confirm = True
+                if "продолж" in btn_text or "continue" in btn_text:
+                    has_continue = True
+                if is_webapp_button(btn):
+                    has_webapp = True
     
-    if text_has_captcha and (has_confirm_button or has_continue_button):
-        logging.info("🚨 Обнаружена капча (текст + кнопки)")
+    if text_has_captcha and (has_confirm or has_continue or has_webapp):
         return True
-    
     if text_has_captcha:
-        logging.info("🚨 Обнаружена капча (только текст)")
+        return True
+    if has_confirm and has_continue:
+        return True
+    if has_webapp:
         return True
     
-    if has_confirm_button and has_continue_button:
-        logging.info("🚨 Обнаружена капча (только кнопки)")
+    return False
+
+
+# ============ АВТО-ПРОХОЖДЕНИЕ КАПЧИ ============
+
+async def solve_captcha_auto(client: TelegramClient, bot_username: str, msg) -> bool:
+    """Автоматическое прохождение капчи через кнопки"""
+    try:
+        logging.info("🔄 Пытаюсь автоматически пройти капчу...")
+        
+        await asyncio.sleep(2)
+        
+        if not msg.buttons:
+            return False
+        
+        # Ищем WebApp кнопку
+        webapp_btn = None
+        for row in msg.buttons:
+            for btn in row:
+                if is_webapp_button(btn):
+                    webapp_btn = btn
+                    logging.info(f"🔗 Найдена WebApp кнопка: {get_button_text(btn)}")
+                    break
+            if webapp_btn:
+                break
+        
+        # Пробуем WebApp (только если есть URL)
+        if webapp_btn:
+            url = get_webapp_url(webapp_btn)
+            if url:
+                try:
+                    bot_entity = await client.get_entity(bot_username)
+                    webview = await client(
+                        RequestWebViewRequest(
+                            peer=bot_entity,
+                            bot=bot_entity,
+                            url=url
+                        )
+                    )
+                    logging.info(f"✅ WebApp открыт: {webview.url}")
+                    await asyncio.sleep(5)
+                    
+                    new_msg = await get_last_message(client, bot_username)
+                    if new_msg and not is_captcha_message(new_msg):
+                        logging.info("✅ Капча пройдена (WebApp)!")
+                        return True
+                except Exception as e:
+                    logging.error(f"❌ Ошибка WebApp: {e}")
+        
+        # Пробуем обычные кнопки
+        for row in msg.buttons:
+            for btn in row:
+                if is_webapp_button(btn):
+                    continue
+                btn_text = get_button_text(btn).lower()
+                
+                if "подтверд" in btn_text or "confirm" in btn_text:
+                    logging.info(f"🔄 Нажимаю: '{get_button_text(btn)}'")
+                    await btn.click()
+                    await asyncio.sleep(3)
+                    new_msg = await get_last_message(client, bot_username)
+                    if new_msg and not is_captcha_message(new_msg):
+                        logging.info("✅ Капча пройдена!")
+                        return True
+                
+                elif "продолж" in btn_text or "continue" in btn_text:
+                    logging.info(f"🔄 Нажимаю: '{get_button_text(btn)}'")
+                    await btn.click()
+                    await asyncio.sleep(3)
+                    new_msg = await get_last_message(client, bot_username)
+                    if new_msg and not is_captcha_message(new_msg):
+                        logging.info("✅ Капча пройдена!")
+                        return True
+        
+        return False
+        
+    except Exception as e:
+        logging.error(f"❌ Ошибка авто-прохождения: {e}")
+        return False
+
+
+async def auto_solve_captcha(client: TelegramClient, bot_username: str, msg, attempt: int = 0) -> bool:
+    """Комбинированный метод с повторами"""
+    if attempt >= MAX_CAPTCHA_ATTEMPTS:
+        logging.warning(f"❌ Превышено количество попыток ({MAX_CAPTCHA_ATTEMPTS})")
+        return False
+    
+    logging.info(f"🔄 Попытка #{attempt + 1}...")
+    
+    solved = await solve_captcha_auto(client, bot_username, msg)
+    if solved:
         return True
+    
+    await asyncio.sleep(3)
+    new_msg = await get_last_message(client, bot_username)
+    
+    if new_msg and not is_captcha_message(new_msg):
+        return True
+    
+    if new_msg and is_captcha_message(new_msg):
+        return await auto_solve_captcha(client, bot_username, new_msg, attempt + 1)
     
     return False
 
@@ -217,58 +373,118 @@ def is_captcha_message(msg) -> bool:
 # ============ ОТПРАВКА КАПЧИ ПОЛЬЗОВАТЕЛЮ ============
 
 async def send_captcha_to_user(msg, chat_id: int, client: TelegramClient) -> bool:
-    """Отправка капчи пользователю через бота + пересылка через Telethon"""
-    if not chat_id:
-        logging.error("❌ Chat ID не установлен")
-        return False
-    
-    if not bot_instance:
-        logging.error("❌ Экземпляр бота не установлен")
+    """Отправка капчи пользователю с интерактивными кнопками"""
+    if not chat_id or not bot_instance:
+        logging.error("❌ Bot instance или chat_id не установлены")
         return False
     
     try:
         bot = bot_instance
-        bot_username = msg.chat.username if msg.chat else "gram_prbot"
         
-        # 1. Отправляем текст через бота
+        # Получаем bot_username правильно
+        try:
+            if msg.chat:
+                bot_username = msg.chat.username or "gram_prbot"
+            else:
+                bot_entity = await client.get_entity(msg.peer_id)
+                bot_username = bot_entity.username or "gram_prbot"
+        except:
+            bot_username = "gram_prbot"
+        
+        # Сохраняем капчу в хранилище
+        captcha_storage[chat_id] = {
+            'client': client,
+            'bot_username': bot_username,
+            'msg_id': msg.id,
+            'chat_id_original': msg.chat_id
+        }
+        
+        # Отправляем информацию о капче
         text = f"🚨 <b>Обнаружена капча!</b>\n\n"
         text += f"🤖 <b>Бот:</b> @{bot_username}\n\n"
-        text += f"⚠️ <b>Что делать:</b>\n"
-        text += f"1️⃣ Ниже переслано сообщение с капчей\n"
-        text += f"2️⃣ Нажми на кнопку, чтобы открыть бота\n"
-        text += f"3️⃣ Пройди капчу вручную\n"
-        text += f"4️⃣ Вернись сюда и отправь <b>/continue_gram</b>"
         
-        await bot.send_message(chat_id, text, parse_mode="HTML")
+        if msg.raw_text:
+            text += f"📝 <b>Текст:</b>\n"
+            text += f"<code>{msg.raw_text[:500]}</code>\n\n"
         
-        # 2. Пересылаем оригинальное сообщение через Telethon
-        try:
-            await client.forward_messages(
-                entity=chat_id,
-                messages=[msg.id],
-                from_peer=bot_username
-            )
-            logging.info(f"✅ Сообщение переслано через Telethon в {chat_id}")
-        except Exception as e:
-            logging.error(f"❌ Ошибка пересылки через Telethon: {e}")
-            # Fallback - отправляем текст
-            await bot.send_message(
-                chat_id,
-                f"📩 <b>Текст сообщения:</b>\n<code>{msg.raw_text[:500]}</code>",
-                parse_mode="HTML"
-            )
-            if msg.buttons:
-                btns = "\n".join(f"• {btn.text}" for row in msg.buttons for btn in row)
-                await bot.send_message(chat_id, f"📋 <b>Кнопки:</b>\n{btns}", parse_mode="HTML")
+        # Создаем кнопки для прохождения капчи
+        buttons = []
         
-        # 3. Кнопка-ссылка на бота
-        keyboard = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(
-                text=f"🔗 Перейти в @{bot_username}", 
+        if msg.buttons:
+            for row in msg.buttons:
+                btn_row = []
+                for btn in row:
+                    btn_data = get_button_data(btn)
+                    btn_text = btn_data['text']
+                    if btn_data['is_webapp']:
+                        btn_text += " 🌐"
+                    btn_row.append(
+                        InlineKeyboardButton(
+                            text=f"▶️ {btn_text}",
+                            callback_data=f"captcha_click_{chat_id}_{btn_text}"
+                        )
+                    )
+                if btn_row:
+                    buttons.append(btn_row.copy())
+        
+        # Кнопка для ручного перехода в бота (если кнопки не работают)
+        buttons.append([
+            InlineKeyboardButton(
+                text=f"🔗 Перейти в @{bot_username}",
                 url=f"https://t.me/{bot_username}"
-            )]
+            )
         ])
-        await bot.send_message(chat_id, "👆 Или нажми кнопку, чтобы открыть бота", reply_markup=keyboard)
+        
+        # Кнопка "Проверить статус"
+        buttons.append([
+            InlineKeyboardButton(
+                text="🔄 Проверить статус",
+                callback_data=f"captcha_check_{chat_id}"
+            )
+        ])
+        
+        # Кнопка "Остановить"
+        buttons.append([
+            InlineKeyboardButton(
+                text="⏹ Остановить бота",
+                callback_data=f"captcha_stop_{chat_id}"
+            )
+        ])
+        
+        # Отправляем сообщение с кнопками
+        await bot.send_message(
+            chat_id,
+            text,
+            parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons)
+        )
+        
+        # Отправляем медиа если есть
+        if msg.photo:
+            try:
+                buffer = io.BytesIO()
+                await client.download_media(msg, file=buffer)
+                buffer.seek(0)
+                await bot.send_photo(
+                    chat_id,
+                    BufferedInputFile(buffer.read(), filename="captcha.jpg"),
+                    caption="📸 Изображение с капчей"
+                )
+            except Exception as e:
+                logging.error(f"❌ Ошибка отправки фото: {e}")
+        
+        elif msg.document:
+            try:
+                buffer = io.BytesIO()
+                await client.download_media(msg, file=buffer)
+                buffer.seek(0)
+                await bot.send_document(
+                    chat_id,
+                    BufferedInputFile(buffer.read(), filename=msg.document.attributes[0].file_name or "captcha.pdf"),
+                    caption="📄 Документ с капчей"
+                )
+            except Exception as e:
+                logging.error(f"❌ Ошибка отправки документа: {e}")
         
         logging.info(f"✅ Капча отправлена пользователю {chat_id}")
         return True
@@ -276,6 +492,172 @@ async def send_captcha_to_user(msg, chat_id: int, client: TelegramClient) -> boo
     except Exception as e:
         logging.error(f"❌ Ошибка отправки капчи: {e}")
         return False
+
+
+# ============ CALLBACK ДЛЯ КНОПОК КАПЧИ ============
+
+@router.callback_query(lambda c: c.data and c.data.startswith("captcha_click_"))
+async def captcha_click_callback(callback: types.CallbackQuery):
+    """Обработчик нажатия на кнопку капчи"""
+    try:
+        parts = callback.data.split("_")
+        chat_id = int(parts[2])
+        btn_text = "_".join(parts[3:])
+        
+        # Проверяем наличие капчи
+        if chat_id not in captcha_storage:
+            await callback.answer("❌ Капча уже не актуальна")
+            await callback.message.delete()
+            return
+        
+        captcha_data = captcha_storage[chat_id]
+        client = captcha_data['client']
+        bot_username = captcha_data['bot_username']
+        
+        await callback.answer(f"🔄 Выполняю '{btn_text}'...")
+        
+        # Получаем оригинальное сообщение
+        msg = await client.get_messages(bot_username, ids=captcha_data['msg_id'])
+        
+        if not msg or not msg.buttons:
+            await callback.message.edit_text("❌ Сообщение с капчей не найдено")
+            return
+        
+        # Ищем и нажимаем нужную кнопку
+        clicked = False
+        for row in msg.buttons:
+            for btn in row:
+                btn_data = get_button_data(btn)
+                if btn_data['text'].lower() in btn_text.lower() or btn_text.lower() in btn_data['text'].lower():
+                    try:
+                        if btn_data['is_webapp']:
+                            # WebApp кнопка - открываем и отправляем ссылку пользователю
+                            url = btn_data['url']
+                            if url:
+                                await callback.message.answer(
+                                    f"🌐 <b>WebApp кнопка</b>\n\n"
+                                    f"Нажми на ссылку, чтобы открыть:\n"
+                                    f"<code>{url}</code>\n\n"
+                                    f"После прохождения капчи нажми 'Проверить статус'",
+                                    parse_mode=ParseMode.HTML
+                                )
+                                # Пробуем открыть через Telethon
+                                try:
+                                    bot_entity = await client.get_entity(bot_username)
+                                    webview = await client(
+                                        RequestWebViewRequest(
+                                            peer=bot_entity,
+                                            bot=bot_entity,
+                                            url=url
+                                        )
+                                    )
+                                    await callback.message.answer(
+                                        f"✅ WebApp открыт через Telethon\n"
+                                        f"🔗 {webview.url}"
+                                    )
+                                except Exception as e:
+                                    logging.error(f"❌ Ошибка открытия WebApp: {e}")
+                            else:
+                                await callback.message.answer("❌ URL WebApp не найден")
+                        else:
+                            # Обычная кнопка
+                            await btn.click()
+                            clicked = True
+                            await callback.message.edit_text(f"✅ Кнопка '{btn_data['text']}' нажата!")
+                            
+                            # Проверяем результат
+                            await asyncio.sleep(2)
+                            new_msg = await get_last_message(client, bot_username)
+                            if new_msg and not is_captcha_message(new_msg):
+                                await callback.message.answer("✅ Капча пройдена! Продолжаю работу...")
+                                del captcha_storage[chat_id]
+                                
+                                # Перезапускаем бота
+                                phone = None
+                                for p, c in active_clients.items():
+                                    if c == client:
+                                        phone = p
+                                        break
+                                if phone:
+                                    await continue_gram_bot(phone)
+                                return
+                            else:
+                                await callback.message.answer("⏳ Капча еще активна. Попробуйте другие кнопки.")
+                    except Exception as e:
+                        await callback.message.answer(f"❌ Ошибка: {e}")
+                    break
+            if clicked:
+                break
+        
+        if not clicked:
+            await callback.message.answer("❌ Кнопка не найдена")
+            
+    except Exception as e:
+        logging.error(f"❌ Ошибка callback: {e}")
+        await callback.answer(f"❌ Ошибка: {e}")
+
+
+@router.callback_query(lambda c: c.data and c.data.startswith("captcha_check_"))
+async def captcha_check_callback(callback: types.CallbackQuery):
+    """Проверка статуса капчи"""
+    try:
+        parts = callback.data.split("_")
+        chat_id = int(parts[2])
+        
+        await callback.answer("🔄 Проверяю...")
+        
+        if chat_id not in captcha_storage:
+            await callback.message.edit_text("✅ Капча уже пройдена!")
+            return
+        
+        captcha_data = captcha_storage[chat_id]
+        client = captcha_data['client']
+        bot_username = captcha_data['bot_username']
+        
+        new_msg = await get_last_message(client, bot_username)
+        
+        if new_msg and not is_captcha_message(new_msg):
+            await callback.message.edit_text("✅ <b>Капча пройдена!</b>\n\nПродолжаю работу...", parse_mode=ParseMode.HTML)
+            del captcha_storage[chat_id]
+            
+            # Перезапускаем бота
+            phone = None
+            for p, c in active_clients.items():
+                if c == client:
+                    phone = p
+                    break
+            if phone:
+                await continue_gram_bot(phone)
+        else:
+            await callback.message.edit_text(
+                "⏳ <b>Капча еще активна</b>\n\n"
+                "Попробуйте нажать кнопки ниже или перейдите в бота вручную.",
+                parse_mode=ParseMode.HTML
+            )
+            
+    except Exception as e:
+        logging.error(f"❌ Ошибка проверки: {e}")
+        await callback.answer(f"❌ Ошибка: {e}")
+
+
+@router.callback_query(lambda c: c.data and c.data.startswith("captcha_stop_"))
+async def captcha_stop_callback(callback: types.CallbackQuery):
+    """Остановка бота из-за капчи"""
+    try:
+        parts = callback.data.split("_")
+        chat_id = int(parts[2])
+        
+        if chat_id in captcha_storage:
+            del captcha_storage[chat_id]
+        
+        await callback.answer("⏹ Бот остановлен")
+        await callback.message.edit_text(
+            "⏹ <b>Бот остановлен из-за капчи</b>\n\n"
+            "Пройдите капчу вручную в боте, затем отправьте /continue_gram",
+            parse_mode=ParseMode.HTML
+        )
+    except Exception as e:
+        logging.error(f"❌ Ошибка остановки: {e}")
 
 
 # ============ ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ============
@@ -309,7 +691,11 @@ def log_message(msg, title="Сообщение"):
         logging.info("📋 Кнопки:")
         for row in msg.buttons:
             for btn in row:
-                logging.info(f"   └─ '{btn.text}'")
+                btn_data = get_button_data(btn)
+                btn_text = btn_data['text']
+                if btn_data['is_webapp']:
+                    btn_text += " (WebApp)"
+                logging.info(f"   └─ '{btn_text}'")
     logging.info(f"{'='*50}")
 
 async def click_button(client: TelegramClient, bot_username: str, msg, keywords: list, wait: float = 2):
@@ -318,10 +704,12 @@ async def click_button(client: TelegramClient, bot_username: str, msg, keywords:
     
     for row in msg.buttons:
         for btn in row:
-            btn_text = (btn.text or "").lower()
+            if is_webapp_button(btn):
+                continue
+            btn_text = get_button_text(btn).lower()
             for kw in keywords:
                 if kw.lower() in btn_text:
-                    logging.info(f"✅ Нажимаю: '{btn.text}'")
+                    logging.info(f"✅ Нажимаю: '{get_button_text(btn)}'")
                     try:
                         await btn.click()
                         await asyncio.sleep(wait)
@@ -333,17 +721,18 @@ async def click_button(client: TelegramClient, bot_username: str, msg, keywords:
 
 async def click_first_post_button(client: TelegramClient, bot_username: str, msg, wait: float = 2):
     if not msg or not msg.buttons:
-        logging.info("⚠️ Кнопок нет")
         return None
     
     skip = ["назад", "◀️", "меню", "back", "заработать", "⬅️", "главн", "подтверд", "продолж"]
     
     for row in msg.buttons:
         for btn in row:
-            btn_text = (btn.text or "").lower()
+            if is_webapp_button(btn):
+                continue
+            btn_text = get_button_text(btn).lower()
             if any(s in btn_text for s in skip):
                 continue
-            logging.info(f"✅ Нажимаю кнопку поста: '{btn.text}'")
+            logging.info(f"✅ Нажимаю: '{get_button_text(btn)}'")
             try:
                 await btn.click()
                 await asyncio.sleep(wait)
@@ -352,7 +741,6 @@ async def click_first_post_button(client: TelegramClient, bot_username: str, msg
                 logging.error(f"❌ Ошибка клика: {e}")
                 return None
     
-    logging.info("⚠️ Нет подходящих кнопок постов")
     return None
 
 def has_next_post_button(msg) -> bool:
@@ -360,7 +748,9 @@ def has_next_post_button(msg) -> bool:
         return False
     for row in msg.buttons:
         for btn in row:
-            btn_text = (btn.text or "").lower()
+            if is_webapp_button(btn):
+                continue
+            btn_text = get_button_text(btn).lower()
             if "следующ" in btn_text or "⏩" in btn_text:
                 return True
     return False
@@ -373,14 +763,31 @@ async def go_to_earn_menu(client: TelegramClient, bot_username: str):
     return await get_last_message(client, bot_username)
 
 
-# ============ ОБРАБОТКА ПОСТОВ С КАПЧЕЙ ============
+# ============ ОБРАБОТКА ПОСТОВ ============
 
 async def process_single_post(client: TelegramClient, bot_username: str, msg):
+    """Обработка одного поста с проверкой капчи"""
     if is_captcha_message(msg):
         logging.warning("🚨 Обнаружена капча!")
-        await send_captcha_to_user(msg, user_chat_id, client)
-        logging.info("⏹ Бот остановлен из-за капчи")
-        return None
+        
+        if AUTO_SOLVE_CAPTCHA:
+            logging.info("🔄 Пытаюсь автоматически пройти капчу...")
+            solved = await auto_solve_captcha(client, bot_username, msg)
+            
+            if solved:
+                logging.info("✅ Капча автоматически пройдена!")
+                new_msg = await get_last_message(client, bot_username)
+                if new_msg and not is_captcha_message(new_msg):
+                    return new_msg
+                await asyncio.sleep(2)
+                return await get_last_message(client, bot_username)
+            else:
+                logging.warning("❌ Авто-прохождение не удалось!")
+                await send_captcha_to_user(msg, user_chat_id, client)
+                return None
+        else:
+            await send_captcha_to_user(msg, user_chat_id, client)
+            return None
     
     log_message(msg, "Пост / Задание")
     
@@ -392,8 +799,6 @@ async def process_single_post(client: TelegramClient, bot_username: str, msg):
     link_match = re.search(r"(https?://)?t\.me/\S+", text)
     if link_match:
         logging.info(f"🔗 Ссылка: {link_match.group()}")
-    else:
-        logging.info("ℹ️ Ссылки в тексте нет")
     
     wait_time = random.randint(8, 15)
     logging.info(f"👀 Читаю пост {wait_time} сек...")
@@ -405,8 +810,12 @@ async def process_single_post(client: TelegramClient, bot_username: str, msg):
     if updated:
         if is_captcha_message(updated):
             logging.warning("🚨 Капча после подтверждения!")
+            if AUTO_SOLVE_CAPTCHA:
+                solved = await auto_solve_captcha(client, bot_username, updated)
+                if solved:
+                    logging.info("✅ Капча автоматически пройдена!")
+                    return await get_last_message(client, bot_username)
             await send_captcha_to_user(updated, user_chat_id, client)
-            logging.info("⏹ Бот остановлен из-за капчи")
             return None
         log_message(updated, "После подтверждения")
         return updated
@@ -417,8 +826,12 @@ async def process_single_post(client: TelegramClient, bot_username: str, msg):
         
         if updated and is_captcha_message(updated):
             logging.warning("🚨 Капча после отправки!")
+            if AUTO_SOLVE_CAPTCHA:
+                solved = await auto_solve_captcha(client, bot_username, updated)
+                if solved:
+                    logging.info("✅ Капча автоматически пройдена!")
+                    return await get_last_message(client, bot_username)
             await send_captcha_to_user(updated, user_chat_id, client)
-            logging.info("⏹ Бот остановлен из-за капчи")
             return None
         
         log_message(updated, "После текстового подтверждения")
@@ -426,6 +839,7 @@ async def process_single_post(client: TelegramClient, bot_username: str, msg):
 
 
 async def view_all_posts(client: TelegramClient, bot_username: str, msg):
+    """Просмотр всех постов с проверкой капчи"""
     posts_viewed = 0
     current_msg = msg
     
@@ -445,8 +859,13 @@ async def view_all_posts(client: TelegramClient, bot_username: str, msg):
         
         if is_captcha_message(current_msg):
             logging.warning("🚨 Капча перед следующим постом!")
+            if AUTO_SOLVE_CAPTCHA:
+                solved = await auto_solve_captcha(client, bot_username, current_msg)
+                if solved:
+                    logging.info("✅ Капча автоматически пройдена!")
+                    current_msg = await get_last_message(client, bot_username)
+                    continue
             await send_captcha_to_user(current_msg, user_chat_id, client)
-            logging.info("⏹ Бот остановлен из-за капчи")
             break
         
         if has_next_post_button(current_msg):
@@ -458,9 +877,14 @@ async def view_all_posts(client: TelegramClient, bot_username: str, msg):
             
             if next_msg and is_captcha_message(next_msg):
                 logging.warning("🚨 Капча после перехода!")
-                await send_captcha_to_user(next_msg, user_chat_id, client)
-                logging.info("⏹ Бот остановлен из-за капчи")
-                break
+                if AUTO_SOLVE_CAPTCHA:
+                    solved = await auto_solve_captcha(client, bot_username, next_msg)
+                    if solved:
+                        logging.info("✅ Капча автоматически пройдена!")
+                        next_msg = await get_last_message(client, bot_username)
+                if next_msg and is_captcha_message(next_msg):
+                    await send_captcha_to_user(next_msg, user_chat_id, client)
+                    break
             
             if next_msg:
                 current_msg = next_msg
@@ -479,13 +903,27 @@ async def view_all_posts(client: TelegramClient, bot_username: str, msg):
 # ============ ОСНОВНОЙ ЦИКЛ ============
 
 async def do_one_cycle(client: TelegramClient, bot_username: str):
+    """Один полный цикл"""
     msg = await get_last_message(client, bot_username)
     
     if msg and is_captcha_message(msg):
         logging.warning("🚨 Капча в текущем меню!")
-        await send_captcha_to_user(msg, user_chat_id, client)
-        logging.info("⏹ Бот остановлен из-за капчи")
-        return
+        if AUTO_SOLVE_CAPTCHA:
+            solved = await auto_solve_captcha(client, bot_username, msg)
+            if solved:
+                logging.info("✅ Капча автоматически пройдена!")
+                msg = await get_last_message(client, bot_username)
+                if not is_captcha_message(msg):
+                    logging.info("✅ Продолжаю работу...")
+                else:
+                    await send_captcha_to_user(msg, user_chat_id, client)
+                    return
+            else:
+                await send_captcha_to_user(msg, user_chat_id, client)
+                return
+        else:
+            await send_captcha_to_user(msg, user_chat_id, client)
+            return
     
     log_message(msg, "Текущее меню")
     
@@ -497,9 +935,22 @@ async def do_one_cycle(client: TelegramClient, bot_username: str):
     
     if updated and is_captcha_message(updated):
         logging.warning("🚨 Капча после клика!")
-        await send_captcha_to_user(updated, user_chat_id, client)
-        logging.info("⏹ Бот остановлен из-за капчи")
-        return
+        if AUTO_SOLVE_CAPTCHA:
+            solved = await auto_solve_captcha(client, bot_username, updated)
+            if solved:
+                logging.info("✅ Капча автоматически пройдена!")
+                updated = await get_last_message(client, bot_username)
+                if not is_captcha_message(updated):
+                    logging.info("✅ Продолжаю работу...")
+                else:
+                    await send_captcha_to_user(updated, user_chat_id, client)
+                    return
+            else:
+                await send_captcha_to_user(updated, user_chat_id, client)
+                return
+        else:
+            await send_captcha_to_user(updated, user_chat_id, client)
+            return
     
     if not updated:
         logging.info("⚠️ Не нашёл кнопку 'Просмотр постов'")
@@ -507,9 +958,17 @@ async def do_one_cycle(client: TelegramClient, bot_username: str):
         
         if msg and is_captcha_message(msg):
             logging.warning("🚨 Капча в меню!")
-            await send_captcha_to_user(msg, user_chat_id, client)
-            logging.info("⏹ Бот остановлен из-за капчи")
-            return
+            if AUTO_SOLVE_CAPTCHA:
+                solved = await auto_solve_captcha(client, bot_username, msg)
+                if solved:
+                    logging.info("✅ Капча автоматически пройдена!")
+                    msg = await get_last_message(client, bot_username)
+                else:
+                    await send_captcha_to_user(msg, user_chat_id, client)
+                    return
+            else:
+                await send_captcha_to_user(msg, user_chat_id, client)
+                return
         
         updated = await click_button(
             client, bot_username, msg,
@@ -531,9 +990,17 @@ async def do_one_cycle(client: TelegramClient, bot_username: str):
         
         if post_msg and is_captcha_message(post_msg):
             logging.warning("🚨 Капча в посте!")
-            await send_captcha_to_user(post_msg, user_chat_id, client)
-            logging.info("⏹ Бот остановлен из-за капчи")
-            return
+            if AUTO_SOLVE_CAPTCHA:
+                solved = await auto_solve_captcha(client, bot_username, post_msg)
+                if solved:
+                    logging.info("✅ Капча автоматически пройдена!")
+                    post_msg = await get_last_message(client, bot_username)
+                else:
+                    await send_captcha_to_user(post_msg, user_chat_id, client)
+                    return
+            else:
+                await send_captcha_to_user(post_msg, user_chat_id, client)
+                return
         
         if not post_msg:
             logging.info("⚠️ Постов нет")
@@ -547,8 +1014,10 @@ async def do_one_cycle(client: TelegramClient, bot_username: str):
 # ============ ВОРКЕР ============
 
 async def run_gram_worker(client: TelegramClient, bot_username: str):
+    """Основной воркер"""
     try:
         logging.info(f"🚀 Запуск {bot_username}...")
+        logging.info(f"🤖 Авто-прохождение: {'ВКЛ' if AUTO_SOLVE_CAPTCHA else 'ВЫКЛ'}")
         
         await send_text(client, bot_username, "/start", 3)
         await send_text(client, bot_username, "👨‍💻 Заработать", 2)
