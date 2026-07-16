@@ -4,6 +4,7 @@ import asyncio
 import json
 import re
 from datetime import datetime
+from typing import Dict, Optional  # <--- ДОБАВИТЬ ЭТУ СТРОКУ
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
