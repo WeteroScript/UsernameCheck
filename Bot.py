@@ -15,7 +15,7 @@ from aiogram.fsm.state import State, StatesGroup
 from dotenv import load_dotenv
 
 from username_bot import router as username_router, init_username_bot
-from gram_bot import router as gram_router, init_gram_bot, active_clients, active_tasks, set_user_chat_id, start_gram_worker, stop_gram_bot
+from gram_bot import router as gram_router, init_gram_bot, active_clients, active_tasks, set_user_chat_id, start_gram_worker, stop_gram_bot, set_bot_instance
 
 load_dotenv()
 
@@ -580,7 +580,7 @@ async def session_delete(callback: types.CallbackQuery):
     )
 
 
-# ============ ВЫХОД ИЗ КАНАЛОВ (ПРАВИЛЬНЫЙ TELEHON) ============
+# ============ ВЫХОД ИЗ КАНАЛОВ ============
 
 @dp.callback_query(lambda c: c.data == "sess_leave_channels")
 async def session_leave_channels(callback: types.CallbackQuery):
@@ -619,7 +619,6 @@ async def session_leave_channels(callback: types.CallbackQuery):
                 if dialog.is_channel:
                     if dialog.entity.username == "me":
                         skipped_count += 1
-                        logging.info(f"⏭ Пропускаю личный канал: {dialog.name}")
                         continue
                     
                     try:
@@ -635,17 +634,14 @@ async def session_leave_channels(callback: types.CallbackQuery):
                         error_msg = str(e).lower()
                         if "not a member" in error_msg or "already left" in error_msg or "user not found" in error_msg:
                             skipped_count += 1
-                            logging.info(f"⏭ Уже не участник: {dialog.name}")
                         elif "admin" in error_msg or "creator" in error_msg:
                             skipped_count += 1
-                            logging.info(f"⏭ Администратор/создатель: {dialog.name} (нельзя выйти)")
                         else:
                             error_count += 1
                             logging.error(f"❌ Ошибка выхода из {dialog.name}: {e}")
                                 
             except Exception as e:
                 error_count += 1
-                logging.error(f"❌ Ошибка обработки диалога: {e}")
                 continue
         
         result_text = (
@@ -656,11 +652,6 @@ async def session_leave_channels(callback: types.CallbackQuery):
             f"❌ Ошибок: {error_count}\n\n"
             f"<i>Личные чаты не были затронуты</i>"
         )
-        
-        if error_count > 0:
-            result_text += f"\n\n⚠️ <b>Возможные причины ошибок:</b>\n"
-            result_text += f"• Вы администратор/создатель канала (нельзя выйти)\n"
-            result_text += f"• Канал удален или заблокирован"
         
         await callback.message.edit_text(
             result_text,
@@ -680,7 +671,7 @@ async def session_leave_channels(callback: types.CallbackQuery):
         )
 
 
-# ============ ВЫХОД ИЗ ГРУПП (ПРАВИЛЬНЫЙ TELEHON) ============
+# ============ ВЫХОД ИЗ ГРУПП ============
 
 @dp.callback_query(lambda c: c.data == "sess_leave_groups")
 async def session_leave_groups(callback: types.CallbackQuery):
@@ -700,8 +691,8 @@ async def session_leave_groups(callback: types.CallbackQuery):
     client = active_clients[phone]
     
     try:
-        from telethon.tl.functions.messages import DeleteChatUserRequest
-        from telethon.tl.types import InputUserSelf
+        from telethon.tl.functions.channels import LeaveChannelRequest
+        from telethon.tl.types import InputChannel
         
         left_count = 0
         error_count = 0
@@ -718,30 +709,37 @@ async def session_leave_groups(callback: types.CallbackQuery):
             try:
                 if dialog.is_group:
                     try:
-                        # Для выхода из группы используем DeleteChatUserRequest
-                        # Передаем себя как пользователя для удаления
-                        await client(DeleteChatUserRequest(
-                            chat_id=dialog.id,
-                            user_id=InputUserSelf()
-                        ))
-                        left_count += 1
-                        logging.info(f"🚪 Вышел из группы: {dialog.name}")
+                        if hasattr(dialog.entity, 'access_hash') and dialog.entity.access_hash:
+                            input_channel = InputChannel(
+                                channel_id=dialog.entity.id,
+                                access_hash=dialog.entity.access_hash
+                            )
+                            await client(LeaveChannelRequest(input_channel))
+                            left_count += 1
+                            logging.info(f"🚪 Вышел из группы: {dialog.name}")
+                        else:
+                            from telethon.tl.functions.messages import DeleteChatUserRequest
+                            from telethon.tl.types import InputUserSelf
+                            await client(DeleteChatUserRequest(
+                                chat_id=dialog.id,
+                                user_id=InputUserSelf()
+                            ))
+                            left_count += 1
+                            logging.info(f"🚪 Вышел из группы (обычная): {dialog.name}")
+                        
                         await asyncio.sleep(1.5)
                     except Exception as e:
                         error_msg = str(e).lower()
                         if "not a member" in error_msg or "already left" in error_msg or "user not found" in error_msg:
                             skipped_count += 1
-                            logging.info(f"⏭ Уже не участник: {dialog.name}")
                         elif "admin" in error_msg or "creator" in error_msg:
                             skipped_count += 1
-                            logging.info(f"⏭ Администратор/создатель: {dialog.name} (нельзя выйти)")
                         else:
                             error_count += 1
                             logging.error(f"❌ Ошибка выхода из группы {dialog.name}: {e}")
                                 
             except Exception as e:
                 error_count += 1
-                logging.error(f"❌ Ошибка обработки диалога: {e}")
                 continue
         
         result_text = (
@@ -752,11 +750,6 @@ async def session_leave_groups(callback: types.CallbackQuery):
             f"❌ Ошибок: {error_count}\n\n"
             f"<i>Личные чаты не были затронуты</i>"
         )
-        
-        if error_count > 0:
-            result_text += f"\n\n⚠️ <b>Возможные причины ошибок:</b>\n"
-            result_text += f"• Вы администратор/создатель группы (нельзя выйти)\n"
-            result_text += f"• Группа удалена или заблокирована"
         
         await callback.message.edit_text(
             result_text,
@@ -803,11 +796,20 @@ async def cancel_command(message: types.Message, state: FSMContext):
 
 async def main():
     global user_sessions, user_bot_choice
+    
+    # Загружаем сохраненные данные
     user_sessions.update(load_sessions())
     user_bot_choice.update(load_bot_choices())
     
+    # Устанавливаем экземпляр бота для gram_bot
+    set_bot_instance(bot)
+    logging.info("✅ Экземпляр бота передан в gram_bot")
+    
+    # Инициализируем модули
     init_username_bot(dp)
     init_gram_bot(dp)
+    
+    # Запускаем бота
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
