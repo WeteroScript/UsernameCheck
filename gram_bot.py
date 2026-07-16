@@ -24,7 +24,7 @@ router = Router()
 # ============ КОНФИГ ============
 
 API_ID = 2040
-API_HASH = "b18441a1ff607e10a989891a5462e627"  # ЗАМЕНИТЬ НА СВОЙ!
+API_HASH = "b18441a1ff607e10a989891a5462e627"
 
 active_clients: Dict[str, TelegramClient] = {}
 active_tasks: Dict[str, asyncio.Task] = {}
@@ -132,14 +132,14 @@ def get_task_choice_keyboard(user_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
-# ============ АВТО-ПОДПИСКА ============
+# ============ ПОДПИСКА НА КАНАЛЫ ============
 
-async def subscribe_to_channel(client: TelegramClient, bot_username: str, link: str) -> bool:
+async def subscribe_to_channel(client: TelegramClient, link: str) -> bool:
     """Подписка на канал по ссылке"""
     try:
-        logging.info(f"📢 Подписываюсь на канал: {link}")
+        logging.info(f"📢 Подписываюсь: {link}")
         
-        # Очищаем ссылку от лишних параметров
+        # Очищаем ссылку
         if "?" in link:
             link = link.split("?")[0]
         
@@ -157,70 +157,80 @@ async def subscribe_to_channel(client: TelegramClient, bot_username: str, link: 
                     entity = await client.get_entity(f"@{username}")
                     await client(JoinChannelRequest(entity))
         else:
-            # Прямой username
             entity = await client.get_entity(f"@{link}")
             await client(JoinChannelRequest(entity))
         
-        logging.info(f"✅ Подписался на канал: {link}")
+        logging.info(f"✅ Подписался: {link}")
         return True
         
     except errors.FloodWaitError as e:
-        logging.error(f"⏳ Flood wait: {e.seconds} секунд")
+        logging.error(f"⏳ Flood wait: {e.seconds} сек")
         return False
+    except errors.AlreadyInChannelError:
+        logging.info(f"✅ Уже подписан: {link}")
+        return True
     except Exception as e:
-        logging.error(f"❌ Ошибка подписки на {link}: {e}")
+        logging.error(f"❌ Ошибка подписки {link}: {e}")
         return False
 
 
-async def find_and_subscribe_channels_from_buttons(client: TelegramClient, bot_username: str, msg) -> int:
+async def find_and_subscribe_from_buttons(client: TelegramClient, msg) -> int:
     """
-    Поиск ссылок на каналы в кнопках и подписка на них
+    Поиск ссылок на каналы в кнопках и подписка
     """
     try:
         subscribed = 0
-        processed_urls = set()
         
         if not msg or not msg.buttons:
-            logging.info("ℹ️ Нет кнопок для подписки")
             return 0
-        
-        logging.info(f"📋 Найдено {len(msg.buttons)} рядов кнопок")
         
         for row in msg.buttons:
             for btn in row:
                 btn_data = get_button_data(btn)
+                btn_text = btn_data['text']
+                url = btn_data.get('url')
                 
-                # Проверяем, что это URL-кнопка (не WebApp)
-                if btn_data['is_url'] and btn_data['url']:
-                    url = btn_data['url']
-                    
-                    # Проверяем, что ссылка ведет на канал
-                    if "t.me/" in url and url not in processed_urls:
-                        processed_urls.add(url)
-                        
-                        # Проверяем, что это не ссылка на бота или капчу
-                        if "captcha" not in url.lower() and "webapp" not in url.lower():
-                            logging.info(f"🔗 Найдена кнопка с ссылкой: {btn_data['text']} -> {url}")
-                            success = await subscribe_to_channel(client, bot_username, url)
-                            if success:
-                                subscribed += 1
-                                await asyncio.sleep(1.5)
-        
-        if subscribed > 0:
-            logging.info(f"✅ Подписался на {subscribed} каналов через кнопки")
-        else:
-            logging.info("ℹ️ Не найдено ссылок на каналы в кнопках")
+                if not url:
+                    continue
+                
+                if "t.me/" not in url:
+                    continue
+                
+                if "captcha" in url.lower() or "webapp" in url.lower():
+                    continue
+                
+                # Проверяем, что это кнопка подписки
+                is_subscribe = False
+                
+                # Ключевые слова подписки
+                subscribe_keywords = ["подписат", "вступит", "присоединит", "join", "subscribe", "➕", "💰", "📢"]
+                
+                for kw in subscribe_keywords:
+                    if kw.lower() in btn_text.lower():
+                        is_subscribe = True
+                        break
+                
+                # Если есть сумма с знаком $ или +, тоже подписываемся
+                if re.search(r'[\+\$]\s*\d+', btn_text):
+                    is_subscribe = True
+                
+                if is_subscribe:
+                    logging.info(f"🔗 Кнопка подписки: '{btn_text}'")
+                    success = await subscribe_to_channel(client, url)
+                    if success:
+                        subscribed += 1
+                        await asyncio.sleep(1.5)
         
         return subscribed
         
     except Exception as e:
-        logging.error(f"❌ Ошибка поиска каналов в кнопках: {e}")
+        logging.error(f"❌ Ошибка поиска кнопок: {e}")
         return 0
 
 
-async def find_and_subscribe_channels_from_text(client: TelegramClient, bot_username: str, msg) -> int:
+async def find_and_subscribe_from_text(client: TelegramClient, msg) -> int:
     """
-    Поиск ссылок на каналы в тексте (запасной вариант)
+    Поиск ссылок в тексте (запасной вариант)
     """
     try:
         subscribed = 0
@@ -232,42 +242,34 @@ async def find_and_subscribe_channels_from_text(client: TelegramClient, bot_user
         if not channel_links:
             return 0
         
-        logging.info(f"📢 Найдено {len(channel_links)} ссылок в тексте")
-        
         for link in channel_links:
-            try:
-                full_link = f"t.me/{link}"
-                success = await subscribe_to_channel(client, bot_username, full_link)
-                if success:
-                    subscribed += 1
-                await asyncio.sleep(2)
-            except Exception as e:
-                logging.error(f"❌ Ошибка подписки: {e}")
-                continue
+            full_link = f"t.me/{link}"
+            success = await subscribe_to_channel(client, full_link)
+            if success:
+                subscribed += 1
+            await asyncio.sleep(2)
         
         return subscribed
         
     except Exception as e:
-        logging.error(f"❌ Ошибка поиска каналов в тексте: {e}")
+        logging.error(f"❌ Ошибка поиска в тексте: {e}")
         return 0
 
 
-async def find_and_subscribe_channels(client: TelegramClient, bot_username: str, msg) -> int:
+async def find_and_subscribe_channels(client: TelegramClient, msg) -> int:
     """
-    Комбинированный поиск каналов (сначала в кнопках, потом в тексте)
+    Комбинированный поиск (сначала кнопки, потом текст)
     """
-    total_subscribed = 0
+    total = 0
     
-    # Сначала ищем в кнопках
-    subscribed_buttons = await find_and_subscribe_channels_from_buttons(client, bot_username, msg)
-    total_subscribed += subscribed_buttons
+    # Сначала кнопки
+    total += await find_and_subscribe_from_buttons(client, msg)
     
-    # Потом в тексте (запасной вариант)
-    if total_subscribed == 0:
-        subscribed_text = await find_and_subscribe_channels_from_text(client, bot_username, msg)
-        total_subscribed += subscribed_text
+    # Если не нашли в кнопках - ищем в тексте
+    if total == 0:
+        total += await find_and_subscribe_from_text(client, msg)
     
-    return total_subscribed
+    return total
 
 
 # ============ ФУНКЦИИ СЕССИЙ ============
@@ -386,7 +388,6 @@ async def continue_gram_bot(phone: str) -> bool:
 # ============ ПРОВЕРКА КАПЧИ ============
 
 def is_captcha_message(msg) -> bool:
-    """Проверка на капчу по ключевым словам"""
     if not msg:
         return False
     
@@ -405,13 +406,12 @@ def is_captcha_message(msg) -> bool:
         "human verification",
         "введите код",
         "enter the code",
-        "security check",
-        "проверка безопасности"
+        "security check"
     ]
     
     for keyword in captcha_keywords:
         if keyword in text:
-            logging.info(f"🔍 Найдена капча: '{keyword}'")
+            logging.info(f"🔍 Капча: '{keyword}'")
             return True
     
     return False
@@ -442,7 +442,6 @@ async def send_captcha_to_user(msg, chat_id: int, client: TelegramClient) -> boo
             'msg_id': msg.id
         }
         
-        # Ищем ссылку на капчу
         captcha_url = None
         if msg.buttons:
             for row in msg.buttons:
@@ -467,7 +466,7 @@ async def send_captcha_to_user(msg, chat_id: int, client: TelegramClient) -> boo
                 f"⚠️ <b>Что делать:</b>\n"
                 f"1️⃣ Перейди по ссылке\n"
                 f"2️⃣ Пройди капчу\n"
-                f"3️⃣ Вернись сюда и отправь <b>/continue_gram</b>",
+                f"3️⃣ Вернись и отправь <b>/continue_gram</b>",
                 parse_mode=ParseMode.HTML
             )
             
@@ -477,7 +476,7 @@ async def send_captcha_to_user(msg, chat_id: int, client: TelegramClient) -> boo
                 [InlineKeyboardButton(text="🔄 Проверить", callback_data=f"captcha_check_{chat_id}")],
                 [InlineKeyboardButton(text="⏹ Остановить", callback_data=f"captcha_stop_{chat_id}")]
             ])
-            await bot.send_message(chat_id, "👆 Нажми на кнопку, чтобы открыть капчу", reply_markup=keyboard)
+            await bot.send_message(chat_id, "👆 Открыть капчу", reply_markup=keyboard)
         else:
             keyboard = InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="🔗 Перейти в бота", url=f"https://t.me/{bot_username}")],
@@ -486,14 +485,11 @@ async def send_captcha_to_user(msg, chat_id: int, client: TelegramClient) -> boo
             ])
             await bot.send_message(
                 chat_id,
-                f"⚠️ <b>Обнаружена капча!</b>\n"
-                f"🤖 Бот: @{bot_username}\n\n"
-                f"Пройдите капчу вручную в боте, затем нажмите 'Проверить'",
+                f"⚠️ <b>Капча!</b>\n🤖 @{bot_username}\nПройдите капчу и нажмите 'Проверить'",
                 parse_mode=ParseMode.HTML,
                 reply_markup=keyboard
             )
         
-        logging.info(f"✅ Ссылка на капчу отправлена пользователю {chat_id}")
         return True
         
     except Exception as e:
@@ -506,13 +502,11 @@ async def send_captcha_to_user(msg, chat_id: int, client: TelegramClient) -> boo
 @router.callback_query(lambda c: c.data and c.data.startswith("captcha_check_"))
 async def captcha_check_callback(callback: types.CallbackQuery):
     try:
-        parts = callback.data.split("_")
-        chat_id = int(parts[2])
-        
+        chat_id = int(callback.data.split("_")[2])
         await callback.answer("🔄 Проверяю...")
         
         if chat_id not in captcha_storage:
-            await callback.message.edit_text("✅ Капча уже пройдена!")
+            await callback.message.edit_text("✅ Капча пройдена!")
             return
         
         captcha_data = captcha_storage[chat_id]
@@ -522,7 +516,7 @@ async def captcha_check_callback(callback: types.CallbackQuery):
         new_msg = await get_last_message(client, bot_username)
         
         if new_msg and not is_captcha_message(new_msg):
-            await callback.message.edit_text("✅ <b>Капча пройдена!</b>\n\nПродолжаю работу...", parse_mode=ParseMode.HTML)
+            await callback.message.edit_text("✅ <b>Капча пройдена!</b>\n\nПродолжаю...", parse_mode=ParseMode.HTML)
             del captcha_storage[chat_id]
             
             phone = None
@@ -534,8 +528,7 @@ async def captcha_check_callback(callback: types.CallbackQuery):
                 await continue_gram_bot(phone)
         else:
             await callback.message.edit_text(
-                "⏳ <b>Капча еще активна</b>\n\n"
-                "Пройдите капчу по ссылке выше или в боте вручную, затем нажмите 'Проверить'",
+                "⏳ <b>Капча еще активна</b>\n\nПройдите капчу и нажмите 'Проверить'",
                 parse_mode=ParseMode.HTML
             )
             
@@ -547,23 +540,19 @@ async def captcha_check_callback(callback: types.CallbackQuery):
 @router.callback_query(lambda c: c.data and c.data.startswith("captcha_stop_"))
 async def captcha_stop_callback(callback: types.CallbackQuery):
     try:
-        parts = callback.data.split("_")
-        chat_id = int(parts[2])
+        chat_id = int(callback.data.split("_")[2])
         
         if chat_id in captcha_storage:
             del captcha_storage[chat_id]
         
-        await callback.answer("⏹ Бот остановлен")
+        await callback.answer("⏹ Остановлен")
         await callback.message.edit_text(
-            "⏹ <b>Бот остановлен</b>\n\n"
-            "Для продолжения отправьте /continue_gram",
+            "⏹ <b>Бот остановлен</b>\n\nОтправьте /continue_gram для продолжения",
             parse_mode=ParseMode.HTML
         )
     except Exception as e:
         logging.error(f"❌ Ошибка остановки: {e}")
 
-
-# ============ CALLBACK ВЫБОР ЗАДАНИЙ ============
 
 @router.callback_query(lambda c: c.data and c.data.startswith("task_choose_"))
 async def task_choose_callback(callback: types.CallbackQuery):
@@ -582,22 +571,20 @@ async def task_choose_callback(callback: types.CallbackQuery):
         
         if task_type in task_names:
             user_task_choice[user_id] = task_type
-            await callback.answer(f"✅ Выбрано: {task_names[task_type]}")
+            await callback.answer(f"✅ {task_names[task_type]}")
             
             await callback.message.edit_text(
-                f"✅ <b>Выбран тип заданий:</b>\n"
-                f"{task_names[task_type]}\n\n"
-                f"Теперь запусти бота и он будет выполнять задания этого типа.",
+                f"✅ <b>Выбран тип:</b>\n{task_names[task_type]}\n\nЗапусти бота для выполнения.",
                 parse_mode=ParseMode.HTML,
                 reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                     [InlineKeyboardButton(text="⬅️ Назад", callback_data="gram")]
                 ])
             )
         else:
-            await callback.answer("❌ Неверный тип заданий")
+            await callback.answer("❌ Неверный тип")
             
     except Exception as e:
-        logging.error(f"❌ Ошибка выбора заданий: {e}")
+        logging.error(f"❌ Ошибка выбора: {e}")
         await callback.answer(f"❌ Ошибка: {e}")
 
 
@@ -616,17 +603,14 @@ async def get_last_message(client: TelegramClient, bot_username: str):
         msgs = await client.get_messages(bot_username, limit=1)
         return msgs[0] if msgs else None
     except Exception as e:
-        logging.error(f"❌ Ошибка получения сообщений: {e}")
+        logging.error(f"❌ Ошибка получения: {e}")
         return None
 
 def log_message(msg, title="Сообщение"):
     if not msg:
-        logging.info(f"⚠️ {title}: пусто")
         return
     text = msg.raw_text or ""
-    logging.info(f"\n{'='*50}")
-    logging.info(f"📩 {title}")
-    logging.info(f"Текст: {text[:250]}")
+    logging.info(f"\n{'='*50}\n📩 {title}\nТекст: {text[:200]}")
     
     if msg.buttons:
         logging.info("📋 Кнопки:")
@@ -634,10 +618,8 @@ def log_message(msg, title="Сообщение"):
             for btn in row:
                 btn_data = get_button_data(btn)
                 btn_text = btn_data['text']
-                if btn_data['is_webapp']:
-                    btn_text += " (WebApp)"
-                elif btn_data['is_url']:
-                    btn_text += f" (URL: {btn_data['url'][:30]}...)"
+                if btn_data['is_url']:
+                    btn_text += f" [URL]"
                 logging.info(f"   └─ '{btn_text}'")
     logging.info(f"{'='*50}")
 
@@ -681,7 +663,7 @@ async def click_first_post_button(client: TelegramClient, bot_username: str, msg
                 await asyncio.sleep(wait)
                 return await get_last_message(client, bot_username)
             except Exception as e:
-                logging.error(f"❌ Ошибка клика: {e}")
+                logging.error(f"❌ Ошибка: {e}")
                 return None
     
     return None
@@ -699,7 +681,7 @@ def has_next_post_button(msg) -> bool:
     return False
 
 async def go_to_earn_menu(client: TelegramClient, bot_username: str):
-    logging.info("🔄 Возвращаюсь в меню заработка...")
+    logging.info("🔄 Возврат в меню...")
     await send_text(client, bot_username, "◀️ Назад", 1)
     await asyncio.sleep(1)
     await send_text(client, bot_username, "👨‍💻 Заработать", 2)
@@ -716,22 +698,29 @@ async def process_single_post(client: TelegramClient, bot_username: str, msg, ta
     if not msg:
         return None
     
-    text = msg.raw_text or ""
-    
-    # Авто-подписка (сначала в кнопках, потом в тексте)
+    # === АВТО-ПОДПИСКА НА КАНАЛЫ ===
     if AUTO_SUBSCRIBE and task_type in ["channels", "posts"]:
-        subscribed = await find_and_subscribe_channels(client, bot_username, msg)
+        # 1. СНАЧАЛА ПОДПИСЫВАЕМСЯ
+        subscribed = await find_and_subscribe_channels(client, msg)
         if subscribed > 0:
             logging.info(f"✅ Подписался на {subscribed} каналов")
+            
+            # 2. ПОТОМ НАЖИМАЕМ "ПРОВЕРИТЬ"
+            await asyncio.sleep(2)
+            await click_button(client, bot_username, msg, ["Проверить", "✅", "Готово"], wait=2)
+            
+            # 3. ПОЛУЧАЕМ ОБНОВЛЕННОЕ СООБЩЕНИЕ
+            msg = await get_last_message(client, bot_username)
+            if msg and is_captcha_message(msg):
+                await send_captcha_to_user(msg, user_chat_id, client)
+                return None
     
-    link_match = re.search(r"(https?://)?t\.me/\S+", text)
-    if link_match:
-        logging.info(f"🔗 Ссылка в тексте: {link_match.group()}")
-    
+    # === ОЖИДАНИЕ ПРОСМОТРА ===
     wait_time = random.randint(8, 15)
     logging.info(f"👀 Читаю пост {wait_time} сек...")
     await asyncio.sleep(wait_time)
     
+    # === КНОПКИ ПОДТВЕРЖДЕНИЯ ===
     confirm_keywords = ["✅", "Просмотрел", "Готово", "Выполнено", "Подтвердить", "Проверить", "Получить"]
     
     if task_type == "channels":
@@ -805,7 +794,7 @@ async def view_all_posts(client: TelegramClient, bot_username: str, msg, task_ty
             logging.info("🏁 Посты закончились")
             break
     
-    logging.info(f"\n✅ Всего просмотрено постов: {posts_viewed}")
+    logging.info(f"\n✅ Всего просмотрено: {posts_viewed}")
 
 
 # ============ ОСНОВНОЙ ЦИКЛ ============
@@ -815,7 +804,7 @@ async def do_one_cycle(client: TelegramClient, bot_username: str, user_id: int =
     if user_id and user_id in user_task_choice:
         task_type = user_task_choice[user_id]
     
-    logging.info(f"📋 Тип задания: {task_type}")
+    logging.info(f"📋 Тип: {task_type}")
     
     msg = await get_last_message(client, bot_username)
     
@@ -892,7 +881,7 @@ async def run_gram_worker(client: TelegramClient, bot_username: str):
             try:
                 await do_one_cycle(client, bot_username, user_chat_id)
             except Exception as e:
-                logging.error(f"❌ Ошибка в цикле: {e}")
+                logging.error(f"❌ Ошибка: {e}")
                 import traceback
                 traceback.print_exc()
                 await asyncio.sleep(5)
@@ -904,7 +893,7 @@ async def run_gram_worker(client: TelegramClient, bot_username: str):
     except asyncio.CancelledError:
         logging.info(f"⏹ {bot_username} остановлен")
     except Exception as e:
-        logging.error(f"❌ Критическая ошибка {bot_username}: {e}")
+        logging.error(f"❌ Критическая ошибка: {e}")
         import traceback
         traceback.print_exc()
     finally:
@@ -939,4 +928,4 @@ __all__ = [
     'get_task_choice_keyboard',
     'active_clients',
     'active_tasks'
-        ]
+    ]
