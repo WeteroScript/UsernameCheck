@@ -1,5 +1,5 @@
 """
-Модуль для Gram ботов - ТОЛЬКО ПОДПИСКИ (с паузой 1 минута)
+Модуль для Gram ботов - исправленная подписка
 """
 
 import asyncio
@@ -104,10 +104,10 @@ def get_task_choice_keyboard(user_id: int) -> InlineKeyboardMarkup:
 
 # ============ ПОДПИСКА ============
 
-async def subscribe_to_channel(client: TelegramClient, link: str) -> Tuple[bool, int]:
+async def subscribe_to_channel(client: TelegramClient, link: str) -> Tuple[bool, str]:
     """
     Подписка на канал
-    Возвращает: (успех, время ожидания если флуд)
+    Возвращает: (успех, сообщение)
     """
     try:
         logging.info(f"📢 Подписываюсь: {link}")
@@ -120,30 +120,40 @@ async def subscribe_to_channel(client: TelegramClient, link: str) -> Tuple[bool,
                 invite_hash = link.split("+")[-1]
                 if "/" in invite_hash:
                     invite_hash = invite_hash.split("/")[0]
-                await client(ImportChatInviteRequest(invite_hash))
+                result = await client(ImportChatInviteRequest(invite_hash))
+                # Если запрос прошел успешно - подписка выполнена
+                logging.info(f"✅ Подписался (invite): {link}")
+                return True, "success"
             else:
                 username = link.split("t.me/")[-1].split("/")[0]
                 if username:
                     entity = await client.get_entity(f"@{username}")
                     await client(JoinChannelRequest(entity))
+                    logging.info(f"✅ Подписался (channel): {link}")
+                    return True, "success"
         else:
             entity = await client.get_entity(f"@{link}")
             await client(JoinChannelRequest(entity))
+            logging.info(f"✅ Подписался: {link}")
+            return True, "success"
         
-        logging.info(f"✅ Подписался: {link}")
-        return True, 0
+        return True, "success"
         
     except errors.FloodWaitError as e:
         wait_time = e.seconds
         logging.error(f"⏳ Flood wait: {wait_time} сек")
-        return False, wait_time
+        return False, f"flood:{wait_time}"
     except Exception as e:
         error_msg = str(e).lower()
         if "already" in error_msg or "already participant" in error_msg:
             logging.info(f"✅ Уже подписан: {link}")
-            return True, 0
+            return True, "already"
+        # Проверяем на "successfully requested to join"
+        if "successfully requested" in error_msg:
+            logging.info(f"✅ Запрос на вступление отправлен: {link}")
+            return True, "requested"
         logging.error(f"❌ Ошибка подписки {link}: {e}")
-        return False, 0
+        return False, str(e)
 
 
 async def click_button(client: TelegramClient, bot_username: str, msg, keywords: list, wait: float = 2):
@@ -242,7 +252,7 @@ async def start_gram_worker(client: TelegramClient, bot_username: str, phone: st
         set_user_chat_id(user_id)
     
     bot_username_for_task[phone] = bot_username
-    task = asyncio.create_task(run_gram_worker(client, bot_username))
+    task = asyncio.create_task(run_gram_worker(client, bot_username, phone))
     active_tasks[phone] = task
     logging.info(f"✅ Воркер запущен для {phone}")
     return task
@@ -268,7 +278,7 @@ async def continue_gram_bot(phone: str) -> bool:
         client = active_clients[phone]
         bot_username = bot_username_for_task[phone]
         
-        task = asyncio.create_task(run_gram_worker(client, bot_username))
+        task = asyncio.create_task(run_gram_worker(client, bot_username, phone))
         active_tasks[phone] = task
         logging.info(f"✅ Gram бот продолжен: {phone}")
         return True
@@ -462,12 +472,7 @@ async def go_to_earn_menu(client: TelegramClient, bot_username: str):
 
 # ============ ОСНОВНАЯ ЛОГИКА ПОДПИСКИ ============
 
-async def process_channel_list(client: TelegramClient, bot_username: str, msg):
-    """
-    Обработка списка каналов с кнопками "+X $ | Подписаться" и "Проверить"
-    """
-    global SUBSCRIBE_DELAY
-    
+async def process_channel_list(client: TelegramClient, bot_username: str, msg, phone: str):
     try:
         logging.info("📋 Обрабатываю список каналов...")
         
@@ -495,19 +500,14 @@ async def process_channel_list(client: TelegramClient, bot_username: str, msg):
         
         # 1. Подписываемся
         url = get_button_url(subscribe_btn)
-        success, wait_time = await subscribe_to_channel(client, url)
-        
-        # Если флуд - ждем указанное время
-        if wait_time > 0:
-            logging.info(f"⏳ Жду {wait_time} секунд из-за флуда...")
-            await asyncio.sleep(min(wait_time, 60))  # Максимум 60 секунд ждем
+        success, result_msg = await subscribe_to_channel(client, url)
         
         if not success:
-            logging.warning("⚠️ Не удалось подписаться")
+            logging.warning(f"⚠️ Не удалось подписаться: {result_msg}")
             return msg
         
-        # 2. Ждем 1 минуту перед следующим действием
-        logging.info(f"⏳ Жду {SUBSCRIBE_DELAY} секунд перед следующей подпиской...")
+        # 2. Ждем 1 минуту перед проверкой
+        logging.info(f"⏳ Жду {SUBSCRIBE_DELAY} секунд перед проверкой...")
         await asyncio.sleep(SUBSCRIBE_DELAY)
         
         # 3. Ищем кнопку "Проверить" и нажимаем
@@ -544,6 +544,7 @@ async def process_channel_list(client: TelegramClient, bot_username: str, msg):
             elif "вы не подписаны" in text.lower():
                 logging.warning("⚠️ Подписка не подтверждена, пробуем еще раз...")
                 await asyncio.sleep(2)
+                # Пробуем нажать Проверить еще раз
                 for row in updated_msg.buttons:
                     for btn in row:
                         btn_text = get_button_text(btn).lower()
@@ -555,6 +556,9 @@ async def process_channel_list(client: TelegramClient, bot_username: str, msg):
                         continue
                     break
                 return await get_last_message(client, bot_username)
+            elif "успешно" in text.lower() or "подписались" in text.lower():
+                logging.info("✅ Подписка подтверждена!")
+                return updated_msg
         
         return updated_msg or msg
         
@@ -563,7 +567,7 @@ async def process_channel_list(client: TelegramClient, bot_username: str, msg):
         return msg
 
 
-async def do_one_cycle(client: TelegramClient, bot_username: str, user_id: int = None):
+async def do_one_cycle(client: TelegramClient, bot_username: str, user_id: int = None, phone: str = None):
     global SUBSCRIBE_DELAY
     
     task_type = user_task_choice.get(user_id, "channels")
@@ -612,7 +616,7 @@ async def do_one_cycle(client: TelegramClient, bot_username: str, user_id: int =
         
         if has_subscribe:
             logging.info("📢 Найден список каналов")
-            updated = await process_channel_list(client, bot_username, updated)
+            updated = await process_channel_list(client, bot_username, updated, phone)
             
             if updated and is_captcha_message(updated):
                 await send_captcha_to_user(updated, user_chat_id, client)
@@ -621,11 +625,10 @@ async def do_one_cycle(client: TelegramClient, bot_username: str, user_id: int =
             await asyncio.sleep(2)
             await go_to_earn_menu(client, bot_username)
             
-            # Пауза 1 минута перед следующим циклом
             logging.info(f"⏳ Пауза {SUBSCRIBE_DELAY} секунд перед следующим циклом...")
             await asyncio.sleep(SUBSCRIBE_DELAY)
             
-            await do_one_cycle(client, bot_username, user_id)
+            await do_one_cycle(client, bot_username, user_id, phone)
             return
         
         has_check = False
@@ -656,17 +659,15 @@ async def do_one_cycle(client: TelegramClient, bot_username: str, user_id: int =
                 logging.info("💰 Начисление получено!")
                 await go_to_earn_menu(client, bot_username)
                 
-                # Пауза 1 минута перед следующим циклом
                 logging.info(f"⏳ Пауза {SUBSCRIBE_DELAY} секунд перед следующим циклом...")
                 await asyncio.sleep(SUBSCRIBE_DELAY)
                 
-                await do_one_cycle(client, bot_username, user_id)
+                await do_one_cycle(client, bot_username, user_id, phone)
                 return
         
         await go_to_earn_menu(client, bot_username)
         return
     
-    # Для постов
     wait_time = random.randint(8, 15)
     logging.info(f"👀 Читаю пост {wait_time} сек...")
     await asyncio.sleep(wait_time)
@@ -682,7 +683,7 @@ async def do_one_cycle(client: TelegramClient, bot_username: str, user_id: int =
 
 # ============ ВОРКЕР ============
 
-async def run_gram_worker(client: TelegramClient, bot_username: str):
+async def run_gram_worker(client: TelegramClient, bot_username: str, phone: str):
     global SUBSCRIBE_DELAY
     
     try:
@@ -701,14 +702,13 @@ async def run_gram_worker(client: TelegramClient, bot_username: str):
             logging.info(f"{'#'*60}")
             
             try:
-                await do_one_cycle(client, bot_username, user_chat_id)
+                await do_one_cycle(client, bot_username, user_chat_id, phone)
             except Exception as e:
                 logging.error(f"❌ Ошибка: {e}")
                 import traceback
                 traceback.print_exc()
                 await asyncio.sleep(5)
             
-            # Пауза между циклами (5-10 секунд)
             pause = random.randint(5, 10)
             logging.info(f"⏸️ Пауза {pause} сек...")
             await asyncio.sleep(pause)
@@ -751,4 +751,4 @@ __all__ = [
     'get_task_choice_keyboard',
     'active_clients',
     'active_tasks'
-                   ]
+    ]
