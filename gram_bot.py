@@ -192,6 +192,33 @@ async def click_button(client: TelegramClient, bot_username: str, msg, keywords:
     return None
 
 
+async def find_button_with_retry(
+    client: TelegramClient,
+    bot_username: str,
+    keywords: list,
+    max_attempts: int = 5,
+    delay_between: float = 2.0
+):
+    """
+    Пытается найти сообщение с нужной кнопкой, перечитывая последнее
+    сообщение несколько раз (борьба с гонкой, когда бот еще не успел
+    прислать/обновить меню).
+    Возвращает (msg_с_кнопкой, matched_button) или (None, None)
+    """
+    for attempt in range(1, max_attempts + 1):
+        msg = await get_last_message(client, bot_username)
+        if msg and msg.buttons:
+            for row in msg.buttons:
+                for btn in row:
+                    btn_text = get_button_text(btn).lower()
+                    for kw in keywords:
+                        if kw.lower() in btn_text:
+                            return msg, btn
+        logging.info(f"⏳ Кнопка {keywords} не найдена (попытка {attempt}/{max_attempts}), жду...")
+        await asyncio.sleep(delay_between)
+    return None, None
+
+
 # ============ ФУНКЦИИ СЕССИЙ ============
 
 def cleanup_session_files(phone: str):
@@ -603,7 +630,15 @@ async def go_to_earn_menu(client: TelegramClient, bot_username: str):
     await send_text(client, bot_username, "◀️ Назад", 1)
     await asyncio.sleep(1)
     await send_text(client, bot_username, "👨‍💻 Заработать", 2)
-    return await get_last_message(client, bot_username)
+
+    # Ждем, пока бот реально пришлет меню (борьба с гонкой)
+    msg = None
+    for _ in range(5):
+        msg = await get_last_message(client, bot_username)
+        if msg and msg.buttons:
+            break
+        await asyncio.sleep(1.5)
+    return msg
 
 
 # ============ ОСНОВНАЯ ЛОГИКА ПОДПИСКИ ============
@@ -619,200 +654,37 @@ def _find_next_page_button(msg):
     return None
 
 
-def build_task_list(msg) -> Tuple[List[Tuple[Any, Any]], bool]:
+def find_row_pairs(msg) -> List[Tuple[Any, Any]]:
     """
-    Универсальный парсер заданий подписки.
-    Возвращает (список пар (url_btn, check_btn), is_batch_mode)
-
-    is_batch_mode=True  -> общий список ссылок + ОДНА общая кнопка "Проверить"
-                            (нужно подписаться на все, потом жать одну кнопку)
-    is_batch_mode=False -> у каждой подписки СВОЯ кнопка "Проверить" в том же ряду
-                            (обрабатываем поштучно)
+    Находит пары кнопок (подписка_url, проверить) в одном ряду.
+    Формат PR GRAM: каждая строка = одно задание,
+    слева кнопка "+N💰 | Подписаться" со ссылкой на канал,
+    справа - привязанная к НЕЙ ЖЕ кнопка "Проверить".
     """
+    pairs = []
     if not msg or not msg.buttons:
-        return [], False
+        return pairs
 
-    rows_info = []
     for row in msg.buttons:
-        row_urls = []
-        row_checks = []
+        sub_btn = None
+        check_btn = None
         for btn in row:
             url = get_button_url(btn)
             text = get_button_text(btn).lower()
             if url and "t.me/" in url:
-                row_urls.append(btn)
+                sub_btn = btn
             elif "провер" in text or "✅" in text:
-                row_checks.append(btn)
-        rows_info.append((row_urls, row_checks))
-
-    has_paired_row = any(r[0] and r[1] for r in rows_info)
-
-    if has_paired_row:
-        # Построчный режим: своя проверка на каждую подписку
-        tasks = []
-        pending_check = None
-        for row_urls, row_checks in rows_info:
-            if row_checks:
-                pending_check = row_checks[0]
-            for url_btn in row_urls:
-                check_btn = row_checks[0] if row_checks else pending_check
-                if check_btn:
-                    tasks.append((url_btn, check_btn))
-        return tasks, False
-
-    # Общий (пакетный) режим: все ссылки + одна общая кнопка проверки
-    all_urls = [btn for row_urls, _ in rows_info for btn in row_urls]
-    all_checks = [btn for _, row_checks in rows_info for btn in row_checks]
-
-    if all_urls and all_checks:
-        common_check = all_checks[-1]
-        tasks = [(url_btn, common_check) for url_btn in all_urls]
-        return tasks, True
-
-    return [], False
-
-
-async def _process_batch_tasks(client: TelegramClient, bot_username: str, msg, tasks: List[Tuple[Any, Any]]):
-    """Пакетный режим: подписываемся на все ссылки, потом жмём одну общую кнопку Проверить"""
-    urls = [get_button_url(t[0]) for t in tasks]
-    common_check_btn = tasks[0][1]
-
-    logging.info(f"🔗 Найдено каналов для подписки (пакет): {len(urls)}")
-
-    for i, url in enumerate(urls, 1):
-        logging.info(f"📢 [{i}/{len(urls)}] {url}")
-        success, result = await subscribe_to_channel(client, url)
-
-        if not success and result.startswith("flood:"):
-            wait_sec = int(result.split(":")[1])
-            logging.warning(f"⏳ Flood wait {wait_sec} сек, жду...")
-            await asyncio.sleep(min(wait_sec, 300))
-
-        await asyncio.sleep(random.uniform(2, 4))
-
-    logging.info(f"⏳ Жду {SUBSCRIBE_DELAY} секунд перед проверкой...")
-    await asyncio.sleep(SUBSCRIBE_DELAY)
-
-    max_attempts = 3
-    updated_msg = None
-    check_btn = common_check_btn
-
-    for attempt in range(1, max_attempts + 1):
-        logging.info(f"✅ Нажимаю Проверить (попытка {attempt}/{max_attempts})")
-        try:
-            await check_btn.click()
-        except Exception as e:
-            logging.error(f"❌ Ошибка клика Проверить: {e}")
-            break
-
-        await asyncio.sleep(3)
-        updated_msg = await get_last_message(client, bot_username)
-
-        if not updated_msg:
-            continue
-
-        if is_captcha_message(updated_msg):
-            return updated_msg
-
-        text = (updated_msg.raw_text or "").lower()
-        logging.info(f"📝 Ответ: {text[:200]}")
-
-        if "начислено" in text or "успешно" in text or "подписались" in text:
-            logging.info("💰 Подписка подтверждена, начисление получено!")
-            return updated_msg
-
-        if "не подписан" in text:
-            logging.warning("⚠️ Бот считает, что подписка не пройдена, повторяю...")
-
-            for url in urls:
-                await subscribe_to_channel(client, url)
-                await asyncio.sleep(random.uniform(2, 4))
-
-            new_tasks, _ = build_task_list(updated_msg)
-            if new_tasks:
-                check_btn = new_tasks[0][1]
-
-            await asyncio.sleep(SUBSCRIBE_DELAY)
-            continue
-
-        return updated_msg
-
-    return updated_msg or msg
-
-
-async def _process_individual_tasks(client: TelegramClient, bot_username: str, msg, tasks: List[Tuple[Any, Any]]):
-    """Построчный режим: у каждой подписки своя кнопка Проверить"""
-    logging.info(f"🔗 Заданий на этой странице: {len(tasks)}")
-    last_msg = msg
-
-    for i, (url_btn, check_btn) in enumerate(tasks, 1):
-        url = get_button_url(url_btn)
-        btn_text = get_button_text(url_btn)
-        logging.info(f"📢 [{i}/{len(tasks)}] '{btn_text}' -> {url}")
-
-        success, result = await subscribe_to_channel(client, url)
-
-        if not success and result.startswith("flood:"):
-            wait_sec = int(result.split(":")[1])
-            logging.warning(f"⏳ Flood wait {wait_sec} сек, жду...")
-            await asyncio.sleep(min(wait_sec, 300))
-
-        await asyncio.sleep(random.uniform(2, 4))
-        await asyncio.sleep(SUBSCRIBE_DELAY)
-
-        current_check_btn = check_btn
-        max_attempts = 3
-        updated_msg = None
-
-        for attempt in range(1, max_attempts + 1):
-            logging.info(f"✅ Нажимаю Проверить для '{btn_text}' (попытка {attempt}/{max_attempts})")
-            try:
-                await current_check_btn.click()
-            except Exception as e:
-                logging.error(f"❌ Ошибка клика Проверить: {e}")
-                break
-
-            await asyncio.sleep(3)
-            updated_msg = await get_last_message(client, bot_username)
-
-            if not updated_msg:
-                continue
-
-            if is_captcha_message(updated_msg):
-                return updated_msg
-
-            resp_text = (updated_msg.raw_text or "").lower()
-            logging.info(f"📝 Ответ: {resp_text[:200]}")
-
-            if "начислено" in resp_text or "успешно" in resp_text or "подписались" in resp_text:
-                logging.info(f"💰 '{btn_text}' — начисление получено!")
-                last_msg = updated_msg
-                break
-
-            if "не подписан" in resp_text:
-                logging.warning(f"⚠️ '{btn_text}' — подписка не засчитана, повторяю...")
-                await subscribe_to_channel(client, url)
-                await asyncio.sleep(random.uniform(2, 4))
-                await asyncio.sleep(SUBSCRIBE_DELAY)
-
-                new_tasks, _ = build_task_list(updated_msg)
-                if len(new_tasks) >= i:
-                    current_check_btn = new_tasks[i - 1][1]
-                last_msg = updated_msg
-                continue
-
-            last_msg = updated_msg
-            break
-
-    return last_msg
+                check_btn = btn
+        if sub_btn and check_btn:
+            pairs.append((sub_btn, check_btn))
+    return pairs
 
 
 async def process_channel_list(client: TelegramClient, bot_username: str, msg, phone: str):
     """
     Обрабатывает список заданий на подписку постранично.
-    Поддерживает 2 формата:
-      - общий список ссылок + одна общая кнопка "Проверить"
-      - у каждой ссылки своя кнопка "Проверить" в том же ряду
+    Каждое задание (ряд) обрабатывается независимо: своя ссылка + своя
+    привязанная кнопка "Проверить" в этом же ряду.
     """
     try:
         logging.info("📋 Обрабатываю задание(я) на подписку...")
@@ -829,19 +701,92 @@ async def process_channel_list(client: TelegramClient, bot_username: str, msg, p
             if is_captcha_message(msg):
                 return msg
 
-            tasks, is_batch = build_task_list(msg)
+            task_pairs = find_row_pairs(msg)
 
-            if not tasks:
-                logging.warning("⚠️ Не найдены задания на подписку в текущем сообщении")
+            if not task_pairs:
+                logging.warning("⚠️ Не найдены пары (подписка + проверка) в текущем сообщении")
                 return msg
 
-            if is_batch:
-                msg = await _process_batch_tasks(client, bot_username, msg, tasks)
-            else:
-                msg = await _process_individual_tasks(client, bot_username, msg, tasks)
+            logging.info(f"🔗 Заданий на этой странице: {len(task_pairs)}")
 
-            if msg and is_captcha_message(msg):
-                return msg
+            for i, (sub_btn, check_btn) in enumerate(task_pairs, 1):
+                url = get_button_url(sub_btn)
+                btn_text = get_button_text(sub_btn)
+                logging.info(f"📢 [{i}/{len(task_pairs)}] '{btn_text}' -> {url}")
+
+                success, result = await subscribe_to_channel(client, url)
+
+                if not success and result.startswith("flood:"):
+                    wait_sec = int(result.split(":")[1])
+                    logging.warning(f"⏳ Flood wait {wait_sec} сек, жду...")
+                    await asyncio.sleep(min(wait_sec, 300))
+
+                await asyncio.sleep(random.uniform(2, 4))
+
+                logging.info(f"⏳ Жду {SUBSCRIBE_DELAY} секунд перед проверкой...")
+                await asyncio.sleep(SUBSCRIBE_DELAY)
+
+                current_check_btn = check_btn
+                max_attempts = 3
+                checked_ok = False
+                updated_msg = None
+
+                for attempt in range(1, max_attempts + 1):
+                    logging.info(f"✅ Нажимаю Проверить для '{btn_text}' (попытка {attempt}/{max_attempts})")
+                    try:
+                        await current_check_btn.click()
+                    except Exception as e:
+                        logging.error(f"❌ Ошибка клика Проверить: {e}")
+                        break
+
+                    await asyncio.sleep(3)
+                    updated_msg = await get_last_message(client, bot_username)
+
+                    if not updated_msg:
+                        continue
+
+                    if is_captcha_message(updated_msg):
+                        return updated_msg
+
+                    resp_text = (updated_msg.raw_text or "").lower()
+                    logging.info(f"📝 Ответ: {resp_text[:200]}")
+
+                    if "начислено" in resp_text or "успешно" in resp_text or "подписались" in resp_text:
+                        logging.info(f"💰 '{btn_text}' — начисление получено!")
+                        checked_ok = True
+                        msg = updated_msg
+                        break
+
+                    if "не подписан" in resp_text:
+                        logging.warning(f"⚠️ '{btn_text}' — подписка не засчитана, повторяю...")
+                        await subscribe_to_channel(client, url)
+                        await asyncio.sleep(random.uniform(2, 4))
+                        await asyncio.sleep(SUBSCRIBE_DELAY)
+
+                        # Ищем актуальную кнопку "Проверить" именно в этом же ряду задания
+                        new_pairs = find_row_pairs(updated_msg)
+                        # ищем по URL, а не по индексу - надежнее если список сдвинулся
+                        matched = None
+                        for nu, nc in new_pairs:
+                            if get_button_url(nu) == url:
+                                matched = nc
+                                break
+                        if matched:
+                            current_check_btn = matched
+                        elif len(new_pairs) >= i:
+                            current_check_btn = new_pairs[i - 1][1]
+
+                        msg = updated_msg
+                        continue
+
+                    # неизвестный ответ - сохраняем сообщение и переходим к следующему заданию
+                    msg = updated_msg
+                    break
+
+                if not checked_ok:
+                    logging.warning(f"⚠️ Не удалось подтвердить подписку '{btn_text}' после {max_attempts} попыток")
+                    if updated_msg:
+                        msg = updated_msg
 
             # обновляем сообщение перед проверкой пагинации
             fresh_msg = await get_last_message(client, bot_username)
@@ -882,29 +827,49 @@ async def do_one_cycle(client: TelegramClient, bot_username: str, user_id: int =
     task_type = user_task_choice.get(user_id, "channels")
     logging.info(f"📋 Тип: {task_type}")
 
-    msg = await get_last_message(client, bot_username)
+    if task_type == "channels":
+        target_keywords = ["подписаться на канал", "📢"]
+    else:
+        target_keywords = ["просмотр постов", "👁", "📱"]
 
+    # Проверка на капчу в текущем последнем сообщении
+    msg = await get_last_message(client, bot_username)
     if msg and is_captcha_message(msg):
         await send_captcha_to_user(msg, user_chat_id, client)
         return
 
-    if task_type == "channels":
-        target_button = "Подписаться на канал"
-    else:
-        target_button = "Просмотр постов"
+    logging.info(f"🎯 Ищу кнопку: {target_keywords[0]}")
 
-    logging.info(f"🎯 Нажимаю: {target_button}")
+    # Ищем кнопку с повторными попытками (борьба с гонкой обновления меню)
+    menu_msg, target_btn = await find_button_with_retry(
+        client, bot_username, target_keywords, max_attempts=5, delay_between=2.0
+    )
 
-    updated = await click_button(client, bot_username, msg, [target_button], wait=2)
+    if not target_btn:
+        logging.warning(f"⚠️ Кнопка {target_keywords} не найдена, обновляю меню...")
+        menu_msg = await go_to_earn_menu(client, bot_username)
+        menu_msg, target_btn = await find_button_with_retry(
+            client, bot_username, target_keywords, max_attempts=5, delay_between=2.0
+        )
+
+    if not target_btn:
+        logging.info(f"❌ Кнопка {target_keywords} так и не найдена")
+        await go_to_earn_menu(client, bot_username)
+        return
+
+    logging.info(f"✅ Нажимаю: '{get_button_text(target_btn)}'")
+    try:
+        await target_btn.click()
+        await asyncio.sleep(2)
+    except Exception as e:
+        logging.error(f"❌ Ошибка клика: {e}")
+        await go_to_earn_menu(client, bot_username)
+        return
+
+    updated = await get_last_message(client, bot_username)
 
     if not updated:
-        if task_type == "channels":
-            updated = await click_button(client, bot_username, msg, ["Каналы", "📢"], wait=2)
-        else:
-            updated = await click_button(client, bot_username, msg, ["Посты", "👁"], wait=2)
-
-    if not updated:
-        logging.info(f"❌ Кнопка '{target_button}' не найдена")
+        logging.info("❌ Не удалось получить обновленное сообщение")
         await go_to_earn_menu(client, bot_username)
         return
 
@@ -940,6 +905,7 @@ async def do_one_cycle(client: TelegramClient, bot_username: str, user_id: int =
         await go_to_earn_menu(client, bot_username)
         return
 
+    # task_type == "posts"
     wait_time = random.randint(8, 15)
     logging.info(f"👀 Читаю пост {wait_time} сек...")
     await asyncio.sleep(wait_time)
@@ -1021,4 +987,4 @@ __all__ = [
     'get_task_choice_keyboard',
     'active_clients',
     'active_tasks'
-    ]
+        ]
