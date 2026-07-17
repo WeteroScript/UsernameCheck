@@ -75,32 +75,8 @@ def get_button_url(btn) -> Optional[str]:
         return None
 
 
-def is_inline_button(btn) -> bool:
-    """Inline кнопка (callback или url) — нажимается через .click()"""
-    try:
-        from telethon.tl.types import (
-            KeyboardButtonCallback,
-            KeyboardButtonUrl,
-            KeyboardButtonSwitchInline,
-        )
-        inner = getattr(btn, 'button', btn)
-        return isinstance(inner, (KeyboardButtonCallback, KeyboardButtonUrl, KeyboardButtonSwitchInline))
-    except:
-        return False
-
-
-def is_reply_button(btn) -> bool:
-    """Reply кнопка — нажимается через отправку текста"""
-    try:
-        from telethon.tl.types import KeyboardButton
-        inner = getattr(btn, 'button', btn)
-        return type(inner).__name__ == 'KeyboardButton'
-    except:
-        return False
-
-
 def get_msg_snapshot(msg) -> str:
-    """Снимок состояния сообщения для отслеживания изменений."""
+    """Снимок сообщения для отслеживания изменений (edit)."""
     if not msg:
         return ""
     parts = [msg.raw_text or ""]
@@ -122,7 +98,9 @@ def get_task_choice_keyboard(user_id: int) -> InlineKeyboardMarkup:
     for task_key, task_name in task_types.items():
         is_selected = user_task_choice.get(user_id) == task_key
         text = f"{'✅ ' if is_selected else ''}{task_name}"
-        buttons.append([InlineKeyboardButton(text=text, callback_data=f"task_choose_{task_key}")])
+        buttons.append([InlineKeyboardButton(
+            text=text, callback_data=f"task_choose_{task_key}"
+        )])
     buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="gram")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
@@ -210,7 +188,10 @@ def _cleanup_wal_files(session_name: str):
 
 async def _enable_wal_mode(client: TelegramClient):
     try:
-        conn = getattr(client.session, "_conn", None) or getattr(client.session, "conn", None)
+        conn = (
+            getattr(client.session, "_conn", None)
+            or getattr(client.session, "conn", None)
+        )
         if conn:
             conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("PRAGMA busy_timeout=10000")
@@ -260,7 +241,9 @@ async def send_code(phone: str, bot_username: str) -> bool:
     return await send_code(phone, bot_username)
 
 
-async def start_gram_bot(phone: str, code: str, bot_username: str, chat_id: int = None) -> bool:
+async def start_gram_bot(
+    phone: str, code: str, bot_username: str, chat_id: int = None
+) -> bool:
     if chat_id:
         set_user_chat_id(chat_id)
     phone = phone.strip()
@@ -310,7 +293,9 @@ async def start_gram_bot(phone: str, code: str, bot_username: str, chat_id: int 
     return await start_gram_bot(phone, code, bot_username, chat_id)
 
 
-async def start_gram_worker(client: TelegramClient, bot_username: str, phone: str, user_id: int = None):
+async def start_gram_worker(
+    client: TelegramClient, bot_username: str, phone: str, user_id: int = None
+):
     if user_id:
         set_user_chat_id(user_id)
     if not client.is_connected():
@@ -379,7 +364,11 @@ async def send_captcha_to_user(msg, chat_id: int, client: TelegramClient) -> boo
                 bu = ent.username or "gram_prbot"
         except:
             bu = "gram_prbot"
-        captcha_storage[chat_id] = {'client': client, 'bot_username': bu, 'msg_id': msg.id}
+
+        captcha_storage[chat_id] = {
+            'client': client, 'bot_username': bu, 'msg_id': msg.id
+        }
+
         captcha_url = None
         if msg.buttons:
             for row in msg.buttons:
@@ -389,6 +378,7 @@ async def send_captcha_to_user(msg, chat_id: int, client: TelegramClient) -> boo
                         break
                 if captcha_url:
                     break
+
         if captcha_url:
             await bot_instance.send_message(
                 chat_id,
@@ -397,8 +387,12 @@ async def send_captcha_to_user(msg, chat_id: int, client: TelegramClient) -> boo
             )
             kb = InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="🌐 Открыть", url=captcha_url)],
-                [InlineKeyboardButton(text="🔄 Проверить", callback_data=f"captcha_check_{chat_id}")],
-                [InlineKeyboardButton(text="⏹ Остановить", callback_data=f"captcha_stop_{chat_id}")]
+                [InlineKeyboardButton(
+                    text="🔄 Проверить", callback_data=f"captcha_check_{chat_id}"
+                )],
+                [InlineKeyboardButton(
+                    text="⏹ Остановить", callback_data=f"captcha_stop_{chat_id}"
+                )]
             ])
             await bot_instance.send_message(chat_id, "👆", reply_markup=kb)
         return True
@@ -424,7 +418,9 @@ async def captcha_check_callback(callback: types.CallbackQuery):
         if new_msg and not is_captcha_message(new_msg):
             await callback.message.edit_text("✅ Капча пройдена!")
             del captcha_storage[chat_id]
-            phone = next((p for p, c in active_clients.items() if c == client), None)
+            phone = next(
+                (p for p, c in active_clients.items() if c == client), None
+            )
             if phone:
                 await continue_gram_bot(phone)
         else:
@@ -449,7 +445,10 @@ async def task_choose_callback(callback: types.CallbackQuery):
     try:
         task_type = callback.data.replace("task_choose_", "")
         user_id = callback.from_user.id
-        task_names = {"channels": "📢 Подписка на каналы", "posts": "📱 Просмотр постов"}
+        task_names = {
+            "channels": "📢 Подписка на каналы",
+            "posts": "📱 Просмотр постов"
+        }
         if task_type in task_names:
             user_task_choice[user_id] = task_type
             await callback.answer(f"✅ {task_names[task_type]}")
@@ -479,132 +478,91 @@ async def get_last_message(client: TelegramClient, bot_username: str):
         return None
 
 
-async def send_text_and_wait(
+async def wait_for_change(
+    client: TelegramClient,
+    bot_username: str,
+    before_id: int,
+    before_snap: str,
+    timeout: float = 15.0
+):
+    """
+    Ждёт пока последнее сообщение изменится:
+    - новый id (новое сообщение) ИЛИ
+    - тот же id но другой контент (edit)
+    """
+    deadline = asyncio.get_event_loop().time() + timeout
+    while asyncio.get_event_loop().time() < deadline:
+        await asyncio.sleep(0.8)
+        msg = await get_last_message(client, bot_username)
+        if not msg:
+            continue
+        if msg.id != before_id:
+            logging.info("📨 Получено новое сообщение")
+            return msg
+        if get_msg_snapshot(msg) != before_snap:
+            logging.info("✏️ Сообщение отредактировано")
+            return msg
+    logging.warning(f"⚠️ Нет ответа за {timeout} сек")
+    return await get_last_message(client, bot_username)
+
+
+async def click_btn_wait(
+    client: TelegramClient,
+    bot_username: str,
+    btn,
+    timeout: float = 15.0
+):
+    """
+    Нажимает inline-кнопку через .click() и ждёт изменения сообщения.
+    """
+    if not client.is_connected():
+        await client.connect()
+
+    before = await get_last_message(client, bot_username)
+    before_id = before.id if before else 0
+    before_snap = get_msg_snapshot(before)
+
+    btn_text = get_button_text(btn)
+    logging.info(f"🖱 Нажимаю кнопку: '{btn_text}'")
+
+    try:
+        await btn.click()
+    except Exception as e:
+        logging.error(f"❌ Ошибка клика '{btn_text}': {e}")
+        return None
+
+    return await wait_for_change(client, bot_username, before_id, before_snap, timeout)
+
+
+async def send_text_wait(
     client: TelegramClient,
     bot_username: str,
     text: str,
     timeout: float = 15.0
-) -> Optional[Any]:
+):
     """
-    Отправляет текстовое сообщение (эмулирует нажатие reply-кнопки)
-    и ждёт ответа: нового сообщения ИЛИ редактирования последнего.
+    Отправляет текстовое сообщение и ждёт ответа.
+    Используется ТОЛЬКО для текстовых команд (например '👨‍💻 Заработать').
     """
     if not client.is_connected():
         await client.connect()
 
-    before_msg = await get_last_message(client, bot_username)
-    before_id = before_msg.id if before_msg else 0
-    before_snap = get_msg_snapshot(before_msg)
+    before = await get_last_message(client, bot_username)
+    before_id = before.id if before else 0
+    before_snap = get_msg_snapshot(before)
 
-    logging.info(f"📤 Отправляю: '{text}'")
+    logging.info(f"📤 Отправляю текст: '{text}'")
     await client.send_message(bot_username, text)
 
-    deadline = asyncio.get_event_loop().time() + timeout
-    while asyncio.get_event_loop().time() < deadline:
-        await asyncio.sleep(0.8)
-        msg = await get_last_message(client, bot_username)
-        if not msg:
-            continue
-        if msg.id != before_id:
-            logging.info(f"✅ Новое сообщение после '{text}'")
-            return msg
-        if get_msg_snapshot(msg) != before_snap:
-            logging.info(f"✅ Сообщение обновлено (edit) после '{text}'")
-            return msg
-
-    logging.warning(f"⚠️ Нет ответа после '{text}' за {timeout} сек")
-    return await get_last_message(client, bot_username)
+    return await wait_for_change(client, bot_username, before_id, before_snap, timeout)
 
 
-async def click_inline_and_wait(
-    client: TelegramClient,
-    bot_username: str,
-    btn,
-    timeout: float = 15.0
-) -> Optional[Any]:
-    """
-    Нажимает INLINE кнопку (callback) через .click()
-    и ждёт изменения сообщения.
-    """
-    if not client.is_connected():
-        await client.connect()
-
-    before_msg = await get_last_message(client, bot_username)
-    before_id = before_msg.id if before_msg else 0
-    before_snap = get_msg_snapshot(before_msg)
-
-    logging.info(f"🖱 Inline клик: '{get_button_text(btn)}'")
-    try:
-        await btn.click()
-    except Exception as e:
-        logging.error(f"❌ Ошибка inline клика: {e}")
-        return None
-
-    deadline = asyncio.get_event_loop().time() + timeout
-    while asyncio.get_event_loop().time() < deadline:
-        await asyncio.sleep(0.8)
-        msg = await get_last_message(client, bot_username)
-        if not msg:
-            continue
-        if msg.id != before_id:
-            logging.info("✅ Новое сообщение после inline клика")
-            return msg
-        if get_msg_snapshot(msg) != before_snap:
-            logging.info("✅ Сообщение изменено после inline клика")
-            return msg
-
-    logging.warning(f"⚠️ Нет ответа после inline клика за {timeout} сек")
-    return await get_last_message(client, bot_username)
-
-
-async def press_button(
-    client: TelegramClient,
-    bot_username: str,
-    btn,
-    timeout: float = 15.0
-) -> Optional[Any]:
-    """
-    Универсальное нажатие кнопки:
-    - Reply кнопка → отправляем её текст как сообщение
-    - Inline callback кнопка → .click()
-    - URL кнопка → только открывает ссылку, не даёт ответа от бота
-    """
-    btn_text = get_button_text(btn)
-    btn_url = get_button_url(btn)
-
-    # Определяем тип кнопки
-    inner = getattr(btn, 'button', btn)
-    inner_type = type(inner).__name__
-    logging.info(f"🔍 Кнопка '{btn_text}', тип: {inner_type}, url: {btn_url}")
-
-    # URL кнопка без callback — просто ссылка, нажатие не даст ответа бота
-    if btn_url and 't.me/' in btn_url and inner_type in ('KeyboardButtonUrl',):
-        logging.info(f"🔗 URL кнопка — пропускаю нажатие, это просто ссылка")
-        return None
-
-    # Inline callback
-    if inner_type == 'KeyboardButtonCallback':
-        return await click_inline_and_wait(client, bot_username, btn, timeout)
-
-    # Reply кнопка или любая другая — отправляем текст
-    return await send_text_and_wait(client, bot_username, btn_text, timeout)
-
-
-def _find_next_page_button(msg):
-    if not msg or not msg.buttons:
-        return None
-    for row in msg.buttons:
-        for btn in row:
-            t = get_button_text(btn).strip()
-            if t in (">", "»") or ("след" in t.lower() and len(t) < 10):
-                return btn
-    return None
-
+# ============ ПАРСИНГ КНОПОК ============
 
 def find_row_pairs(msg) -> List[Tuple[Any, Any]]:
     """
-    Ищет пары (url_кнопка_подписки, кнопка_Проверить) в одном ряду.
-    Левая кнопка: URL t.me/... (ссылка на канал)
+    Ищет пары (кнопка-ссылка-на-канал, кнопка-Проверить) в одном ряду.
+    Левая кнопка: URL содержит t.me/
     Правая кнопка: текст содержит 'провер'
     """
     pairs = []
@@ -630,7 +588,7 @@ def is_task_list_message(msg) -> bool:
 
 
 def is_earn_type_menu(msg) -> bool:
-    """Меню выбора типа заданий (Reply-кнопки типов)."""
+    """Меню выбора типа заданий."""
     if not msg or not msg.buttons:
         return False
     earn_keywords = [
@@ -646,65 +604,71 @@ def is_earn_type_menu(msg) -> bool:
     return False
 
 
+def _find_next_page_btn(msg):
+    if not msg or not msg.buttons:
+        return None
+    for row in msg.buttons:
+        for btn in row:
+            t = get_button_text(btn).strip()
+            if t in (">", "»") or ("след" in t.lower() and len(t) < 10):
+                return btn
+    return None
+
+
 # ============ НАВИГАЦИЯ ============
 
-async def navigate_to_earn_menu(client: TelegramClient, bot_username: str) -> Optional[Any]:
-    """Отправляет '👨‍💻 Заработать', возвращает меню выбора типов заданий."""
+async def open_earn_menu(
+    client: TelegramClient, bot_username: str
+) -> Optional[Any]:
+    """
+    Отправляет текст '👨‍💻 Заработать' и ждёт меню выбора типов.
+    Это единственное место где используется send_text_wait.
+    """
     logging.info("📋 Открываю меню 'Заработать'...")
-    msg = await send_text_and_wait(client, bot_username, "👨‍💻 Заработать", timeout=15)
+    msg = await send_text_wait(client, bot_username, "👨‍💻 Заработать", timeout=15)
     if msg:
-        logging.info(f"✅ Меню получено")
         if msg.buttons:
             btns = [f"'{get_button_text(b)}'" for row in msg.buttons for b in row]
-            logging.info(f"📋 Кнопки: {', '.join(btns[:10])}")
+            logging.info(f"📋 Кнопки меню: {', '.join(btns[:10])}")
     return msg
 
 
-async def navigate_back_then_earn(client: TelegramClient, bot_username: str) -> Optional[Any]:
-    """Назад → Заработать."""
-    logging.info("🔄 Назад → Заработать...")
-    await send_text_and_wait(client, bot_username, "◀️ Назад", timeout=5)
-    return await navigate_to_earn_menu(client, bot_username)
-
-
-async def select_task_type(
+async def select_task_type_btn(
     client: TelegramClient,
     bot_username: str,
     earn_menu_msg,
     task_type: str
 ) -> Optional[Any]:
     """
-    Нажимает кнопку типа задания.
-    Так как это Reply-кнопка — отправляем её текст как сообщение.
+    Нажимает inline-кнопку типа задания в меню 'Заработать'.
+    Все кнопки в меню — inline, нажимаем через .click().
     """
     if task_type == "channels":
-        search_keywords = ["подписаться на канал"]
+        keywords = ["подписаться на канал"]
     else:
-        search_keywords = ["просмотр постов"]
+        keywords = ["просмотр постов"]
 
     if not earn_menu_msg or not earn_menu_msg.buttons:
         return None
 
-    target_text = None
+    target_btn = None
     for row in earn_menu_msg.buttons:
         for btn in row:
-            t = get_button_text(btn)
-            t_lower = t.lower()
-            if any(kw in t_lower for kw in search_keywords):
-                target_text = t
+            t = get_button_text(btn).lower()
+            if any(kw in t for kw in keywords):
+                target_btn = btn
                 break
-        if target_text:
+        if target_btn:
             break
 
-    if not target_text:
-        logging.warning(f"⚠️ Кнопка типа задания не найдена. Ищу: {search_keywords}")
+    if not target_btn:
+        logging.warning(f"⚠️ Кнопка типа не найдена: {keywords}")
         all_btns = [f"'{get_button_text(b)}'" for row in earn_menu_msg.buttons for b in row]
-        logging.info(f"Все кнопки: {', '.join(all_btns)}")
+        logging.info(f"Все кнопки меню: {', '.join(all_btns)}")
         return None
 
-    logging.info(f"✅ Выбираю тип: '{target_text}'")
-    # Reply-кнопка: отправляем текст как сообщение
-    return await send_text_and_wait(client, bot_username, target_text, timeout=15)
+    logging.info(f"✅ Нажимаю тип задания: '{get_button_text(target_btn)}'")
+    return await click_btn_wait(client, bot_username, target_btn, timeout=15)
 
 
 # ============ ОБРАБОТКА ЗАДАНИЙ ============
@@ -718,13 +682,17 @@ async def process_one_task(
     total: int
 ) -> Optional[Any]:
     """
-    Одно задание: подписываемся → ждём → нажимаем Проверить (inline) → ждём ответа.
+    Одно задание подписки:
+    1. Подписываемся на канал по URL из кнопки
+    2. Ждём SUBSCRIBE_DELAY секунд
+    3. Нажимаем inline-кнопку 'Проверить' через .click()
+    4. Ждём изменения сообщения
     """
     url = get_button_url(sub_btn)
     btn_text = get_button_text(sub_btn)
     logging.info(f"📢 [{idx}/{total}] '{btn_text}' -> {url}")
 
-    # Подписка
+    # Подписываемся
     success, result = await subscribe_to_channel(client, url)
     if not success and result.startswith("flood:"):
         wait_sec = int(result.split(":")[1])
@@ -732,6 +700,7 @@ async def process_one_task(
         await asyncio.sleep(min(wait_sec, 300))
 
     await asyncio.sleep(random.uniform(2, 4))
+
     logging.info(f"⏳ Жду {SUBSCRIBE_DELAY} сек перед проверкой...")
     await asyncio.sleep(SUBSCRIBE_DELAY)
 
@@ -739,13 +708,15 @@ async def process_one_task(
     updated_msg = None
 
     for attempt in range(1, 4):
-        logging.info(f"🔄 Проверить '{btn_text}' (попытка {attempt}/3)")
+        logging.info(f"🔄 Нажимаю Проверить '{btn_text}' (попытка {attempt}/3)")
 
-        # Кнопка "Проверить" — это inline callback кнопка
-        updated_msg = await click_inline_and_wait(client, bot_username, current_check, timeout=15)
+        # Нажимаем inline-кнопку Проверить
+        updated_msg = await click_btn_wait(
+            client, bot_username, current_check, timeout=15
+        )
 
         if not updated_msg:
-            await asyncio.sleep(2)
+            logging.warning("⚠️ Нет ответа после Проверить, читаю последнее...")
             updated_msg = await get_last_message(client, bot_username)
 
         if not updated_msg:
@@ -755,19 +726,23 @@ async def process_one_task(
             return updated_msg
 
         resp = (updated_msg.raw_text or "").lower()
-        logging.info(f"📝 Ответ на проверку: {resp[:200]}")
+        logging.info(f"📝 Ответ: {resp[:200]}")
 
         if "начислено" in resp or "успешно" in resp or "подписались" in resp:
             logging.info(f"💰 Начислено за '{btn_text}'!")
             return updated_msg
 
         if "не подписан" in resp:
-            logging.warning(f"⚠️ Не засчитано, повторяю подписку...")
+            logging.warning("⚠️ Не засчитано, повторяю подписку...")
             await subscribe_to_channel(client, url)
             await asyncio.sleep(random.uniform(2, 4))
             await asyncio.sleep(SUBSCRIBE_DELAY)
+            # Ищем актуальную кнопку Проверить
             new_pairs = find_row_pairs(updated_msg)
-            matched = next((nc for nu, nc in new_pairs if get_button_url(nu) == url), None)
+            matched = next(
+                (nc for nu, nc in new_pairs if get_button_url(nu) == url),
+                None
+            )
             if matched:
                 current_check = matched
             continue
@@ -777,7 +752,9 @@ async def process_one_task(
     return updated_msg
 
 
-async def process_channel_list(client: TelegramClient, bot_username: str, msg, phone: str):
+async def process_channel_list(
+    client: TelegramClient, bot_username: str, msg, phone: str
+):
     """Обрабатывает список заданий постранично."""
     logging.info("📋 Обрабатываю задания на подписку...")
 
@@ -788,7 +765,7 @@ async def process_channel_list(client: TelegramClient, bot_username: str, msg, p
             await client.connect()
 
         if not msg or not msg.buttons:
-            logging.warning("⚠️ Нет кнопок")
+            logging.warning("⚠️ Нет кнопок в сообщении")
             return msg
 
         if is_captcha_message(msg):
@@ -797,7 +774,7 @@ async def process_channel_list(client: TelegramClient, bot_username: str, msg, p
         task_pairs = find_row_pairs(msg)
 
         if not task_pairs:
-            logging.warning(f"⚠️ Страница {page}: пары (подписка+проверить) не найдены")
+            logging.warning(f"⚠️ Страница {page}: пары не найдены")
             logging.info(f"Текст: {(msg.raw_text or '')[:200]}")
             if msg.buttons:
                 btns = [f"'{get_button_text(b)}'" for row in msg.buttons for b in row]
@@ -824,10 +801,10 @@ async def process_channel_list(client: TelegramClient, bot_username: str, msg, p
             return msg
 
         # Пагинация
-        next_btn = _find_next_page_button(msg)
+        next_btn = _find_next_page_btn(msg)
         if next_btn:
             logging.info("➡️ Следующая страница...")
-            result = await click_inline_and_wait(client, bot_username, next_btn, timeout=10)
+            result = await click_btn_wait(client, bot_username, next_btn, timeout=10)
             if result:
                 msg = result
                 continue
@@ -838,8 +815,18 @@ async def process_channel_list(client: TelegramClient, bot_username: str, msg, p
 
 # ============ ОСНОВНОЙ ЦИКЛ ============
 
-async def do_one_cycle(client: TelegramClient, bot_username: str,
-                        user_id: int = None, phone: str = None):
+async def do_one_cycle(
+    client: TelegramClient,
+    bot_username: str,
+    user_id: int = None,
+    phone: str = None
+):
+    """
+    Один цикл работы:
+    1. Текстом отправляем '👨‍💻 Заработать' → получаем меню типов (inline-кнопки)
+    2. Нажимаем inline-кнопку типа задания → получаем список каналов
+    3. Для каждого задания: подписываемся, ждём, нажимаем inline 'Проверить'
+    """
     task_type = user_task_choice.get(user_id, "channels")
     logging.info(f"📋 Тип задания: {task_type}")
 
@@ -849,8 +836,8 @@ async def do_one_cycle(client: TelegramClient, bot_username: str,
         await send_captcha_to_user(cur, user_chat_id, client)
         return
 
-    # ШАГ 1: Меню "Заработать"
-    earn_menu = await navigate_to_earn_menu(client, bot_username)
+    # ШАГ 1: Открываем меню Заработать (текстом)
+    earn_menu = await open_earn_menu(client, bot_username)
 
     if not earn_menu:
         logging.warning("⚠️ Не получили меню Заработать")
@@ -860,40 +847,53 @@ async def do_one_cycle(client: TelegramClient, bot_username: str,
         await send_captcha_to_user(earn_menu, user_chat_id, client)
         return
 
-    # Если не меню типов — пробуем через Назад
+    # Если не то меню — пробуем ещё раз
     if not is_earn_type_menu(earn_menu):
-        logging.warning("⚠️ Не то меню, пробую Назад → Заработать...")
-        earn_menu = await navigate_back_then_earn(client, bot_username)
+        logging.warning("⚠️ Получили не меню типов, пробую снова...")
+        # Иногда бот присылает что-то лишнее — читаем следующее сообщение
+        await asyncio.sleep(2)
+        earn_menu = await get_last_message(client, bot_username)
         if not earn_menu or not is_earn_type_menu(earn_menu):
-            logging.error("❌ Не удалось получить меню типов")
-            return
+            # Последняя попытка: Назад → Заработать
+            logging.warning("⚠️ Пробую Назад → Заработать...")
+            await send_text_wait(client, bot_username, "◀️ Назад", timeout=5)
+            await asyncio.sleep(1)
+            earn_menu = await open_earn_menu(client, bot_username)
+            if not earn_menu or not is_earn_type_menu(earn_menu):
+                logging.error("❌ Не удалось получить меню типов заданий")
+                return
 
-    # ШАГ 2: Выбираем тип задания (Reply-кнопка → отправляем текст)
-    task_list_msg = await select_task_type(client, bot_username, earn_menu, task_type)
+    # ШАГ 2: Нажимаем inline-кнопку типа задания
+    task_list_msg = await select_task_type_btn(
+        client, bot_username, earn_menu, task_type
+    )
 
     if not task_list_msg:
-        logging.warning(f"⚠️ Не удалось выбрать тип '{task_type}'")
+        logging.warning(f"⚠️ Нет ответа после выбора типа '{task_type}'")
         return
 
     if is_captcha_message(task_list_msg):
         await send_captcha_to_user(task_list_msg, user_chat_id, client)
         return
 
-    logging.info(f"📝 После выбора типа — текст: '{(task_list_msg.raw_text or '')[:100]}'")
     if task_list_msg.buttons:
         btns = [f"'{get_button_text(b)}'" for row in task_list_msg.buttons for b in row]
-        logging.info(f"📝 После выбора типа — кнопки: {', '.join(btns[:10])}")
+        logging.info(f"📝 После выбора типа, кнопки: {', '.join(btns[:10])}")
 
     # ШАГ 3: Обрабатываем
     if task_type == "channels":
         if is_task_list_message(task_list_msg):
-            logging.info("📢 Список заданий получен, начинаю обработку!")
-            result = await process_channel_list(client, bot_username, task_list_msg, phone)
+            logging.info("📢 Список заданий получен!")
+            result = await process_channel_list(
+                client, bot_username, task_list_msg, phone
+            )
             if result and is_captcha_message(result):
                 await send_captcha_to_user(result, user_chat_id, client)
         else:
-            logging.warning(f"⚠️ Список заданий не найден в ответе")
-
+            logging.warning(
+                f"⚠️ Список заданий не найден. "
+                f"Текст: {(task_list_msg.raw_text or '')[:150]}"
+            )
     else:
         # Просмотр постов
         wait_time = random.randint(8, 15)
@@ -907,7 +907,9 @@ async def do_one_cycle(client: TelegramClient, bot_username: str,
                     t = get_button_text(btn).lower()
                     if any(kw in t for kw in confirm_kw):
                         logging.info(f"✅ Подтверждаю: '{get_button_text(btn)}'")
-                        result = await press_button(client, bot_username, btn, timeout=10)
+                        result = await click_btn_wait(
+                            client, bot_username, btn, timeout=10
+                        )
                         if result and is_captcha_message(result):
                             await send_captcha_to_user(result, user_chat_id, client)
                         return
@@ -919,9 +921,10 @@ async def do_one_cycle(client: TelegramClient, bot_username: str,
 
 async def run_gram_worker(client: TelegramClient, bot_username: str, phone: str):
     try:
-        logging.info(f"🚀 Воркер: {bot_username} | задержка подписки: {SUBSCRIBE_DELAY} сек")
+        logging.info(f"🚀 Воркер: {bot_username} | задержка: {SUBSCRIBE_DELAY} сек")
 
-        await send_text_and_wait(client, bot_username, "/start", timeout=5)
+        # /start текстом
+        await send_text_wait(client, bot_username, "/start", timeout=8)
         await asyncio.sleep(2)
 
         cycle_count = 0
