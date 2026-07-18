@@ -10,6 +10,7 @@ import os
 import re
 from typing import Optional, Dict, Any, Tuple
 from telethon import TelegramClient
+from telethon.tl.types import MessageMediaPhoto, MessageMediaDocument
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, BufferedInputFile
 from aiogram.enums import ParseMode
 
@@ -25,7 +26,7 @@ class CaptchaSolver:
         self.active_clients: Dict[str, TelegramClient] = {}
         self.continue_callback = None
         self.auto_click_timeout = 30
-        self.use_ai_solver = True  # Включить/выключить авто-решение
+        self.use_ai_solver = True
     
     def set_bot(self, bot_instance):
         self.bot = bot_instance
@@ -58,6 +59,26 @@ class CaptchaSolver:
         except:
             pass
         return None
+    
+    def _has_media(self, msg) -> bool:
+        """Проверяет наличие любого медиа (фото или документ)"""
+        if not msg:
+            return False
+        return msg.photo is not None or msg.document is not None or msg.media is not None
+    
+    async def _download_media(self, client: TelegramClient, msg) -> Optional[bytes]:
+        """Скачивает медиа (фото или документ)"""
+        try:
+            if msg.photo:
+                return await client.download_media(msg, file=bytes)
+            elif msg.document:
+                return await client.download_media(msg, file=bytes)
+            elif msg.media:
+                return await client.download_media(msg, file=bytes)
+            return None
+        except Exception as e:
+            logger.error(f"❌ Ошибка скачивания медиа: {e}")
+            return None
     
     def is_captcha_message(self, msg) -> bool:
         if not msg:
@@ -99,7 +120,6 @@ class CaptchaSolver:
         return False
     
     async def _click_captcha_button(self, client: TelegramClient, bot_username: str, msg_id: int, number: str) -> bool:
-        """Нажимает кнопку с указанным номером в Gram боте"""
         try:
             msg = await client.get_messages(bot_username, ids=msg_id)
             if not msg or not msg.buttons:
@@ -118,29 +138,22 @@ class CaptchaSolver:
             return False
     
     async def _solve_with_ai(self, client: TelegramClient, photo_bytes: bytes, question: str) -> Optional[str]:
-        """
-        Отправляет фото и вопрос в @ChatGPT_Gemini_DeepSeek_Bot, получает ответ цифрой
-        """
         temp_path = "captcha_temp.jpg"
         
         try:
             logger.info("🤖 Отправляю капчу в @ChatGPT_Gemini_DeepSeek_Bot...")
             
-            # 1. Сохраняем фото
             with open(temp_path, "wb") as f:
                 f.write(photo_bytes)
             logger.info("✅ Фото сохранено")
             
-            # 2. Отправляем фото в AI-бота
             await client.send_file(CAPTCHA_SOLVER_BOT, temp_path)
             await asyncio.sleep(2)
             
-            # 3. Отправляем вопрос
             prompt = f"{question}\nНапиши только цифру. Ничего более не пиши."
             await client.send_message(CAPTCHA_SOLVER_BOT, prompt)
             await asyncio.sleep(3)
             
-            # 4. Получаем ответ
             msgs = await client.get_messages(CAPTCHA_SOLVER_BOT, limit=1)
             if not msgs:
                 logger.warning("⚠️ Нет ответа от AI бота")
@@ -149,7 +162,6 @@ class CaptchaSolver:
             answer = msgs[0].raw_text or ""
             logger.info(f"🤖 Ответ AI: {answer}")
             
-            # 5. Извлекаем цифру
             digits = re.findall(r'[1-9]', answer)
             if digits:
                 return digits[0]
@@ -159,7 +171,6 @@ class CaptchaSolver:
             logger.error(f"❌ Ошибка решения капчи через AI: {e}")
             return None
         finally:
-            # 6. Удаляем временный файл
             if os.path.exists(temp_path):
                 try:
                     os.remove(temp_path)
@@ -167,11 +178,32 @@ class CaptchaSolver:
                 except:
                     pass
     
+    async def _solve_without_photo(self, client: TelegramClient, question: str) -> Optional[str]:
+        """Решение капчи без фото (только текст)"""
+        try:
+            logger.info("🤖 Отправляю текстовый вопрос в AI бот...")
+            
+            prompt = f"{question}\nНапиши только цифру. Ничего более не пиши."
+            await client.send_message(CAPTCHA_SOLVER_BOT, prompt)
+            await asyncio.sleep(3)
+            
+            msgs = await client.get_messages(CAPTCHA_SOLVER_BOT, limit=1)
+            if not msgs:
+                return None
+            
+            answer = msgs[0].raw_text or ""
+            logger.info(f"🤖 Ответ AI: {answer}")
+            
+            digits = re.findall(r'[1-9]', answer)
+            if digits:
+                return digits[0]
+            return None
+            
+        except Exception as e:
+            logger.error(f"❌ Ошибка: {e}")
+            return None
+    
     async def send_captcha_to_user(self, msg, chat_id: int, client: TelegramClient, bot_username: str = None) -> bool:
-        """
-        Отправляет капчу пользователю.
-        Если включен AI-решатель — пытается решить автоматически.
-        """
         if not chat_id or not self.bot:
             logger.error("❌ Bot или chat_id не установлены")
             return False
@@ -183,7 +215,15 @@ class CaptchaSolver:
                 except:
                     bot_username = "gram_prbot"
             
-            # Сохраняем капчу
+            logger.info("=" * 50)
+            logger.info(f"📩 send_captcha_to_user вызван")
+            logger.info(f"🤖 bot_username: {bot_username}")
+            logger.info(f"📸 Есть медиа: {self._has_media(msg)}")
+            logger.info(f"📝 msg.raw_text: {(msg.raw_text or '')[:100]}")
+            logger.info(f"🔢 Кнопок: {len(msg.buttons) if msg.buttons else 0} рядов")
+            logger.info(f"🤖 self.use_ai_solver: {self.use_ai_solver}")
+            logger.info("=" * 50)
+            
             self.captcha_storage[chat_id] = {
                 'client': client,
                 'bot_username': bot_username,
@@ -192,46 +232,50 @@ class CaptchaSolver:
             }
             
             # Пробуем авто-решение через AI
-            if self.use_ai_solver and msg.photo and msg.raw_text:
-                # Извлекаем вопрос из текста
+            if self.use_ai_solver and msg.raw_text:
                 question = msg.raw_text.strip()
-                question = re.sub(r'\d+', '', question)  # убираем цифры
+                # Очищаем от мусора
+                question = re.sub(r'\d+', '', question)
                 question = question.replace('✅', '').replace('❌', '').strip()
                 question = question.replace('1', '').replace('2', '').replace('3', '')
                 question = question.replace('4', '').replace('5', '').replace('6', '')
                 question = question.replace('7', '').replace('8', '').replace('9', '')
                 question = question.strip()
                 
-                if len(question) > 5:  # проверяем что есть вопрос
+                if len(question) > 3:
                     logger.info(f"🤖 Вопрос: {question}")
                     
-                    # Скачиваем фото
-                    photo_bytes = await client.download_media(msg, file=bytes)
-                    if photo_bytes:
-                        answer = await self._solve_with_ai(client, photo_bytes, question)
-                        if answer:
-                            logger.info(f"✅ Авто-решение капчи: выбрано {answer}")
-                            await self._click_captcha_button(client, bot_username, msg.id, answer)
-                            
-                            # Проверяем результат
-                            await asyncio.sleep(2)
-                            new_msg = await client.get_messages(bot_username, limit=1)
-                            if new_msg and not self.is_captcha_message(new_msg):
-                                logger.info("✅ Капча пройдена автоматически!")
-                                del self.captcha_storage[chat_id]
-                                if self.continue_callback:
-                                    phone = next((p for p, c in self.active_clients.items() if c == client), None)
-                                    if phone:
-                                        await self.continue_callback(phone)
-                                return True
-                            else:
-                                logger.warning("⚠️ Капча еще активна, пробую еще раз...")
-                                # Пробуем еще раз с другим ответом
-                                if photo_bytes:
-                                    answer2 = await self._solve_with_ai(client, photo_bytes, question + " (если не уверен, выбери 1)")
-                                    if answer2 and answer2 != answer:
+                    # Пробуем с фото
+                    if self._has_media(msg):
+                        photo_bytes = await self._download_media(client, msg)
+                        if photo_bytes:
+                            answer = await self._solve_with_ai(client, photo_bytes, question)
+                            if answer:
+                                logger.info(f"✅ Авто-решение с фото: {answer}")
+                                await self._click_captcha_button(client, bot_username, msg.id, answer)
+                                await asyncio.sleep(2)
+                                new_msg = await client.get_messages(bot_username, limit=1)
+                                if new_msg and not self.is_captcha_message(new_msg):
+                                    logger.info("✅ Капча пройдена автоматически!")
+                                    del self.captcha_storage[chat_id]
+                                    if self.continue_callback:
+                                        phone = next((p for p, c in self.active_clients.items() if c == client), None)
+                                        if phone:
+                                            await self.continue_callback(phone)
+                                    return True
+                                else:
+                                    # Пробуем без фото
+                                    answer2 = await self._solve_without_photo(client, question)
+                                    if answer2:
                                         await self._click_captcha_button(client, bot_username, msg.id, answer2)
                                         return True
+                    else:
+                        # Нет фото — пробуем только текст
+                        answer = await self._solve_without_photo(client, question)
+                        if answer:
+                            logger.info(f"✅ Авто-решение без фото: {answer}")
+                            await self._click_captcha_button(client, bot_username, msg.id, answer)
+                            return True
             
             # Если авто-решение не сработало — отправляем пользователю
             text = f"🧩 <b>Капча!</b>\n\n"
@@ -242,9 +286,9 @@ class CaptchaSolver:
             
             await self.bot.send_message(chat_id, text, parse_mode=ParseMode.HTML)
             
-            if msg.photo:
+            if self._has_media(msg):
                 try:
-                    file_data = await client.download_media(msg, file=bytes)
+                    file_data = await self._download_media(client, msg)
                     if file_data:
                         await self.bot.send_photo(
                             chat_id,
@@ -287,9 +331,6 @@ class CaptchaSolver:
             return False
     
     async def handle_captcha_answer(self, chat_id: int, number: str) -> Tuple[bool, str]:
-        """
-        Пользователь выбрал номер → бот нажимает кнопку в Gram боте
-        """
         try:
             if chat_id not in self.captcha_storage:
                 return False, "Капча не найдена"
@@ -308,7 +349,6 @@ class CaptchaSolver:
             if not client.is_connected():
                 await client.connect()
             
-            # Нажимаем кнопку в Gram боте
             success = await self._click_captcha_button(client, bot_username, msg_id, number)
             if not success:
                 return False, f"Кнопка {number} не найдена"
@@ -316,7 +356,6 @@ class CaptchaSolver:
             data['answered'] = True
             await asyncio.sleep(2)
             
-            # Проверяем результат
             new_msg = await client.get_messages(bot_username, limit=1)
             
             if new_msg and not self.is_captcha_message(new_msg):
@@ -335,7 +374,6 @@ class CaptchaSolver:
             return False, str(e)
     
     async def check_captcha_status(self, chat_id: int) -> Tuple[bool, str]:
-        """Проверка статуса капчи"""
         try:
             if chat_id not in self.captcha_storage:
                 return True, "Капча пройдена"
@@ -364,7 +402,6 @@ class CaptchaSolver:
             return False, str(e)
     
     def stop_captcha(self, chat_id: int) -> bool:
-        """Остановка капчи"""
         if chat_id in self.captcha_storage:
             del self.captcha_storage[chat_id]
             logger.info(f"⏹ Капча остановлена для {chat_id}")
