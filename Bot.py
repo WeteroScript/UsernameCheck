@@ -36,6 +36,7 @@ from captcha_solver import (
     set_captcha_clients,
     set_captcha_continue_callback,
     set_auto_click_timeout,
+    set_ai_solver,
     handle_captcha_answer,
     check_captcha_status,
     stop_captcha
@@ -211,7 +212,6 @@ def get_work_sessions_keyboard(user_id: int) -> InlineKeyboardMarkup:
         text = f"{status} {online} {phone}"
         buttons.append([InlineKeyboardButton(text=text, callback_data=f"work_toggle_{phone}")])
     
-    # Кнопки управления
     buttons.append([InlineKeyboardButton(text="✅ Выбрать все", callback_data="work_select_all")])
     buttons.append([InlineKeyboardButton(text="⬜ Снять все", callback_data="work_select_none")])
     buttons.append([InlineKeyboardButton(text="🚀 Запустить задания", callback_data="work_start_all")])
@@ -503,7 +503,6 @@ async def work_start_all(callback: types.CallbackQuery):
         
         bot_name = user_bot_choice.get(user_id, "@gram_prbot")
         
-        # Запускаем для каждой сессии
         started = 0
         failed = 0
         
@@ -529,15 +528,13 @@ async def work_start_all(callback: types.CallbackQuery):
                 failed += 1
                 continue
             
-            # Проверяем не запущен ли уже
             if phone in active_tasks and not active_tasks[phone].done():
-                # Уже запущен
                 started += 1
                 continue
             
             await start_gram_worker(client, bot_name, phone, user_id)
             started += 1
-            await asyncio.sleep(1)  # Небольшая задержка между запусками
+            await asyncio.sleep(1)
         
         await callback.message.edit_text(
             f"🚀 <b>Запуск завершен!</b>\n\n"
@@ -617,7 +614,6 @@ async def bot_choice(callback: types.CallbackQuery):
     user_bot_choice[user_id] = bot_name
     save_bot_choices()
     
-    # Обновляем для всех рабочих сессий
     work_sessions = user_work_sessions.get(user_id, [])
     for phone in work_sessions:
         if phone in active_tasks and not active_tasks[phone].done():
@@ -806,12 +802,10 @@ async def session_switch(callback: types.CallbackQuery):
         
         phone = user_sessions[user_id][idx]
         
-        # Останавливаем текущую сессию если запущена
         current_phone = get_user_active_phone(user_id)
         if current_phone and current_phone in active_tasks:
             await stop_gram_bot(current_phone)
         
-        # Переключаем
         user_active_session[user_id] = idx
         save_active_session()
         
@@ -912,7 +906,6 @@ async def session_code(message: types.Message, state: FSMContext):
             user_active_session[user_id] = len(user_sessions[user_id]) - 1
             save_active_session()
             
-            # Добавляем в рабочие сессии
             if user_id not in user_work_sessions:
                 user_work_sessions[user_id] = []
             if phone not in user_work_sessions[user_id]:
@@ -979,11 +972,9 @@ async def session_delete_execute(callback: types.CallbackQuery):
         
         phone = user_sessions[user_id][idx]
         
-        # Останавливаем если запущена
         if phone in active_tasks:
             await stop_gram_bot(phone)
         
-        # Удаляем из клиентов
         if phone in active_clients:
             try:
                 await active_clients[phone].disconnect()
@@ -991,16 +982,13 @@ async def session_delete_execute(callback: types.CallbackQuery):
                 pass
             del active_clients[phone]
         
-        # Удаляем из списка сессий
         del user_sessions[user_id][idx]
         save_sessions()
         
-        # Удаляем из рабочих сессий
         if user_id in user_work_sessions and phone in user_work_sessions[user_id]:
             user_work_sessions[user_id].remove(phone)
             save_work_sessions()
         
-        # Корректируем активную сессию
         if user_id in user_active_session:
             if user_active_session[user_id] >= len(user_sessions[user_id]):
                 user_active_session[user_id] = max(0, len(user_sessions[user_id]) - 1)
@@ -1384,9 +1372,11 @@ async def main():
     set_captcha_bot(bot)
     set_captcha_clients(active_clients)
     set_captcha_continue_callback(continue_gram_bot)
-    set_auto_click_timeout(15)
+    set_auto_click_timeout(30)
+    set_ai_solver(True)  # Включаем авто-решение капчи через AI
     
     logging.info("✅ Экземпляр бота передан в gram_bot и captcha_solver")
+    logging.info("✅ Работает")
     logging.info(f"📱 Максимум сессий: {MAX_SESSIONS}")
     
     # Инициализируем модули
