@@ -1,6 +1,6 @@
 """
 Модуль для Gram ботов (PR GRAM | DRAGON)
-С поддержкой заданий с ботами (генерация фото)
+С поддержкой заданий с ботами (выбор категории + генерация фото)
 """
 
 import asyncio
@@ -96,7 +96,9 @@ def generate_bot_image() -> bytes:
         '/system/fonts/Roboto-Black.ttf',
         '/system/fonts/DroidSans-Bold.ttf',
         '/system/fonts/NotoSans-Bold.ttf',
-        '/system/fonts/SystemFont.ttf'
+        '/system/fonts/SystemFont.ttf',
+        '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf',
+        '/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf'
     ]
     
     for path in font_paths:
@@ -107,11 +109,7 @@ def generate_bot_image() -> bytes:
             continue
     
     if font is None:
-        # Если шрифт не найден — используем стандартный
-        try:
-            font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 80)
-        except:
-            font = ImageFont.load_default()
+        font = ImageFont.load_default()
     
     # Рисуем радужный текст
     bbox = draw.textbbox((0, 0), text, font=font)
@@ -335,18 +333,20 @@ async def subscribe(client: TelegramClient, url: str) -> Tuple[bool, str]:
 
 
 # ============================================================
-# ЗАДАНИЯ С БОТАМИ (ОБНОВЛЕННАЯ ВЕРСИЯ)
+# ЗАДАНИЯ С БОТАМИ (ПОЛНАЯ ВЕРСИЯ)
 # ============================================================
 
 async def process_bot_tasks(client: TelegramClient, bot_username: str, msg):
     """
     Обработка заданий с ботами.
     Логика:
-    1. Нажимаем на кнопку "Перейти в бота | +X GRAM"
-    2. Генерируем чёрный квадрат с @Bot_Farmers
-    3. Отправляем фото в Gram бота
-    4. Нажимаем "Следующий бот"
-    5. Нажимаем "Скрыть"
+    1. После нажатия "Перейти в бота" → Gram бот показывает категории
+    2. Выбираем "Обычные боты"
+    3. Gram бот показывает список ботов
+    4. Нажимаем на первого бота
+    5. Генерируем фото и отправляем
+    6. Нажимаем "Следующий бот"
+    7. Нажимаем "Скрыть"
     """
     try:
         logging.info("🤖 Обрабатываю задания с ботами...")
@@ -355,7 +355,32 @@ async def process_bot_tasks(client: TelegramClient, bot_username: str, msg):
             logging.warning("⚠️ Нет кнопок в сообщении")
             return msg
         
-        # Собираем все кнопки с ботами
+        # 1. Проверяем, не пришло ли меню выбора категории ботов
+        # Ищем кнопку "Обычные боты"
+        regular_bots_btn = None
+        for row in msg.buttons:
+            for b in row:
+                t = btn_text(b).lower()
+                if "обычные боты" in t:
+                    regular_bots_btn = b
+                    logging.info(f"🔍 Найдена кнопка 'Обычные боты'")
+                    break
+            if regular_bots_btn:
+                break
+        
+        if regular_bots_btn:
+            # Нажимаем "Обычные боты"
+            logging.info("📋 Выбираю категорию 'Обычные боты'...")
+            result = await click_btn(client, bot_username, regular_bots_btn, timeout=15)
+            if not result:
+                logging.warning("⚠️ Нет ответа после выбора категории")
+                return msg
+            if is_captcha_message(result):
+                await send_captcha_to_user(result, user_chat_id, client)
+                return msg
+            msg = result
+        
+        # 2. Собираем все кнопки с ботами
         bot_buttons = []
         for row in msg.buttons:
             for b in row:
@@ -432,7 +457,6 @@ async def process_bot_tasks(client: TelegramClient, bot_username: str, msg):
                         await click_btn(client, bot_username, hide_btn, timeout=5)
                     else:
                         logging.info("⏭️ Отправляю 'Следующий бот' еще раз...")
-                        # Если нет "Скрыть", пробуем еще раз нажать "Следующий бот"
                         for row in hide_result.buttons:
                             for b in row:
                                 if "следующий бот" in btn_text(b).lower() or "⏭️" in btn_text(b):
@@ -1250,4 +1274,4 @@ __all__ = [
     'start_gram_worker', 'stop_gram_bot', 'continue_gram_bot',
     'set_user_chat_id', 'set_bot_instance', 'get_task_choice_keyboard',
     'active_clients', 'active_tasks'
-    ]
+        ]
