@@ -168,36 +168,50 @@ def set_user_active_phone(user_id: int, phone: str):
 
 def get_main_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🤖 Gram Бот", callback_data="gram")],
+        [InlineKeyboardButton(text="🤖 Боты", callback_data="bots")],
         [InlineKeyboardButton(text="👤 Юзернеймы", callback_data="users")],
         [InlineKeyboardButton(text="📱 Мои сессии", callback_data="sessions")],
     ])
 
-def get_gram_main_keyboard(has_session: bool = False, is_running: bool = False, bot_name: str = "@gram_prbot") -> InlineKeyboardMarkup:
+def get_bots_list_keyboard() -> InlineKeyboardMarkup:
+    """Список доступных ботов для работы"""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📢 PR GRAMM", callback_data="bot_prgramm")],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="main")],
+    ])
+
+def get_bot_detail_keyboard(has_session: bool = False, is_running: bool = False) -> InlineKeyboardMarkup:
+    """Меню конкретного бота: Включить / Настройки / Назад"""
     buttons = []
-    buttons.append([InlineKeyboardButton(text=f"🤖 {bot_name}", callback_data="no_action")])
     
     if has_session:
         if is_running:
-            buttons.append([InlineKeyboardButton(text="⏹ Остановить", callback_data="gram_stop")])
+            buttons.append([InlineKeyboardButton(text="⏹ Выключить", callback_data="bot_prgramm_stop")])
         else:
-            buttons.append([InlineKeyboardButton(text="▶️ Запустить", callback_data="gram_start")])
+            buttons.append([InlineKeyboardButton(text="▶️ Включить", callback_data="bot_prgramm_start")])
     else:
         buttons.append([InlineKeyboardButton(text="❌ Нет активной сессии", callback_data="no_session")])
     
-    buttons.append([InlineKeyboardButton(text="📋 Сессии для работы", callback_data="gram_sessions")])
-    buttons.append([InlineKeyboardButton(text="🔄 Сменить бота", callback_data="gram_change_bot")])
-    buttons.append([InlineKeyboardButton(text="📋 Выбрать задание", callback_data="gram_choose_task")])
-    buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="main")])
+    buttons.append([InlineKeyboardButton(text="⚙️ Настройки", callback_data="bot_prgramm_settings")])
+    buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="bots")])
     
     return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+def get_bot_settings_keyboard() -> InlineKeyboardMarkup:
+    """Настройки бота: сессии для работы / сменить бота / тип заданий / назад"""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📋 Сессии для работы", callback_data="gram_sessions")],
+        [InlineKeyboardButton(text="🔄 Сменить бота", callback_data="gram_change_bot")],
+        [InlineKeyboardButton(text="📋 Тип заданий", callback_data="gram_choose_task")],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="bot_prgramm")],
+    ])
 
 def get_work_sessions_keyboard(user_id: int) -> InlineKeyboardMarkup:
     buttons = []
     
     if user_id not in user_sessions or not user_sessions[user_id]:
         buttons.append([InlineKeyboardButton(text="❌ Нет сессий", callback_data="no_action")])
-        buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="gram")])
+        buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="bot_prgramm_settings")])
         return InlineKeyboardMarkup(inline_keyboard=buttons)
     
     work_sessions = user_work_sessions.get(user_id, [])
@@ -215,7 +229,7 @@ def get_work_sessions_keyboard(user_id: int) -> InlineKeyboardMarkup:
     buttons.append([InlineKeyboardButton(text="✅ Выбрать все", callback_data="work_select_all")])
     buttons.append([InlineKeyboardButton(text="⬜ Снять все", callback_data="work_select_none")])
     buttons.append([InlineKeyboardButton(text="🚀 Запустить задания", callback_data="work_start_all")])
-    buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="gram")])
+    buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="bot_prgramm_settings")])
     
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
@@ -233,7 +247,7 @@ def get_bot_choice_keyboard(current_bot: str) -> InlineKeyboardMarkup:
             callback_data=f"bot_choice_{code}"
         )])
     
-    buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="gram")])
+    buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="bot_prgramm_settings")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 def get_sessions_keyboard(user_id: int) -> InlineKeyboardMarkup:
@@ -353,10 +367,35 @@ async def main_menu(callback: types.CallbackQuery):
         )
 
 
-# ============ CALLBACK: GRAM БОТ ============
+# ============ CALLBACK: БОТЫ ============
 
-@dp.callback_query(lambda c: c.data == "gram")
-async def gram_menu(callback: types.CallbackQuery):
+@dp.callback_query(lambda c: c.data == "bots")
+async def bots_menu(callback: types.CallbackQuery):
+    """Список доступных ботов для работы"""
+    await callback.answer()
+    
+    text = "🤖 <b>Боты</b>\n\n"
+    text += "Доступные боты для работы:\n\n"
+    text += "Выбери бота, чтобы настроить его или запустить:"
+    
+    try:
+        await callback.message.edit_text(
+            text,
+            parse_mode=ParseMode.HTML,
+            reply_markup=get_bots_list_keyboard()
+        )
+    except Exception as e:
+        logging.error(f"Ошибка bots_menu: {e}")
+        await callback.message.answer(
+            text,
+            parse_mode=ParseMode.HTML,
+            reply_markup=get_bots_list_keyboard()
+        )
+
+
+@dp.callback_query(lambda c: c.data == "bot_prgramm")
+async def bot_prgramm_menu(callback: types.CallbackQuery):
+    """Меню бота PR GRAMM: Включить / Настройки / Назад"""
     await callback.answer()
     user_id = callback.from_user.id
     
@@ -372,8 +411,8 @@ async def gram_menu(callback: types.CallbackQuery):
     if has_session and phone in active_tasks:
         is_running = not active_tasks[phone].done()
     
-    text = "🤖 <b>Gram Бот</b>\n\n"
-    text += f"🤖 Выбран: <b>{bot_name}</b>\n\n"
+    text = "📢 <b>PR GRAMM</b>\n\n"
+    text += f"🤖 Рабочий бот: <b>{bot_name}</b>\n\n"
     
     if has_session:
         text += f"✅ Активная сессия: <b>{phone}</b>\n"
@@ -387,14 +426,37 @@ async def gram_menu(callback: types.CallbackQuery):
         await callback.message.edit_text(
             text,
             parse_mode=ParseMode.HTML,
-            reply_markup=get_gram_main_keyboard(has_session, is_running, bot_name)
+            reply_markup=get_bot_detail_keyboard(has_session, is_running)
         )
     except Exception as e:
-        logging.error(f"Ошибка gram_menu: {e}")
+        logging.error(f"Ошибка bot_prgramm_menu: {e}")
         await callback.message.answer(
             text,
             parse_mode=ParseMode.HTML,
-            reply_markup=get_gram_main_keyboard(has_session, is_running, bot_name)
+            reply_markup=get_bot_detail_keyboard(has_session, is_running)
+        )
+
+
+@dp.callback_query(lambda c: c.data == "bot_prgramm_settings")
+async def bot_prgramm_settings(callback: types.CallbackQuery):
+    """Настройки бота: сессии для работы / сменить бота / тип заданий / назад"""
+    await callback.answer()
+    
+    text = "⚙️ <b>Настройки — PR GRAMM</b>\n\n"
+    text += "Выбери раздел настроек:"
+    
+    try:
+        await callback.message.edit_text(
+            text,
+            parse_mode=ParseMode.HTML,
+            reply_markup=get_bot_settings_keyboard()
+        )
+    except Exception as e:
+        logging.error(f"Ошибка bot_prgramm_settings: {e}")
+        await callback.message.answer(
+            text,
+            parse_mode=ParseMode.HTML,
+            reply_markup=get_bot_settings_keyboard()
         )
 
 
@@ -490,7 +552,7 @@ async def work_select_none(callback: types.CallbackQuery):
 
 @dp.callback_query(lambda c: c.data == "work_start_all")
 async def work_start_all(callback: types.CallbackQuery):
-    """Запустить задания на всех выбранных сессиях"""
+    """Запустить задания на всех выбранных сессиях ПАРАЛЛЕЛЬНО"""
     try:
         user_id = callback.from_user.id
         work_sessions = user_work_sessions.get(user_id, [])
@@ -499,12 +561,13 @@ async def work_start_all(callback: types.CallbackQuery):
             await callback.answer("❌ Нет выбранных сессий", show_alert=True)
             return
         
-        await callback.answer(f"🚀 Запускаю {len(work_sessions)} сессий...")
+        await callback.answer(f"🚀 Запускаю {len(work_sessions)} сессий параллельно...")
         
         bot_name = user_bot_choice.get(user_id, "@gram_prbot")
         
         started = 0
         failed = 0
+        start_tasks = []
         
         for phone in work_sessions:
             if phone not in active_clients:
@@ -532,15 +595,23 @@ async def work_start_all(callback: types.CallbackQuery):
                 started += 1
                 continue
             
-            await start_gram_worker(client, bot_name, phone, user_id)
+            # Создаем задачу для параллельного запуска
+            task = start_gram_worker(client, bot_name, phone, user_id)
+            start_tasks.append(task)
             started += 1
-            await asyncio.sleep(1)
+        
+        # Запускаем ВСЕ задачи параллельно (не ждём завершения)
+        if start_tasks:
+            for task in start_tasks:
+                asyncio.create_task(task)
+            await asyncio.sleep(0.5)  # Даём время на старт
         
         await callback.message.edit_text(
             f"🚀 <b>Запуск завершен!</b>\n\n"
             f"✅ Запущено: {started}\n"
             f"❌ Ошибок: {failed}\n"
-            f"📋 Всего сессий: {len(work_sessions)}",
+            f"📋 Всего сессий: {len(work_sessions)}\n\n"
+            f"⚡ Все сессии работают ПАРАЛЛЕЛЬНО",
             parse_mode=ParseMode.HTML,
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="⬅️ Назад", callback_data="gram_sessions")],
@@ -638,10 +709,10 @@ async def bot_choice(callback: types.CallbackQuery):
             parse_mode=ParseMode.HTML
         )
     
-    await gram_menu(callback)
+    await bot_prgramm_menu(callback)
 
 
-@dp.callback_query(lambda c: c.data == "gram_start")
+@dp.callback_query(lambda c: c.data == "bot_prgramm_start")
 async def gram_start(callback: types.CallbackQuery):
     await callback.answer()
     user_id = callback.from_user.id
@@ -679,10 +750,10 @@ async def gram_start(callback: types.CallbackQuery):
     
     await start_gram_worker(client, bot_name, phone, user_id)
     
-    await gram_menu(callback)
+    await bot_prgramm_menu(callback)
 
 
-@dp.callback_query(lambda c: c.data == "gram_stop")
+@dp.callback_query(lambda c: c.data == "bot_prgramm_stop")
 async def gram_stop(callback: types.CallbackQuery):
     await callback.answer()
     user_id = callback.from_user.id
@@ -699,7 +770,7 @@ async def gram_stop(callback: types.CallbackQuery):
     else:
         await callback.answer("❌ Ошибка остановки")
     
-    await gram_menu(callback)
+    await bot_prgramm_menu(callback)
 
 
 @dp.callback_query(lambda c: c.data == "no_session")
@@ -922,7 +993,7 @@ async def session_code(message: types.Message, state: FSMContext):
             f"✅ Сессия добавлена в рабочие",
             parse_mode=ParseMode.HTML,
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="🤖 Перейти в Gram", callback_data="gram")],
+                [InlineKeyboardButton(text="🤖 Перейти в Боты", callback_data="bot_prgramm")],
                 [InlineKeyboardButton(text="📱 Мои сессии", callback_data="sessions")],
             ])
         )
