@@ -85,9 +85,9 @@ def generate_bot_image() -> bytes:
     size = 1080
     image = Image.new('RGB', (size, size), 'black')
     draw = ImageDraw.Draw(image)
-    
+
     text = "@Bot_Farmers"
-    
+
     # Пытаемся загрузить шрифт
     font = None
     font_paths = [
@@ -100,24 +100,24 @@ def generate_bot_image() -> bytes:
         '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf',
         '/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf'
     ]
-    
+
     for path in font_paths:
         try:
             font = ImageFont.truetype(path, 80)
             break
         except:
             continue
-    
+
     if font is None:
         font = ImageFont.load_default()
-    
+
     # Рисуем радужный текст
     bbox = draw.textbbox((0, 0), text, font=font)
     tw = bbox[2] - bbox[0]
     th = bbox[3] - bbox[1]
     x = (size - tw) // 2
     y = (size - th) // 2
-    
+
     x_pos = x
     for i, char in enumerate(text):
         hue = i / len(text)
@@ -126,12 +126,12 @@ def generate_bot_image() -> bytes:
         draw.text((x_pos, y), char, fill=color, font=font)
         char_bbox = draw.textbbox((0, 0), char, font=font)
         x_pos += char_bbox[2] - char_bbox[0]
-    
+
     # Сохраняем в bytes
     img_bytes = io.BytesIO()
     image.save(img_bytes, format='PNG')
     img_bytes.seek(0)
-    
+
     return img_bytes.read()
 
 
@@ -185,6 +185,34 @@ def log_buttons(msg, tag: str = ""):
             t = type(inner).__name__
             u = btn_url(b)
             logging.info(f"  {tag}[{ri}][{bi}] {t} | '{btn_text(b)}' | url={u}")
+
+
+def find_button(msg, keywords: List[str]):
+    """
+    Ищет первую кнопку, текст которой содержит любое из ключевых слов
+    (без учёта регистра). Возвращает саму кнопку или None.
+    """
+    if not msg or not msg.buttons:
+        return None
+    for row in msg.buttons:
+        for b in row:
+            t = btn_text(b).lower()
+            if any(k in t for k in keywords):
+                return b
+    return None
+
+
+def find_all_buttons(msg, keywords: List[str]) -> List[Any]:
+    """Возвращает список всех кнопок, подходящих по ключевым словам."""
+    result = []
+    if not msg or not msg.buttons:
+        return result
+    for row in msg.buttons:
+        for b in row:
+            t = btn_text(b).lower()
+            if any(k in t for k in keywords):
+                result.append(b)
+    return result
 
 
 # ============================================================
@@ -275,7 +303,10 @@ async def send_photo(
     mid = before.id if before else 0
     logging.info(f"📸 Отправляю фото в {bot_username}")
     try:
-        await client.send_file(bot_username, io.BytesIO(photo_bytes))
+        # BytesIO с "именем" файла, чтобы Telegram точно принял это как photo
+        buf = io.BytesIO(photo_bytes)
+        buf.name = "bot_farmers.png"
+        await client.send_file(bot_username, buf)
     except Exception as e:
         logging.error(f"❌ Ошибка отправки фото: {e}")
         return None
@@ -333,43 +364,50 @@ async def subscribe(client: TelegramClient, url: str) -> Tuple[bool, str]:
 
 
 # ============================================================
-# ЗАДАНИЯ С БОТАМИ (ПОЛНАЯ ВЕРСИЯ)
+# ЗАДАНИЯ С БОТАМИ (ПОЛНАЯ ВЕРСИЯ, ПОД РЕАЛЬНЫЙ СЦЕНАРИЙ)
 # ============================================================
 
 async def process_bot_tasks(client: TelegramClient, bot_username: str, msg):
     """
-    Обработка заданий с ботами.
-    Логика:
-    1. После нажатия "Перейти в бота" → Gram бот показывает категории
-    2. Выбираем "Обычные боты"
-    3. Gram бот показывает список ботов
-    4. Нажимаем на первого бота
-    5. Генерируем фото и отправляем
-    6. Нажимаем "Следующий бот"
-    7. Нажимаем "Скрыть"
+    Реальный сценарий работы Pr Gram бота с заданиями "Задания с ботами":
+
+    1. Мы уже нажали "🤖 Перейти в бота" в меню типов заработка.
+       Pr Gram РЕДАКТИРУЕТ старое сообщение -> 3 кнопки:
+       "🤖 Обычные боты", "Боты с web app", "С доп. условиями"
+
+    2. Жмём "🤖 Обычные боты".
+       Pr Gram РЕДАКТИРУЕТ старое сообщение -> список заданий:
+       "🤖 Перейти в бота +2500 GRAM" (и т.д.)
+
+    3. Жмём на САМУЮ ПЕРВУЮ кнопку из списка.
+       Pr Gram редактирует сообщение -> 3 кнопки:
+       "⏭️Перейти к боту", "Скрыть", "Пожаловаться"
+       — ни одна из них НЕ нажимается!
+
+    4. Отправляем сгенерированное фото НАПРЯМУЮ в чат с ботом
+       (без клика по каким-либо кнопкам).
+
+    5. Pr Gram засчитывает фото и присылает НОВОЕ сообщение
+       с кнопкой "⏭️ Следующий бот".
+
+    6. Жмём "Следующий бот".
+       Pr Gram редактирует это сообщение -> снова 3 бесполезные кнопки
+       ("Перейти к боту", "Скрыть", "Пожаловаться") — тоже не нажимаем.
+
+    7. Снова отправляем фото. Повторяем с шага 5, пока есть
+       кнопка "Следующий бот". Как только её больше нет —
+       задания закончились.
     """
     try:
         logging.info("🤖 Обрабатываю задания с ботами...")
-        
+
         if not msg or not msg.buttons:
             logging.warning("⚠️ Нет кнопок в сообщении")
             return msg
-        
-        # 1. Проверяем, не пришло ли меню выбора категории ботов
-        # Ищем кнопку "Обычные боты"
-        regular_bots_btn = None
-        for row in msg.buttons:
-            for b in row:
-                t = btn_text(b).lower()
-                if "обычные боты" in t:
-                    regular_bots_btn = b
-                    logging.info(f"🔍 Найдена кнопка 'Обычные боты'")
-                    break
-            if regular_bots_btn:
-                break
-        
+
+        # Шаг 1: если пришло меню категорий ботов — выбираем "Обычные боты"
+        regular_bots_btn = find_button(msg, ["обычные боты"])
         if regular_bots_btn:
-            # Нажимаем "Обычные боты"
             logging.info("📋 Выбираю категорию 'Обычные боты'...")
             result = await click_btn(client, bot_username, regular_bots_btn, timeout=15)
             if not result:
@@ -377,106 +415,81 @@ async def process_bot_tasks(client: TelegramClient, bot_username: str, msg):
                 return msg
             if is_captcha_message(result):
                 await send_captcha_to_user(result, user_chat_id, client)
-                return msg
+                return result
             msg = result
-        
-        # 2. Собираем все кнопки с ботами
-        bot_buttons = []
-        for row in msg.buttons:
-            for b in row:
-                t = btn_text(b).lower()
-                if "перейти в бота" in t:
-                    bot_buttons.append(b)
-                    logging.info(f"🔗 Найдена кнопка бота: '{btn_text(b)}'")
-        
-        if not bot_buttons:
-            logging.warning("⚠️ Не найдены кнопки с ботами")
+        else:
+            logging.info("ℹ️ Кнопка 'Обычные боты' не найдена, продолжаю с текущим сообщением")
+
+        # Шаг 2: находим ПЕРВУЮ кнопку задания "Перейти в бота +XXXX GRAM"
+        first_task_btn = find_button(msg, ["перейти в бота"])
+        if not first_task_btn:
+            logging.warning("⚠️ Не найдена кнопка задания с ботом")
+            log_buttons(msg, "  ")
             return msg
-        
-        logging.info(f"🤖 Найдено {len(bot_buttons)} заданий с ботами")
-        
-        # Генерируем фото один раз для всех заданий
+
+        logging.info(f"🔗 Нажимаю первую кнопку задания: '{btn_text(first_task_btn)}'")
+        result = await click_btn(client, bot_username, first_task_btn, timeout=15)
+        if not result:
+            logging.warning("⚠️ Нет ответа после клика по заданию")
+            return msg
+        if is_captcha_message(result):
+            await send_captcha_to_user(result, user_chat_id, client)
+            return result
+
+        # Сообщение теперь содержит 3 бесполезные кнопки
+        # ("Перейти к боту", "Скрыть", "Пожаловаться") — их не трогаем.
+
+        # Генерируем фото один раз — используем для всех заданий подряд
         photo_bytes = generate_bot_image()
         logging.info("✅ Фото сгенерировано")
-        
-        for i, btn in enumerate(bot_buttons, 1):
-            logging.info(f"\n--- Задание с ботом {i}/{len(bot_buttons)} ---")
-            
-            # 1. Нажимаем на кнопку бота
-            result = await click_btn(client, bot_username, btn, timeout=15)
-            if not result:
-                logging.warning(f"⚠️ Нет ответа на бота {i}")
-                continue
-            
-            if is_captcha_message(result):
-                await send_captcha_to_user(result, user_chat_id, client)
-                continue
-            
-            await asyncio.sleep(1)
-            
-            # 2. Отправляем сгенерированное фото в Gram бота
+
+        bot_count = 0
+        max_bots = 100  # защита от бесконечного цикла
+
+        while bot_count < max_bots:
+            bot_count += 1
+            logging.info(f"\n--- Бот-задание #{bot_count} ---")
+
+            await asyncio.sleep(random.uniform(1, 2))
+
+            # Отправляем фото напрямую (без нажатия каких-либо кнопок)
             photo_result = await send_photo(client, bot_username, photo_bytes, timeout=15)
             if not photo_result:
-                logging.warning(f"⚠️ Нет ответа на фото {i}")
-                continue
-            
+                logging.warning("⚠️ Нет ответа на отправку фото")
+                break
+
             if is_captcha_message(photo_result):
                 await send_captcha_to_user(photo_result, user_chat_id, client)
-                continue
-            
+                return photo_result
+
             await asyncio.sleep(1)
-            
-            # 3. Ищем кнопку "Следующий бот"
-            next_btn = None
-            for row in photo_result.buttons:
-                for b in row:
-                    t = btn_text(b).lower()
-                    if "следующий бот" in t or "⏭️" in t:
-                        next_btn = b
-                        break
-                if next_btn:
-                    break
-            
-            if next_btn:
-                logging.info("⏭️ Нажимаю 'Следующий бот'...")
-                hide_result = await click_btn(client, bot_username, next_btn, timeout=15)
-                
-                if hide_result and not is_captcha_message(hide_result):
-                    # 4. Ищем кнопку "Скрыть"
-                    hide_btn = None
-                    for row in hide_result.buttons:
-                        for b in row:
-                            if "скрыть" in btn_text(b).lower():
-                                hide_btn = b
-                                break
-                        if hide_btn:
-                            break
-                    
-                    if hide_btn:
-                        logging.info("🔘 Нажимаю 'Скрыть'...")
-                        await click_btn(client, bot_username, hide_btn, timeout=5)
-                    else:
-                        logging.info("⏭️ Отправляю 'Следующий бот' еще раз...")
-                        for row in hide_result.buttons:
-                            for b in row:
-                                if "следующий бот" in btn_text(b).lower() or "⏭️" in btn_text(b):
-                                    await click_btn(client, bot_username, b, timeout=5)
-                                    break
-                            else:
-                                continue
-                            break
-            else:
-                logging.warning("⚠️ Кнопка 'Следующий бот' не найдена")
-            
-            # Пауза между заданиями
-            if i < len(bot_buttons):
-                delay = random.randint(3, 6)
-                logging.info(f"⏳ Пауза {delay} сек...")
-                await asyncio.sleep(delay)
-        
+
+            # Ищем кнопку "Следующий бот"
+            next_btn = find_button(photo_result, ["следующий бот"])
+            if not next_btn:
+                logging.info("✅ Кнопка 'Следующий бот' не найдена — задания закончились")
+                return photo_result
+
+            logging.info("⏭️ Нажимаю 'Следующий бот'...")
+            next_result = await click_btn(client, bot_username, next_btn, timeout=15)
+            if not next_result:
+                logging.warning("⚠️ Нет ответа после 'Следующий бот'")
+                break
+            if is_captcha_message(next_result):
+                await send_captcha_to_user(next_result, user_chat_id, client)
+                return next_result
+
+            # next_result теперь содержит 3 бесполезные кнопки
+            # ("Перейти к боту", "Скрыть", "Пожаловаться") — не трогаем,
+            # просто снова отправляем фото на следующей итерации цикла.
+
+            delay = random.randint(3, 6)
+            logging.info(f"⏳ Пауза {delay} сек...")
+            await asyncio.sleep(delay)
+
         logging.info("✅ Все задания с ботами обработаны")
         return await get_last_msg(client, bot_username)
-        
+
     except Exception as e:
         logging.error(f"❌ Ошибка обработки заданий с ботами: {e}")
         return msg
@@ -556,17 +569,17 @@ async def send_captcha_to_user(msg, chat_id: int, client: TelegramClient) -> boo
             bu = (msg.chat.username if msg.chat else None) or "gram_prbot"
         except:
             bu = "gram_prbot"
-        
-        captcha_storage[chat_id] = {'client': client, 'bot_username': bu}
-        
+
+        captcha_storage[chat_id] = {'client': client, 'bot_username': bu, 'msg_id': msg.id}
+
         text = f"🚨 <b>Обнаружена капча!</b>\n\n"
         text += f"🤖 Бот: @{bu}\n\n"
         if msg.raw_text:
             text += f"📝 {msg.raw_text}\n\n"
         text += f"👇 Нажми на кнопку с правильным ответом"
-        
+
         await bot_instance.send_message(chat_id, text, parse_mode=ParseMode.HTML)
-        
+
         if msg.photo:
             try:
                 file_data = await client.download_media(msg, file=bytes)
@@ -579,7 +592,7 @@ async def send_captcha_to_user(msg, chat_id: int, client: TelegramClient) -> boo
                     logging.info(f"✅ Фото капчи отправлено")
             except Exception as e:
                 logging.error(f"❌ Ошибка отправки фото: {e}")
-        
+
         buttons = []
         row = []
         for i in range(1, 10):
@@ -592,20 +605,20 @@ async def send_captcha_to_user(msg, chat_id: int, client: TelegramClient) -> boo
                 row = []
         if row:
             buttons.append(row)
-        
+
         buttons.append([
             InlineKeyboardButton(text="🔄 Проверить", callback_data=f"captcha_check_{chat_id}"),
             InlineKeyboardButton(text="⏹ Отмена", callback_data=f"captcha_stop_{chat_id}")
         ])
-        
+
         await bot_instance.send_message(
             chat_id,
             "🔢 Нажми номер правильного ответа:",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons)
         )
-        
+
         return True
-        
+
     except Exception as e:
         logging.error(f"❌ send_captcha: {e}")
         return False
@@ -626,7 +639,7 @@ async def process_tasks(
     """
     if task_type == "bots":
         return await process_bot_tasks(client, bot_username, msg)
-    
+
     # Стандартная обработка для channels и posts
     page = 0
 
@@ -761,15 +774,8 @@ async def do_cycle(
         kw = "перейти в бота"
     else:
         kw = "просмотр постов"
-    
-    target_btn = None
-    for row in earn_msg.buttons:
-        for b in row:
-            if kw in btn_text(b).lower():
-                target_btn = b
-                break
-        if target_btn:
-            break
+
+    target_btn = find_button(earn_msg, [kw])
 
     if not target_btn:
         logging.warning(f"⚠️ Кнопка '{kw}' не найдена")
@@ -800,20 +806,10 @@ async def do_cycle(
             await send_captcha_to_user(result, user_chat_id, client)
 
     elif task_type == "bots":
-        # Проверяем есть ли кнопки с ботами
-        has_bots = False
-        for row in task_msg.buttons:
-            for b in row:
-                if "перейти в бота" in btn_text(b).lower():
-                    has_bots = True
-                    break
-            if has_bots:
-                break
-        
-        if not has_bots:
-            logging.warning("⚠️ Нет заданий с ботами")
-            return
-        
+        # После клика "Перейти в бота" в меню заработка Pr Gram
+        # присылает/редактирует сообщение с категориями
+        # ("Обычные боты", "Боты с web app", "С доп. условиями")
+        # либо сразу список заданий — process_bot_tasks разберётся сам.
         result = await process_bot_tasks(client, bot_username, task_msg)
         if result and is_captcha_message(result):
             await send_captcha_to_user(result, user_chat_id, client)
@@ -879,20 +875,20 @@ async def captcha_answer_callback(callback: types.CallbackQuery):
         parts = callback.data.split("_")
         chat_id = int(parts[2])
         number = parts[3]
-        
+
         await callback.answer(f"✅ Выбрано: {number}")
-        
+
         if chat_id not in captcha_storage:
             await callback.message.edit_text("❌ Капча не найдена")
             return
-        
+
         data = captcha_storage[chat_id]
         client = data['client']
         bot_username = data['bot_username']
-        
+
         if not client.is_connected():
             await client.connect()
-        
+
         # Ищем кнопку с нужным номером и нажимаем её
         msg = await client.get_messages(bot_username, ids=data.get('msg_id', 0))
         if msg and msg.buttons:
@@ -905,9 +901,9 @@ async def captcha_answer_callback(callback: types.CallbackQuery):
                 else:
                     continue
                 break
-        
+
         new_msg = await get_last_msg(client, bot_username)
-        
+
         if new_msg and not is_captcha_message(new_msg):
             await callback.message.edit_text("✅ Капча пройдена!")
             del captcha_storage[chat_id]
@@ -916,7 +912,7 @@ async def captcha_answer_callback(callback: types.CallbackQuery):
                 await continue_gram_bot(phone)
         else:
             await callback.message.edit_text(f"⏳ Отправлено {number}, капча ещё активна")
-            
+
     except Exception as e:
         logging.error(f"❌ captcha_answer: {e}")
         await callback.answer(f"❌ Ошибка: {e}")
@@ -1088,7 +1084,7 @@ async def start_gram_worker(
 ):
     if user_id:
         set_user_chat_id(user_id)
-    
+
     if not client.is_connected():
         logging.info(f"🔄 Подключаюсь к сессии {phone}...")
         try:
@@ -1113,7 +1109,7 @@ async def start_gram_worker(
             except Exception as e2:
                 logging.error(f"❌ Ошибка пересоздания клиента: {e2}")
                 return None
-    
+
     try:
         if not await client.is_user_authorized():
             logging.warning(f"⚠️ Клиент {phone} не авторизован")
@@ -1121,7 +1117,7 @@ async def start_gram_worker(
     except Exception as e:
         logging.error(f"❌ Ошибка проверки авторизации: {e}")
         return None
-    
+
     bot_username_for_task[phone] = bot_username
     task = asyncio.create_task(run_gram_worker(client, bot_username, phone))
     active_tasks[phone] = task
@@ -1148,7 +1144,7 @@ async def continue_gram_bot(phone: str) -> bool:
     if phone in active_clients and phone in bot_username_for_task:
         client = active_clients[phone]
         bot_username = bot_username_for_task[phone]
-        
+
         if not client.is_connected():
             logging.info(f"🔄 Переподключаюсь к {phone}...")
             try:
@@ -1173,7 +1169,7 @@ async def continue_gram_bot(phone: str) -> bool:
                 except Exception as e2:
                     logging.error(f"❌ Ошибка пересоздания: {e2}")
                     return False
-        
+
         try:
             if not await client.is_user_authorized():
                 logging.error(f"❌ Клиент {phone} не авторизован")
@@ -1181,12 +1177,12 @@ async def continue_gram_bot(phone: str) -> bool:
         except Exception as e:
             logging.error(f"❌ Ошибка проверки авторизации: {e}")
             return False
-        
+
         task = asyncio.create_task(run_gram_worker(client, bot_username, phone))
         active_tasks[phone] = task
         logging.info(f"✅ Gram бот продолжен: {phone}")
         return True
-    
+
     return False
 
 
@@ -1197,11 +1193,11 @@ async def continue_gram_bot(phone: str) -> bool:
 async def run_gram_worker(client: TelegramClient, bot_username: str, phone: str):
     try:
         logging.info(f"🚀 Старт: {bot_username} | задержка: {SUBSCRIBE_DELAY} сек")
-        
+
         if not client.is_connected():
             logging.info("🔄 Подключаюсь...")
             await client.connect()
-        
+
         if not await client.is_user_authorized():
             logging.error(f"❌ Клиент не авторизован: {phone}")
             if bot_instance and user_chat_id:
@@ -1212,7 +1208,7 @@ async def run_gram_worker(client: TelegramClient, bot_username: str, phone: str)
                     parse_mode=ParseMode.HTML
                 )
             return
-        
+
         await send_text(client, bot_username, "/start", timeout=8)
         await asyncio.sleep(2)
 
@@ -1220,7 +1216,7 @@ async def run_gram_worker(client: TelegramClient, bot_username: str, phone: str)
         while True:
             cycle += 1
             logging.info(f"\n{'='*50}\n🔁 ЦИКЛ #{cycle}\n{'='*50}")
-            
+
             if not client.is_connected():
                 logging.warning("⚠️ Клиент отключен, переподключаю...")
                 try:
@@ -1231,7 +1227,7 @@ async def run_gram_worker(client: TelegramClient, bot_username: str, phone: str)
                 except Exception as e:
                     logging.error(f"❌ Ошибка переподключения: {e}")
                     break
-            
+
             try:
                 await do_cycle(client, bot_username, user_chat_id, phone)
             except asyncio.CancelledError:
@@ -1274,4 +1270,4 @@ __all__ = [
     'start_gram_worker', 'stop_gram_bot', 'continue_gram_bot',
     'set_user_chat_id', 'set_bot_instance', 'get_task_choice_keyboard',
     'active_clients', 'active_tasks'
-        ]
+    ]
