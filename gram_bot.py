@@ -77,19 +77,21 @@ def get_task_choice_keyboard(user_id: int) -> InlineKeyboardMarkup:
 # ГЕНЕРАЦИЯ ФОТО ДЛЯ ЗАДАНИЙ С БОТАМИ
 # ============================================================
 
-_FONT_PATHS = [
+# Список путей к шрифтам — Android-пути в приоритете (как в твоём скрипте),
+# плюс fallback для Linux/Windows/MacOS на случай запуска не на Android
+FONT_PATHS = [
+    # Android (приоритет)
+    '/system/fonts/Roboto-Bold.ttf',
+    '/system/fonts/Roboto-Black.ttf',
+    '/system/fonts/Roboto-Regular.ttf',
+    '/system/fonts/DroidSans-Bold.ttf',
+    '/system/fonts/NotoSans-Bold.ttf',
+    '/system/fonts/SystemFont.ttf',
     # Linux
     '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf',
     '/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf',
     '/usr/share/fonts/truetype/freefont/FreeSansBold.ttf',
     '/usr/share/fonts/truetype/noto/NotoSans-Bold.ttf',
-    '/usr/share/fonts/truetype/roboto/Roboto-Bold.ttf',
-    # Android
-    '/system/fonts/Roboto-Bold.ttf',
-    '/system/fonts/Roboto-Black.ttf',
-    '/system/fonts/Roboto-Medium.ttf',
-    '/system/fonts/DroidSans-Bold.ttf',
-    '/system/fonts/NotoSans-Bold.ttf',
     # Windows
     'C:\\Windows\\Fonts\\arialbd.ttf',
     'C:\\Windows\\Fonts\\segoeuib.ttf',
@@ -105,25 +107,29 @@ _font_path_resolved = False
 
 
 def _resolve_font_path() -> Optional[str]:
-    """Определяет и кэширует путь к первому доступному жирному шрифту."""
+    """Определяет и кэширует путь к первому доступному шрифту из FONT_PATHS."""
     global _resolved_font_path, _font_path_resolved
     if _font_path_resolved:
         return _resolved_font_path
 
-    for path in _FONT_PATHS:
+    for path in FONT_PATHS:
         try:
             ImageFont.truetype(path, 40)
             _resolved_font_path = path
+            logging.info(f"🔤 Используется шрифт: {path}")
             break
         except Exception:
             continue
+
+    if _resolved_font_path is None:
+        logging.warning("⚠️ Ни один шрифт не найден, будет использован default")
 
     _font_path_resolved = True
     return _resolved_font_path
 
 
 def _load_font(size: int) -> ImageFont.ImageFont:
-    """Загружает жирный sans-serif шрифт нужного размера (с кэшем)."""
+    """Загружает шрифт нужного размера (с кэшем по размеру)."""
     size = max(1, int(size))
     if size in _font_cache:
         return _font_cache[size]
@@ -153,6 +159,7 @@ def _fit_font_to_box(
     """
     Бинарным поиском подбирает МАКСИМАЛЬНЫЙ размер шрифта,
     при котором текст помещается в прямоугольник max_width x max_height.
+    Именно это заставляет надпись занимать почти всю картинку.
     """
     lo, hi = min_size, max_size
     best_size = min_size
@@ -178,7 +185,10 @@ def _color_distance(c1: Tuple[int, int, int], c2: Tuple[int, int, int]) -> float
 
 
 def _random_bg_color() -> Tuple[int, int, int]:
-    """Случайный цвет фона: чаще тёмные/чёрные тона, иногда яркие."""
+    """
+    Случайный цвет фона: чаще чёрный/тёмный (как в исходном примере),
+    иногда — произвольный яркий цвет, чтобы фото отличались друг от друга.
+    """
     mode = random.choices(
         ["black", "dark", "colored"],
         weights=[45, 35, 20],
@@ -195,26 +205,27 @@ def _random_bg_color() -> Tuple[int, int, int]:
 
 def _generate_letter_colors(n: int, bg_color: Tuple[int, int, int]) -> List[Tuple[int, int, int]]:
     """
-    Генерирует n ярких, контрастных к фону цветов для букв.
-    Каждый раз разный набор (случайные hue, не жёстко по порядку радуги).
+    Генерирует n ярких контрастных к фону цветов для букв
+    (в стиле радуги из исходного скрипта, но со случайным сдвигом
+    hue при каждом вызове, поэтому набор цветов каждый раз новый).
     """
     colors = []
+    hue_shift = random.random()  # случайный сдвиг всей радуги
     used_hues: List[float] = []
 
-    for _ in range(n):
-        hue = random.random()
-        attempts = 0
-        while any(abs(hue - h) < 0.035 for h in used_hues) and attempts < 15:
-            hue = random.random()
-            attempts += 1
+    for i in range(n):
+        # базовый радужный hue (как в твоём скрипте: i / len(text)),
+        # но со случайным сдвигом + небольшим случайным разбросом
+        base_hue = (i / max(n, 1) + hue_shift) % 1.0
+        hue = (base_hue + random.uniform(-0.03, 0.03)) % 1.0
         used_hues.append(hue)
 
-        sat = random.uniform(0.75, 1.0)
-        val = random.uniform(0.85, 1.0)
+        sat = random.uniform(0.85, 1.0)
+        val = random.uniform(0.9, 1.0)
         rgb = colorsys.hsv_to_rgb(hue, sat, val)
         color = tuple(int(c * 255) for c in rgb)
 
-        # если цвет слишком похож на фон — делаем ярче/инвертируем
+        # если цвет слишком похож на фон — инвертируем/делаем ярче
         if _color_distance(color, bg_color) < 90:
             color = tuple(255 - c for c in color)
 
@@ -225,13 +236,12 @@ def _generate_letter_colors(n: int, bg_color: Tuple[int, int, int]) -> List[Tupl
 
 def generate_bot_image() -> bytes:
     """
-    Генерирует картинку 1080x1080 с надписью @Bot_Farmers,
-    ЗАПОЛНЯЮЩЕЙ БОЛЬШУЮ ЧАСТЬ ФОТОГРАФИИ (текст крупный, почти на всю ширину).
-
-    При каждом вызове результат разный:
+    Генерирует картинку 1080x1080 с радужной надписью @Bot_Farmers,
+    которая занимает почти всю ширину/высоту фото (в стиле присланного
+    скрипта: посимвольная отрисовка через textbbox), но при каждом вызове:
     - случайный цвет фона
-    - случайный масштаб заполнения (текст занимает от ~80% до ~95% ширины)
-    - случайные яркие цвета каждой буквы
+    - случайный масштаб заполнения (текст всегда крупный, но чуть разный)
+    - случайный набор ярких цветов для каждой буквы
     - небольшое случайное смещение позиции текста
     Возвращает bytes (PNG) для отправки.
     """
@@ -242,9 +252,7 @@ def generate_bot_image() -> bytes:
     image = Image.new('RGB', (size, size), bg_color)
     draw = ImageDraw.Draw(image)
 
-    # Случайная доля заполнения ширины/высоты картинки текстом —
-    # это и даёт эффект "разного масштаба" между фотографиями,
-    # при этом надпись всегда КРУПНАЯ и занимает почти всё фото.
+    # случайная доля заполнения картинки текстом (текст всегда крупный)
     width_ratio = random.uniform(0.82, 0.95)
     height_ratio = random.uniform(0.35, 0.55)
 
@@ -253,6 +261,7 @@ def generate_bot_image() -> bytes:
 
     font = _fit_font_to_box(draw, text, max_width, max_height)
 
+    # центрируем текст (как в исходном скрипте)
     bbox = draw.textbbox((0, 0), text, font=font)
     tw = bbox[2] - bbox[0]
     th = bbox[3] - bbox[1]
@@ -260,7 +269,7 @@ def generate_bot_image() -> bytes:
     base_x = (size - tw) // 2 - bbox[0]
     base_y = (size - th) // 2 - bbox[1]
 
-    # небольшое случайное смещение, чтобы текст не был всегда строго в центре
+    # небольшое случайное смещение от центра
     margin = int(size * 0.02)
     max_dx = max(0, min(base_x - margin, size - tw - base_x - margin))
     max_dy = max(0, min(base_y - margin, size - th - base_y - margin))
@@ -272,11 +281,13 @@ def generate_bot_image() -> bytes:
 
     colors = _generate_letter_colors(len(text), bg_color)
 
+    # посимвольная отрисовка (логика 1-в-1 как в присланном скрипте)
     x_pos = x
-    for ch, color in zip(text, colors):
-        draw.text((x_pos, y), ch, fill=color, font=font)
-        ch_bbox = draw.textbbox((0, 0), ch, font=font)
-        x_pos += ch_bbox[2] - ch_bbox[0]
+    for i, char in enumerate(text):
+        color = colors[i]
+        draw.text((x_pos, y), char, fill=color, font=font)
+        char_bbox = draw.textbbox((0, 0), char, font=font)
+        x_pos += char_bbox[2] - char_bbox[0]
 
     img_bytes = io.BytesIO()
     image.save(img_bytes, format='PNG')
