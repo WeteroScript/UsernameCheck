@@ -77,57 +77,145 @@ def get_task_choice_keyboard(user_id: int) -> InlineKeyboardMarkup:
 # ГЕНЕРАЦИЯ ФОТО ДЛЯ ЗАДАНИЙ С БОТАМИ
 # ============================================================
 
-def generate_bot_image() -> bytes:
-    """
-    Генерирует чёрный квадрат 1080x1080 с радужной надписью @Bot_Farmers
-    Возвращает bytes для отправки
-    """
-    size = 1080
-    image = Image.new('RGB', (size, size), 'black')
-    draw = ImageDraw.Draw(image)
+_FONT_PATHS = [
+    # Linux
+    '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf',
+    '/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf',
+    '/usr/share/fonts/truetype/freefont/FreeSansBold.ttf',
+    '/usr/share/fonts/truetype/noto/NotoSans-Bold.ttf',
+    '/usr/share/fonts/truetype/roboto/Roboto-Bold.ttf',
+    # Android
+    '/system/fonts/Roboto-Bold.ttf',
+    '/system/fonts/Roboto-Black.ttf',
+    '/system/fonts/Roboto-Medium.ttf',
+    '/system/fonts/DroidSans-Bold.ttf',
+    '/system/fonts/NotoSans-Bold.ttf',
+    # Windows
+    'C:\\Windows\\Fonts\\arialbd.ttf',
+    'C:\\Windows\\Fonts\\segoeuib.ttf',
+    'C:\\Windows\\Fonts\\calibrib.ttf',
+    # MacOS
+    '/System/Library/Fonts/Supplemental/Arial Bold.ttf',
+    '/Library/Fonts/Arial Bold.ttf',
+]
 
-    text = "@Bot_Farmers"
+_font_cache: Dict[int, ImageFont.FreeTypeFont] = {}
 
-    # Пытаемся загрузить шрифт
-    font = None
-    font_paths = [
-        '/system/fonts/Roboto-Regular.ttf',
-        '/system/fonts/Roboto-Bold.ttf',
-        '/system/fonts/Roboto-Black.ttf',
-        '/system/fonts/DroidSans-Bold.ttf',
-        '/system/fonts/NotoSans-Bold.ttf',
-        '/system/fonts/SystemFont.ttf',
-        '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf',
-        '/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf'
-    ]
 
-    for path in font_paths:
+def _load_font(size: int) -> ImageFont.ImageFont:
+    """Загружает жирный sans-serif шрифт нужного размера (с кэшем)."""
+    if size in _font_cache:
+        return _font_cache[size]
+
+    for path in _FONT_PATHS:
         try:
-            font = ImageFont.truetype(path, 80)
-            break
-        except:
+            font = ImageFont.truetype(path, size)
+            _font_cache[size] = font
+            return font
+        except Exception:
             continue
 
-    if font is None:
-        font = ImageFont.load_default()
+    font = ImageFont.load_default()
+    _font_cache[size] = font
+    return font
 
-    # Рисуем радужный текст
+
+def _color_distance(c1: Tuple[int, int, int], c2: Tuple[int, int, int]) -> float:
+    return sum((a - b) ** 2 for a, b in zip(c1, c2)) ** 0.5
+
+
+def _random_bg_color() -> Tuple[int, int, int]:
+    """Случайный цвет фона: чаще тёмные/чёрные тона, иногда яркие."""
+    mode = random.choices(
+        ["black", "dark", "colored"],
+        weights=[45, 35, 20],
+        k=1
+    )[0]
+
+    if mode == "black":
+        return (0, 0, 0)
+    elif mode == "dark":
+        return tuple(random.randint(0, 35) for _ in range(3))
+    else:
+        return tuple(random.randint(0, 255) for _ in range(3))
+
+
+def _generate_letter_colors(n: int, bg_color: Tuple[int, int, int]) -> List[Tuple[int, int, int]]:
+    """
+    Генерирует n ярких, контрастных к фону цветов для букв.
+    Каждый раз разный набор (случайные hue, не жёстко по порядку радуги).
+    """
+    colors = []
+    used_hues: List[float] = []
+
+    for _ in range(n):
+        hue = random.random()
+        attempts = 0
+        while any(abs(hue - h) < 0.035 for h in used_hues) and attempts < 15:
+            hue = random.random()
+            attempts += 1
+        used_hues.append(hue)
+
+        sat = random.uniform(0.75, 1.0)
+        val = random.uniform(0.85, 1.0)
+        rgb = colorsys.hsv_to_rgb(hue, sat, val)
+        color = tuple(int(c * 255) for c in rgb)
+
+        # если цвет слишком похож на фон — делаем ярче/инвертируем
+        if _color_distance(color, bg_color) < 90:
+            color = tuple(255 - c for c in color)
+
+        colors.append(color)
+
+    return colors
+
+
+def generate_bot_image() -> bytes:
+    """
+    Генерирует картинку 1080x1080 с надписью @Bot_Farmers.
+    При каждом вызове результат разный:
+    - случайный цвет фона
+    - случайный масштаб (размер) текста
+    - случайные яркие цвета каждой буквы
+    - небольшое случайное смещение позиции текста
+    Возвращает bytes (PNG) для отправки.
+    """
+    size = 1080
+    text = "@Bot_Farmers"
+
+    bg_color = _random_bg_color()
+    image = Image.new('RGB', (size, size), bg_color)
+    draw = ImageDraw.Draw(image)
+
+    # случайный масштаб текста (эффект "поменялся масштаб фотографии")
+    font_size = random.randint(70, 150)
+    font = _load_font(font_size)
+
+    # общая ширина/высота текста для центрирования
     bbox = draw.textbbox((0, 0), text, font=font)
     tw = bbox[2] - bbox[0]
     th = bbox[3] - bbox[1]
-    x = (size - tw) // 2
-    y = (size - th) // 2
+
+    base_x = (size - tw) // 2 - bbox[0]
+    base_y = (size - th) // 2 - bbox[1]
+
+    # небольшое случайное смещение, чтобы текст не был всегда в одном месте
+    max_dx = max(0, min(base_x - 20, size - tw - base_x - 20))
+    max_dy = max(0, min(base_y - 20, size - th - base_y - 20))
+    dx = random.randint(-max_dx, max_dx) if max_dx > 0 else 0
+    dy = random.randint(-max_dy, max_dy) if max_dy > 0 else 0
+
+    x = base_x + dx
+    y = base_y + dy
+
+    colors = _generate_letter_colors(len(text), bg_color)
 
     x_pos = x
-    for i, char in enumerate(text):
-        hue = i / len(text)
-        rgb = colorsys.hsv_to_rgb(hue, 1.0, 1.0)
-        color = tuple(int(c * 255) for c in rgb)
-        draw.text((x_pos, y), char, fill=color, font=font)
-        char_bbox = draw.textbbox((0, 0), char, font=font)
-        x_pos += char_bbox[2] - char_bbox[0]
+    for ch, color in zip(text, colors):
+        draw.text((x_pos, y), ch, fill=color, font=font)
+        ch_bbox = draw.textbbox((0, 0), ch, font=font)
+        x_pos += ch_bbox[2] - ch_bbox[0]
 
-    # Сохраняем в bytes
     img_bytes = io.BytesIO()
     image.save(img_bytes, format='PNG')
     img_bytes.seek(0)
@@ -303,7 +391,6 @@ async def send_photo(
     mid = before.id if before else 0
     logging.info(f"📸 Отправляю фото в {bot_username}")
     try:
-        # BytesIO с "именем" файла, чтобы Telegram точно принял это как photo
         buf = io.BytesIO(photo_bytes)
         buf.name = "bot_farmers.png"
         await client.send_file(bot_username, buf)
@@ -394,8 +481,8 @@ async def process_bot_tasks(client: TelegramClient, bot_username: str, msg):
        Pr Gram редактирует это сообщение -> снова 3 бесполезные кнопки
        ("Перейти к боту", "Скрыть", "Пожаловаться") — тоже не нажимаем.
 
-    7. Снова отправляем фото. Повторяем с шага 5, пока есть
-       кнопка "Следующий бот". Как только её больше нет —
+    7. Снова отправляем НОВОЕ (уникальное) фото. Повторяем с шага 5,
+       пока есть кнопка "Следующий бот". Как только её больше нет —
        задания закончились.
     """
     try:
@@ -439,10 +526,6 @@ async def process_bot_tasks(client: TelegramClient, bot_username: str, msg):
         # Сообщение теперь содержит 3 бесполезные кнопки
         # ("Перейти к боту", "Скрыть", "Пожаловаться") — их не трогаем.
 
-        # Генерируем фото один раз — используем для всех заданий подряд
-        photo_bytes = generate_bot_image()
-        logging.info("✅ Фото сгенерировано")
-
         bot_count = 0
         max_bots = 100  # защита от бесконечного цикла
 
@@ -451,6 +534,10 @@ async def process_bot_tasks(client: TelegramClient, bot_username: str, msg):
             logging.info(f"\n--- Бот-задание #{bot_count} ---")
 
             await asyncio.sleep(random.uniform(1, 2))
+
+            # Каждый раз генерируем НОВОЕ уникальное фото
+            photo_bytes = generate_bot_image()
+            logging.info("✅ Сгенерировано новое уникальное фото")
 
             # Отправляем фото напрямую (без нажатия каких-либо кнопок)
             photo_result = await send_photo(client, bot_username, photo_bytes, timeout=15)
@@ -481,7 +568,7 @@ async def process_bot_tasks(client: TelegramClient, bot_username: str, msg):
 
             # next_result теперь содержит 3 бесполезные кнопки
             # ("Перейти к боту", "Скрыть", "Пожаловаться") — не трогаем,
-            # просто снова отправляем фото на следующей итерации цикла.
+            # просто снова отправляем новое фото на следующей итерации цикла.
 
             delay = random.randint(3, 6)
             logging.info(f"⏳ Пауза {delay} сек...")
@@ -1270,4 +1357,4 @@ __all__ = [
     'start_gram_worker', 'stop_gram_bot', 'continue_gram_bot',
     'set_user_chat_id', 'set_bot_instance', 'get_task_choice_keyboard',
     'active_clients', 'active_tasks'
-    ]
+]
