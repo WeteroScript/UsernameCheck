@@ -99,25 +99,78 @@ _FONT_PATHS = [
     '/Library/Fonts/Arial Bold.ttf',
 ]
 
-_font_cache: Dict[int, ImageFont.FreeTypeFont] = {}
+_font_cache: Dict[int, ImageFont.ImageFont] = {}
+_resolved_font_path: Optional[str] = None
+_font_path_resolved = False
+
+
+def _resolve_font_path() -> Optional[str]:
+    """Определяет и кэширует путь к первому доступному жирному шрифту."""
+    global _resolved_font_path, _font_path_resolved
+    if _font_path_resolved:
+        return _resolved_font_path
+
+    for path in _FONT_PATHS:
+        try:
+            ImageFont.truetype(path, 40)
+            _resolved_font_path = path
+            break
+        except Exception:
+            continue
+
+    _font_path_resolved = True
+    return _resolved_font_path
 
 
 def _load_font(size: int) -> ImageFont.ImageFont:
     """Загружает жирный sans-serif шрифт нужного размера (с кэшем)."""
+    size = max(1, int(size))
     if size in _font_cache:
         return _font_cache[size]
 
-    for path in _FONT_PATHS:
+    path = _resolve_font_path()
+    if path:
         try:
             font = ImageFont.truetype(path, size)
             _font_cache[size] = font
             return font
         except Exception:
-            continue
+            pass
 
     font = ImageFont.load_default()
     _font_cache[size] = font
     return font
+
+
+def _fit_font_to_box(
+    draw: ImageDraw.ImageDraw,
+    text: str,
+    max_width: int,
+    max_height: int,
+    min_size: int = 10,
+    max_size: int = 900
+) -> ImageFont.ImageFont:
+    """
+    Бинарным поиском подбирает МАКСИМАЛЬНЫЙ размер шрифта,
+    при котором текст помещается в прямоугольник max_width x max_height.
+    """
+    lo, hi = min_size, max_size
+    best_size = min_size
+
+    while lo <= hi:
+        mid = (lo + hi) // 2
+        font = _load_font(mid)
+        bbox = draw.textbbox((0, 0), text, font=font)
+        w = bbox[2] - bbox[0]
+        h = bbox[3] - bbox[1]
+
+        if w <= max_width and h <= max_height:
+            best_size = mid
+            lo = mid + 1
+        else:
+            hi = mid - 1
+
+    return _load_font(best_size)
 
 
 def _color_distance(c1: Tuple[int, int, int], c2: Tuple[int, int, int]) -> float:
@@ -172,10 +225,12 @@ def _generate_letter_colors(n: int, bg_color: Tuple[int, int, int]) -> List[Tupl
 
 def generate_bot_image() -> bytes:
     """
-    Генерирует картинку 1080x1080 с надписью @Bot_Farmers.
+    Генерирует картинку 1080x1080 с надписью @Bot_Farmers,
+    ЗАПОЛНЯЮЩЕЙ БОЛЬШУЮ ЧАСТЬ ФОТОГРАФИИ (текст крупный, почти на всю ширину).
+
     При каждом вызове результат разный:
     - случайный цвет фона
-    - случайный масштаб (размер) текста
+    - случайный масштаб заполнения (текст занимает от ~80% до ~95% ширины)
     - случайные яркие цвета каждой буквы
     - небольшое случайное смещение позиции текста
     Возвращает bytes (PNG) для отправки.
@@ -187,11 +242,17 @@ def generate_bot_image() -> bytes:
     image = Image.new('RGB', (size, size), bg_color)
     draw = ImageDraw.Draw(image)
 
-    # случайный масштаб текста (эффект "поменялся масштаб фотографии")
-    font_size = random.randint(70, 150)
-    font = _load_font(font_size)
+    # Случайная доля заполнения ширины/высоты картинки текстом —
+    # это и даёт эффект "разного масштаба" между фотографиями,
+    # при этом надпись всегда КРУПНАЯ и занимает почти всё фото.
+    width_ratio = random.uniform(0.82, 0.95)
+    height_ratio = random.uniform(0.35, 0.55)
 
-    # общая ширина/высота текста для центрирования
+    max_width = int(size * width_ratio)
+    max_height = int(size * height_ratio)
+
+    font = _fit_font_to_box(draw, text, max_width, max_height)
+
     bbox = draw.textbbox((0, 0), text, font=font)
     tw = bbox[2] - bbox[0]
     th = bbox[3] - bbox[1]
@@ -199,9 +260,10 @@ def generate_bot_image() -> bytes:
     base_x = (size - tw) // 2 - bbox[0]
     base_y = (size - th) // 2 - bbox[1]
 
-    # небольшое случайное смещение, чтобы текст не был всегда в одном месте
-    max_dx = max(0, min(base_x - 20, size - tw - base_x - 20))
-    max_dy = max(0, min(base_y - 20, size - th - base_y - 20))
+    # небольшое случайное смещение, чтобы текст не был всегда строго в центре
+    margin = int(size * 0.02)
+    max_dx = max(0, min(base_x - margin, size - tw - base_x - margin))
+    max_dy = max(0, min(base_y - margin, size - th - base_y - margin))
     dx = random.randint(-max_dx, max_dx) if max_dx > 0 else 0
     dy = random.randint(-max_dy, max_dy) if max_dy > 0 else 0
 
