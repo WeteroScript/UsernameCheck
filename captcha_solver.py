@@ -1,10 +1,10 @@
 """
-Модуль для решения капчи (фото + кнопки 1-9) с поддержкой нескольких ботов
+Модуль для решения капчи (фото + кнопки 1-9)
+Пользователь выбирает ответ в своём боте → бот нажимает кнопку в Gram боте
 """
 
 import logging
 import asyncio
-import random
 from typing import Optional, Dict, Any, Tuple
 from telethon import TelegramClient
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, BufferedInputFile
@@ -19,7 +19,7 @@ class CaptchaSolver:
         self.captcha_storage: Dict[int, Dict[str, Any]] = {}
         self.active_clients: Dict[str, TelegramClient] = {}
         self.continue_callback = None
-        self.auto_click_timeout = 15
+        self.auto_click_timeout = 60  # 60 секунд на ответ
     
     def set_bot(self, bot_instance):
         self.bot = bot_instance
@@ -69,14 +69,11 @@ class CaptchaSolver:
             "выберите собаку",
             "выберите кота",
             "выберите птицу",
-            "выберите правильный вариант",
-            "выберите животное",
-            "выберите предмет"
+            "выберите правильный вариант"
         ]
         
         for keyword in captcha_keywords:
             if keyword in text:
-                logger.info(f"🔍 Найдена капча: '{keyword}'")
                 return True
         
         if msg.buttons:
@@ -88,14 +85,14 @@ class CaptchaSolver:
                         numbers.append(btn_text)
             
             if len(numbers) >= 3:
-                logger.info(f"🔍 Найдена капча с кнопками: {numbers}")
                 return True
         
         return False
     
     async def send_captcha_to_user(self, msg, chat_id: int, client: TelegramClient, bot_username: str = None) -> bool:
         """
-        Отправка капчи пользователю
+        Отправляет капчу пользователю с кнопками 1-9
+        Сохраняет данные для последующего нажатия
         """
         if not chat_id or not self.bot:
             logger.error("❌ Bot или chat_id не установлены")
@@ -108,26 +105,24 @@ class CaptchaSolver:
                 except:
                     bot_username = "gram_prbot"
             
+            # Сохраняем данные капчи
             self.captcha_storage[chat_id] = {
                 'client': client,
                 'bot_username': bot_username,
                 'msg_id': msg.id,
-                'chat_id': chat_id,
                 'answered': False
             }
             
-            # 1. Текст
-            text = f"🚨 <b>Обнаружена капча!</b>\n\n"
-            text += f"🤖 <b>Бот:</b> @{bot_username}\n\n"
+            # Отправляем текст (без спама, только 1 раз)
+            text = f"🧩 <b>Капча!</b>\n\n"
+            text += f"🤖 Бот: @{bot_username}\n\n"
             if msg.raw_text:
-                text += f"📝 <b>Текст капчи:</b>\n{msg.raw_text}\n\n"
-            text += f"⏳ У тебя есть {self.auto_click_timeout} секунд.\n"
-            text += f"Нажми номер правильного ответа (1-9)\n"
-            text += f"Если не выберешь - бот нажмет рандомную кнопку."
+                text += f"📝 {msg.raw_text[:200]}\n\n"
+            text += f"👇 Нажми номер правильного ответа"
             
             await self.bot.send_message(chat_id, text, parse_mode=ParseMode.HTML)
             
-            # 2. Фото
+            # Отправляем фото (если есть)
             if msg.photo:
                 try:
                     file_data = await client.download_media(msg, file=bytes)
@@ -135,13 +130,13 @@ class CaptchaSolver:
                         await self.bot.send_photo(
                             chat_id,
                             BufferedInputFile(file_data, filename="captcha.jpg"),
-                            caption="🖼 Выбери правильный ответ (1-9)"
+                            caption="🖼 Выбери правильный ответ"
                         )
-                        logger.info(f"✅ Фото отправлено пользователю {chat_id}")
+                        logger.info(f"✅ Фото капчи отправлено")
                 except Exception as e:
                     logger.error(f"❌ Ошибка отправки фото: {e}")
             
-            # 3. Кнопки 1-9
+            # Создаем кнопки 1-9
             buttons = []
             row = []
             for i in range(1, 10):
@@ -155,18 +150,11 @@ class CaptchaSolver:
             if row:
                 buttons.append(row)
             
-            buttons.append([
-                InlineKeyboardButton(text="🔄 Проверить", callback_data=f"captcha_check_{chat_id}"),
-                InlineKeyboardButton(text="⏹ Отмена", callback_data=f"captcha_stop_{chat_id}")
-            ])
-            
             await self.bot.send_message(
                 chat_id,
                 "🔢 Выбери номер:",
                 reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons)
             )
-            
-            asyncio.create_task(self._auto_click_timer(chat_id))
             
             return True
             
@@ -174,33 +162,10 @@ class CaptchaSolver:
             logger.error(f"❌ Ошибка отправки капчи: {e}")
             return False
     
-    async def _auto_click_timer(self, chat_id: int):
-        await asyncio.sleep(self.auto_click_timeout)
-        
-        if chat_id not in self.captcha_storage:
-            return
-        
-        data = self.captcha_storage[chat_id]
-        if data.get('answered', False):
-            return
-        
-        random_number = str(random.randint(1, 9))
-        logger.info(f"🤖 Авто-нажатие: пользователь {chat_id} не ответил, нажимаю {random_number}")
-        
-        if self.bot:
-            try:
-                await self.bot.send_message(
-                    chat_id,
-                    f"⏳ Время вышло!\n"
-                    f"🤖 Автоматически нажимаю кнопку <b>{random_number}</b>",
-                    parse_mode=ParseMode.HTML
-                )
-            except:
-                pass
-        
-        await self._handle_answer(chat_id, random_number, is_auto=True)
-    
-    async def _handle_answer(self, chat_id: int, number: str, is_auto: bool = False) -> Tuple[bool, str]:
+    async def handle_captcha_answer(self, chat_id: int, number: str) -> Tuple[bool, str]:
+        """
+        Пользователь выбрал номер → бот нажимает кнопку в Gram боте
+        """
         try:
             if chat_id not in self.captcha_storage:
                 return False, "Капча не найдена"
@@ -208,8 +173,10 @@ class CaptchaSolver:
             data = self.captcha_storage[chat_id]
             client = data['client']
             bot_username = data['bot_username']
+            msg_id = data['msg_id']
             
-            data['answered'] = True
+            if data.get('answered', False):
+                return False, "Капча уже обработана"
             
             if not client:
                 return False, "Клиент не найден"
@@ -217,24 +184,47 @@ class CaptchaSolver:
             if not client.is_connected():
                 await client.connect()
             
-            await client.send_message(bot_username, number)
-            logger.info(f"📤 {'Авто-ответ' if is_auto else 'Пользователь'} отправил {number} в {bot_username}")
+            # Получаем сообщение с капчей
+            msg = await client.get_messages(bot_username, ids=msg_id)
+            if not msg:
+                return False, "Сообщение с капчей не найдено"
+            
+            # Ищем кнопку с нужным номером
+            target_btn = None
+            if msg.buttons:
+                for row in msg.buttons:
+                    for btn in row:
+                        if self._get_button_text(btn) == number:
+                            target_btn = btn
+                            break
+                    if target_btn:
+                        break
+            
+            if not target_btn:
+                return False, f"Кнопка {number} не найдена"
+            
+            # Нажимаем кнопку в Gram боте
+            logger.info(f"🖱 Нажимаю кнопку '{number}' в @{bot_username}")
+            try:
+                await target_btn.click()
+            except Exception as e:
+                logger.error(f"❌ Ошибка нажатия кнопки: {e}")
+                return False, f"Ошибка нажатия: {e}"
+            
+            # Отмечаем что ответ дан
+            data['answered'] = True
+            
+            # Ждем ответа от бота
             await asyncio.sleep(2)
             
-            msgs = await client.get_messages(bot_username, limit=1)
-            new_msg = msgs[0] if msgs else None
+            # Проверяем результат
+            new_msg = await client.get_messages(bot_username, limit=1)
             
             if new_msg and not self.is_captcha_message(new_msg):
-                logger.info(f"✅ Капча пройдена! (ответ: {number})")
+                # Капча пройдена!
                 del self.captcha_storage[chat_id]
                 
-                if self.bot and not is_auto:
-                    await self.bot.send_message(
-                        chat_id,
-                        f"✅ <b>Капча пройдена!</b> (выбрано: {number})",
-                        parse_mode=ParseMode.HTML
-                    )
-                
+                # Продолжаем работу
                 if self.continue_callback:
                     phone = None
                     for p, c in self.active_clients.items():
@@ -244,31 +234,18 @@ class CaptchaSolver:
                     if phone:
                         await self.continue_callback(phone)
                 
-                return True, "Капча пройдена!"
-            
-            if self.bot and not is_auto:
-                await self.bot.send_message(
-                    chat_id,
-                    f"⏳ Капча еще активна (ответ: {number})\nПопробуй другой номер",
-                    parse_mode=ParseMode.HTML
-                )
-            
-            if is_auto:
-                await asyncio.sleep(1)
-                new_number = str(random.randint(1, 9))
-                logger.info(f"🤖 Повторное авто-нажатие: {new_number}")
-                return await self._handle_answer(chat_id, new_number, is_auto=True)
-            
-            return False, "Капча еще активна"
+                return True, "✅ Капча пройдена!"
+            else:
+                # Капча еще активна
+                data['answered'] = False  # Сбрасываем для повторной попытки
+                return False, f"⏳ Кнопка {number} нажата, капча еще активна. Попробуй другой номер."
             
         except Exception as e:
             logger.error(f"❌ Ошибка обработки ответа: {e}")
             return False, str(e)
     
-    async def handle_captcha_answer(self, chat_id: int, number: str) -> Tuple[bool, str]:
-        return await self._handle_answer(chat_id, number, is_auto=False)
-    
     async def check_captcha_status(self, chat_id: int) -> Tuple[bool, str]:
+        """Проверка статуса капчи"""
         try:
             if chat_id not in self.captcha_storage:
                 return True, "Капча пройдена"
@@ -297,6 +274,7 @@ class CaptchaSolver:
             return False, str(e)
     
     def stop_captcha(self, chat_id: int) -> bool:
+        """Остановка капчи"""
         if chat_id in self.captcha_storage:
             del self.captcha_storage[chat_id]
             logger.info(f"⏹ Капча остановлена для {chat_id}")
