@@ -1,5 +1,6 @@
 """
 Модуль для Gram ботов (PR GRAM | DRAGON)
+С поддержкой заданий с ботами
 """
 
 import asyncio
@@ -32,6 +33,7 @@ user_task_choice: Dict[int, str] = {}
 session_locks: Dict[str, asyncio.Lock] = {}
 
 SUBSCRIBE_DELAY = 60
+BOT_TASK_DELAY = 30  # Задержка между заданиями с ботами
 
 
 def get_session_lock(phone: str) -> asyncio.Lock:
@@ -54,6 +56,7 @@ def get_task_choice_keyboard(user_id: int) -> InlineKeyboardMarkup:
     task_types = {
         "channels": "📢 Подписка на каналы",
         "posts": "📱 Просмотр постов",
+        "bots": "🤖 Задания с ботами",
     }
     buttons = []
     for task_key, task_name in task_types.items():
@@ -243,6 +246,199 @@ async def subscribe(client: TelegramClient, url: str) -> Tuple[bool, str]:
 
 
 # ============================================================
+# ЗАДАНИЯ С БОТАМИ (БОТ-ФАРМИНГ)
+# ============================================================
+
+async def process_bot_task(client: TelegramClient, bot_username: str, msg) -> Optional[bool]:
+    """
+    Обработка задания с ботом.
+    Логика:
+    1. Нажимаем на кнопку "Перейти в бота | +X GRAM"
+    2. Бот присылает фото с текстом
+    3. Отправляем "⏭️Следующий бот"
+    4. Бот присылает новое сообщение с кнопками "Перейти к боту", "Скрыть", "Пожаловаться"
+    5. Нажимаем "Скрыть" или просто игнорируем и жмем "⏭️Следующий бот" снова
+    """
+    try:
+        logging.info("🤖 Обрабатываю задание с ботом...")
+        
+        if not msg or not msg.buttons:
+            logging.warning("⚠️ Нет кнопок в сообщении")
+            return False
+        
+        # Ищем кнопку с текстом "Перейти в бота" или "🤖 Перейти в бота"
+        target_btn = None
+        for row in msg.buttons:
+            for b in row:
+                t = btn_text(b).lower()
+                if "перейти в бота" in t or "🤖 перейти в бота" in t:
+                    target_btn = b
+                    break
+            if target_btn:
+                break
+        
+        if not target_btn:
+            logging.warning("⚠️ Кнопка 'Перейти в бота' не найдена")
+            return False
+        
+        # 1. Нажимаем на кнопку с ботом
+        result = await click_btn(client, bot_username, target_btn, timeout=15)
+        if not result:
+            logging.warning("⚠️ Нет ответа после нажатия на бота")
+            return False
+        
+        if is_captcha_message(result):
+            await send_captcha_to_user(result, user_chat_id, client)
+            return False
+        
+        # 2. Проверяем есть ли кнопка "⏭️Следующий бот"
+        next_btn = None
+        for row in result.buttons:
+            for b in row:
+                t = btn_text(b)
+                if "⏭️следующий бот" in t.lower() or "следующий бот" in t.lower():
+                    next_btn = b
+                    break
+            if next_btn:
+                break
+        
+        if not next_btn:
+            logging.warning("⚠️ Кнопка 'Следующий бот' не найдена")
+            return False
+        
+        # 3. Нажимаем "Следующий бот"
+        result2 = await click_btn(client, bot_username, next_btn, timeout=15)
+        if not result2:
+            logging.warning("⚠️ Нет ответа после нажатия 'Следующий бот'")
+            return False
+        
+        if is_captcha_message(result2):
+            await send_captcha_to_user(result2, user_chat_id, client)
+            return False
+        
+        # 4. Нажимаем "Скрыть" или просто отправляем "⏭️Следующий бот" еще раз
+        # Проверяем кнопки "Скрыть", "Перейти к боту", "Пожаловаться"
+        hide_btn = None
+        for row in result2.buttons:
+            for b in row:
+                t = btn_text(b).lower()
+                if "скрыть" in t:
+                    hide_btn = b
+                    break
+            if hide_btn:
+                break
+        
+        if hide_btn:
+            logging.info("🔘 Нажимаю 'Скрыть'...")
+            await click_btn(client, bot_username, hide_btn, timeout=5)
+        else:
+            # Если нет кнопки "Скрыть", просто отправляем "⏭️Следующий бот" еще раз
+            logging.info("⏭️ Отправляю 'Следующий бот' еще раз...")
+            next_btn2 = None
+            for row in result2.buttons:
+                for b in row:
+                    t = btn_text(b)
+                    if "⏭️следующий бот" in t.lower() or "следующий бот" in t.lower():
+                        next_btn2 = b
+                        break
+                if next_btn2:
+                    break
+            
+            if next_btn2:
+                await click_btn(client, bot_username, next_btn2, timeout=10)
+        
+        return True
+        
+    except Exception as e:
+        logging.error(f"❌ Ошибка обработки задания с ботом: {e}")
+        return False
+
+
+async def process_bot_tasks(client: TelegramClient, bot_username: str, msg):
+    """
+    Обработка списка заданий с ботами.
+    Проходит по всем кнопкам "Перейти в бота | +X GRAM"
+    """
+    try:
+        logging.info("🤖 Обрабатываю задания с ботами...")
+        
+        if not msg or not msg.buttons:
+            logging.warning("⚠️ Нет кнопок в сообщении")
+            return msg
+        
+        # Собираем все кнопки с ботами
+        bot_buttons = []
+        for row in msg.buttons:
+            for b in row:
+                t = btn_text(b).lower()
+                if "перейти в бота" in t:
+                    bot_buttons.append(b)
+                    logging.info(f"🔗 Найдена кнопка бота: '{btn_text(b)}'")
+        
+        if not bot_buttons:
+            logging.warning("⚠️ Не найдены кнопки с ботами")
+            return msg
+        
+        logging.info(f"🤖 Найдено {len(bot_buttons)} заданий с ботами")
+        
+        for i, btn in enumerate(bot_buttons, 1):
+            logging.info(f"\n--- Задание с ботом {i}/{len(bot_buttons)} ---")
+            
+            # Нажимаем на кнопку бота
+            result = await click_btn(client, bot_username, btn, timeout=15)
+            if not result:
+                logging.warning(f"⚠️ Нет ответа на бота {i}")
+                continue
+            
+            if is_captcha_message(result):
+                await send_captcha_to_user(result, user_chat_id, client)
+                continue
+            
+            # Ищем "Следующий бот"
+            next_btn = None
+            for row in result.buttons:
+                for b in row:
+                    t = btn_text(b).lower()
+                    if "следующий бот" in t or "⏭️" in t:
+                        next_btn = b
+                        break
+                if next_btn:
+                    break
+            
+            if next_btn:
+                logging.info("⏭️ Нажимаю 'Следующий бот'...")
+                result2 = await click_btn(client, bot_username, next_btn, timeout=15)
+                
+                if result2 and not is_captcha_message(result2):
+                    # Ищем "Скрыть"
+                    hide_btn = None
+                    for row in result2.buttons:
+                        for b in row:
+                            if "скрыть" in btn_text(b).lower():
+                                hide_btn = b
+                                break
+                        if hide_btn:
+                            break
+                    
+                    if hide_btn:
+                        logging.info("🔘 Нажимаю 'Скрыть'...")
+                        await click_btn(client, bot_username, hide_btn, timeout=5)
+            
+            # Пауза между заданиями
+            if i < len(bot_buttons):
+                delay = random.randint(5, 10)
+                logging.info(f"⏳ Пауза {delay} сек...")
+                await asyncio.sleep(delay)
+        
+        logging.info("✅ Все задания с ботами обработаны")
+        return await get_last_msg(client, bot_username)
+        
+    except Exception as e:
+        logging.error(f"❌ Ошибка обработки заданий с ботами: {e}")
+        return msg
+
+
+# ============================================================
 # ПАРСИНГ ЗАДАНИЙ
 # ============================================================
 
@@ -305,7 +501,7 @@ def find_next_page(msg):
 
 
 # ============================================================
-# КАПЧА (с поддержкой фото)
+# КАПЧА
 # ============================================================
 
 async def send_captcha_to_user(msg, chat_id: int, client: TelegramClient) -> bool:
@@ -319,7 +515,6 @@ async def send_captcha_to_user(msg, chat_id: int, client: TelegramClient) -> boo
         
         captcha_storage[chat_id] = {'client': client, 'bot_username': bu}
         
-        # 1. Текст
         text = f"🚨 <b>Обнаружена капча!</b>\n\n"
         text += f"🤖 Бот: @{bu}\n\n"
         if msg.raw_text:
@@ -328,7 +523,6 @@ async def send_captcha_to_user(msg, chat_id: int, client: TelegramClient) -> boo
         
         await bot_instance.send_message(chat_id, text, parse_mode=ParseMode.HTML)
         
-        # 2. Фото
         if msg.photo:
             try:
                 file_data = await client.download_media(msg, file=bytes)
@@ -342,7 +536,6 @@ async def send_captcha_to_user(msg, chat_id: int, client: TelegramClient) -> boo
             except Exception as e:
                 logging.error(f"❌ Ошибка отправки фото: {e}")
         
-        # 3. Кнопки 1-9
         buttons = []
         row = []
         for i in range(1, 10):
@@ -381,8 +574,16 @@ async def send_captcha_to_user(msg, chat_id: int, client: TelegramClient) -> boo
 async def process_tasks(
     client: TelegramClient,
     bot_username: str,
-    msg
+    msg,
+    task_type: str = "channels"
 ):
+    """
+    Обработка заданий в зависимости от типа
+    """
+    if task_type == "bots":
+        return await process_bot_tasks(client, bot_username, msg)
+    
+    # Стандартная обработка для channels и posts
     page = 0
 
     while True:
@@ -484,6 +685,7 @@ async def do_cycle(
     phone: str
 ):
     task_type = user_task_choice.get(user_id, "channels")
+    logging.info(f"📋 Тип задания: {task_type}")
 
     cur = await get_last_msg(client, bot_username)
     if cur and is_captcha_message(cur):
@@ -508,7 +710,14 @@ async def do_cycle(
 
     logging.info("✅ Меню типов заданий получено")
 
-    kw = "подписаться на канал" if task_type == "channels" else "просмотр постов"
+    # Выбираем кнопку в зависимости от типа
+    if task_type == "channels":
+        kw = "подписаться на канал"
+    elif task_type == "bots":
+        kw = "перейти в бота"
+    else:
+        kw = "просмотр постов"
+    
     target_btn = None
     for row in earn_msg.buttons:
         for b in row:
@@ -531,6 +740,7 @@ async def do_cycle(
         await send_captcha_to_user(task_msg, user_chat_id, client)
         return
 
+    # Обрабатываем задания в зависимости от типа
     if task_type == "channels":
         pairs = get_task_pairs(task_msg)
         logging.info(f"📋 Найдено заданий: {len(pairs)}")
@@ -541,11 +751,31 @@ async def do_cycle(
             log_buttons(task_msg, "  ")
             return
 
-        result = await process_tasks(client, bot_username, task_msg)
+        result = await process_tasks(client, bot_username, task_msg, task_type)
+        if result and is_captcha_message(result):
+            await send_captcha_to_user(result, user_chat_id, client)
+
+    elif task_type == "bots":
+        # Проверяем есть ли кнопки с ботами
+        has_bots = False
+        for row in task_msg.buttons:
+            for b in row:
+                if "перейти в бота" in btn_text(b).lower():
+                    has_bots = True
+                    break
+            if has_bots:
+                break
+        
+        if not has_bots:
+            logging.warning("⚠️ Нет заданий с ботами")
+            return
+        
+        result = await process_bot_tasks(client, bot_username, task_msg)
         if result and is_captcha_message(result):
             await send_captcha_to_user(result, user_chat_id, client)
 
     else:
+        # Просмотр постов
         wait_time = random.randint(8, 15)
         logging.info(f"👀 Читаю пост {wait_time} сек...")
         await asyncio.sleep(wait_time)
@@ -645,7 +875,8 @@ async def task_choose_callback(callback: types.CallbackQuery):
         user_id = callback.from_user.id
         task_names = {
             "channels": "📢 Подписка на каналы",
-            "posts": "📱 Просмотр постов"
+            "posts": "📱 Просмотр постов",
+            "bots": "🤖 Задания с ботами"
         }
         if task_type in task_names:
             user_task_choice[user_id] = task_type
