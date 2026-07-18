@@ -365,7 +365,7 @@ def generate_bot_image() -> bytes:
     Возвращает bytes (PNG) для отправки.
     """
     size = 1080
-    text = "@Bot_Farmers"
+    text = "смотри тгк - @Bot_Farmers"
 
     bg_color = _random_bg_color()
     image = Image.new('RGB', (size, size), bg_color)
