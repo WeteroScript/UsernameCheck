@@ -77,16 +77,18 @@ def get_task_choice_keyboard(user_id: int) -> InlineKeyboardMarkup:
 # ГЕНЕРАЦИЯ ФОТО ДЛЯ ЗАДАНИЙ С БОТАМИ
 # ============================================================
 
-# Список путей к шрифтам — Android-пути в приоритете (как в твоём скрипте),
-# плюс fallback для Linux/Windows/MacOS на случай запуска не на Android
 FONT_PATHS = [
     # Android (приоритет)
     '/system/fonts/Roboto-Bold.ttf',
     '/system/fonts/Roboto-Black.ttf',
     '/system/fonts/Roboto-Regular.ttf',
+    '/system/fonts/Roboto-Medium.ttf',
     '/system/fonts/DroidSans-Bold.ttf',
     '/system/fonts/NotoSans-Bold.ttf',
+    '/system/fonts/NotoSans-Regular.ttf',
     '/system/fonts/SystemFont.ttf',
+    # Termux (частый случай для Android-скриптов)
+    '/data/data/com.termux/files/usr/share/fonts/TTF/DejaVuSans-Bold.ttf',
     # Linux
     '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf',
     '/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf',
@@ -101,29 +103,70 @@ FONT_PATHS = [
     '/Library/Fonts/Arial Bold.ttf',
 ]
 
+# Директории, где будем ИСКАТЬ любой .ttf/.otf, если точные пути не найдены
+_FONT_SEARCH_DIRS = [
+    '/system/fonts',
+    '/data/data/com.termux/files/usr/share/fonts',
+    '/usr/share/fonts',
+    os.path.expanduser('~/.fonts'),
+    'C:\\Windows\\Fonts',
+    '/Library/Fonts',
+    '/System/Library/Fonts',
+]
+
 _font_cache: Dict[int, ImageFont.ImageFont] = {}
 _resolved_font_path: Optional[str] = None
 _font_path_resolved = False
 
+_scalable_checked = False
+_is_scalable = False
+
+
+def _try_truetype(path: str, size: int) -> Optional[ImageFont.FreeTypeFont]:
+    try:
+        return ImageFont.truetype(path, size)
+    except Exception:
+        return None
+
+
+def _search_any_font() -> Optional[str]:
+    """Ищет ЛЮБОЙ .ttf/.otf файл в стандартных директориях шрифтов."""
+    for d in _FONT_SEARCH_DIRS:
+        if not os.path.isdir(d):
+            continue
+        try:
+            for root, _, files in os.walk(d):
+                for f in files:
+                    if f.lower().endswith(('.ttf', '.otf')):
+                        full = os.path.join(root, f)
+                        if _try_truetype(full, 30):
+                            return full
+        except Exception:
+            continue
+    return None
+
 
 def _resolve_font_path() -> Optional[str]:
-    """Определяет и кэширует путь к первому доступному шрифту из FONT_PATHS."""
+    """Определяет и кэширует путь к первому доступному TrueType-шрифту."""
     global _resolved_font_path, _font_path_resolved
     if _font_path_resolved:
         return _resolved_font_path
 
     for path in FONT_PATHS:
-        try:
-            ImageFont.truetype(path, 40)
+        if _try_truetype(path, 30):
             _resolved_font_path = path
-            logging.info(f"🔤 Используется шрифт: {path}")
-            break
-        except Exception:
-            continue
+            logging.info(f"🔤 Найден шрифт по известному пути: {path}")
+            _font_path_resolved = True
+            return _resolved_font_path
 
-    if _resolved_font_path is None:
-        logging.warning("⚠️ Ни один шрифт не найден, будет использован default")
+    # если известные пути не сработали — ищем любой шрифт в системе
+    found = _search_any_font()
+    if found:
+        logging.info(f"🔤 Найден шрифт поиском по системе: {found}")
+    else:
+        logging.warning("⚠️ Ни один TrueType-шрифт не найден на устройстве")
 
+    _resolved_font_path = found
     _font_path_resolved = True
     return _resolved_font_path
 
@@ -136,16 +179,49 @@ def _load_font(size: int) -> ImageFont.ImageFont:
 
     path = _resolve_font_path()
     if path:
-        try:
-            font = ImageFont.truetype(path, size)
+        font = _try_truetype(path, size)
+        if font:
             _font_cache[size] = font
             return font
-        except Exception:
-            pass
 
+    # если TrueType недоступен — фиксированный растровый шрифт (не масштабируется)
     font = ImageFont.load_default()
     _font_cache[size] = font
     return font
+
+
+def _check_font_scalable() -> bool:
+    """
+    Проверяет, реально ли масштабируется загружаемый шрифт при изменении size.
+    Если найден нормальный TrueType — вернёт True.
+    Если доступен только ImageFont.load_default() (фиксированный битмап) — False.
+    Это критично: без этой проверки бинарный поиск размера шрифта
+    может "думать", что подобрал огромный размер, хотя реальный
+    отрисованный текст остаётся крошечным (баг из скриншота).
+    """
+    global _scalable_checked, _is_scalable
+    if _scalable_checked:
+        return _is_scalable
+
+    tmp_img = Image.new('RGB', (10, 10))
+    tmp_draw = ImageDraw.Draw(tmp_img)
+
+    f_small = _load_font(30)
+    f_big = _load_font(200)
+
+    w_small = tmp_draw.textbbox((0, 0), "A", font=f_small)[2]
+    w_big = tmp_draw.textbbox((0, 0), "A", font=f_big)[2]
+
+    _is_scalable = w_big > w_small * 1.5
+    _scalable_checked = True
+
+    if not _is_scalable:
+        logging.warning(
+            "⚠️ Шрифт не масштабируется (используется fallback bitmap-шрифт). "
+            "Включаю растровое масштабирование текста (upscale)."
+        )
+
+    return _is_scalable
 
 
 def _fit_font_to_box(
@@ -159,7 +235,7 @@ def _fit_font_to_box(
     """
     Бинарным поиском подбирает МАКСИМАЛЬНЫЙ размер шрифта,
     при котором текст помещается в прямоугольник max_width x max_height.
-    Именно это заставляет надпись занимать почти всю картинку.
+    Используется только когда шрифт реально масштабируется (TrueType).
     """
     lo, hi = min_size, max_size
     best_size = min_size
@@ -187,7 +263,7 @@ def _color_distance(c1: Tuple[int, int, int], c2: Tuple[int, int, int]) -> float
 def _random_bg_color() -> Tuple[int, int, int]:
     """
     Случайный цвет фона: чаще чёрный/тёмный (как в исходном примере),
-    иногда — произвольный яркий цвет, чтобы фото отличались друг от друга.
+    иногда — произвольный яркий цвет.
     """
     mode = random.choices(
         ["black", "dark", "colored"],
@@ -205,27 +281,21 @@ def _random_bg_color() -> Tuple[int, int, int]:
 
 def _generate_letter_colors(n: int, bg_color: Tuple[int, int, int]) -> List[Tuple[int, int, int]]:
     """
-    Генерирует n ярких контрастных к фону цветов для букв
-    (в стиле радуги из исходного скрипта, но со случайным сдвигом
-    hue при каждом вызове, поэтому набор цветов каждый раз новый).
+    Генерирует n ярких контрастных к фону цветов для букв.
+    Каждый раз новый случайный набор (сдвиг радуги + разброс).
     """
     colors = []
-    hue_shift = random.random()  # случайный сдвиг всей радуги
-    used_hues: List[float] = []
+    hue_shift = random.random()
 
     for i in range(n):
-        # базовый радужный hue (как в твоём скрипте: i / len(text)),
-        # но со случайным сдвигом + небольшим случайным разбросом
         base_hue = (i / max(n, 1) + hue_shift) % 1.0
         hue = (base_hue + random.uniform(-0.03, 0.03)) % 1.0
-        used_hues.append(hue)
 
         sat = random.uniform(0.85, 1.0)
         val = random.uniform(0.9, 1.0)
         rgb = colorsys.hsv_to_rgb(hue, sat, val)
         color = tuple(int(c * 255) for c in rgb)
 
-        # если цвет слишком похож на фон — инвертируем/делаем ярче
         if _color_distance(color, bg_color) < 90:
             color = tuple(255 - c for c in color)
 
@@ -234,14 +304,63 @@ def _generate_letter_colors(n: int, bg_color: Tuple[int, int, int]) -> List[Tupl
     return colors
 
 
+def _render_text_block(
+    text: str,
+    colors: List[Tuple[int, int, int]],
+    font: ImageFont.ImageFont,
+    padding: int = 6
+) -> Image.Image:
+    """
+    Рендерит текст на прозрачном фоне, каждая буква своим цветом,
+    затем обрезает изображение по фактическому содержимому (bbox).
+    Возвращает RGBA-картинку только с текстом (для последующей вклейки/масштабирования).
+    """
+    tmp = Image.new('RGBA', (10, 10), (0, 0, 0, 0))
+    tmp_draw = ImageDraw.Draw(tmp)
+    bbox_full = tmp_draw.textbbox((0, 0), text, font=font)
+    w = (bbox_full[2] - bbox_full[0]) + padding * 2
+    h = (bbox_full[3] - bbox_full[1]) + padding * 2
+    w = max(w, 1)
+    h = max(h, 1)
+
+    canvas = Image.new('RGBA', (w, h), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(canvas)
+
+    x = padding - bbox_full[0]
+    y = padding - bbox_full[1]
+
+    x_pos = x
+    for ch, color in zip(text, colors):
+        draw.text((x_pos, y), ch, fill=color + (255,), font=font)
+        ch_bbox = draw.textbbox((0, 0), ch, font=font)
+        x_pos += ch_bbox[2] - ch_bbox[0]
+
+    bbox_content = canvas.getbbox()
+    if bbox_content:
+        canvas = canvas.crop(bbox_content)
+
+    return canvas
+
+
 def generate_bot_image() -> bytes:
     """
-    Генерирует картинку 1080x1080 с радужной надписью @Bot_Farmers,
-    которая занимает почти всю ширину/высоту фото (в стиле присланного
-    скрипта: посимвольная отрисовка через textbbox), но при каждом вызове:
+    Генерирует картинку 1080x1080 с надписью @Bot_Farmers,
+    ГАРАНТИРОВАННО занимающей большую часть фото по ширине,
+    независимо от того, найден ли на устройстве нормальный TTF-шрифт.
+
+    Логика:
+    - Если шрифт реально масштабируется (TrueType) — рендерим текст
+      "чётко", подобрав нужный размер шрифта под ~82-95% ширины фото.
+    - Если доступен только нескалируемый bitmap-шрифт (частый случай
+      на некоторых Android-устройствах, когда PIL не может найти TTF) —
+      рендерим текст при родном размере, обрезаем по содержимому и
+      РАСТРОВО УВЕЛИЧИВАЕМ (upscale через LANCZOS) блок с текстом
+      до нужной ширины. Это гарантирует крупную надпись в любом случае.
+
+    При каждом вызове:
     - случайный цвет фона
-    - случайный масштаб заполнения (текст всегда крупный, но чуть разный)
-    - случайный набор ярких цветов для каждой буквы
+    - случайная доля заполнения ширины текстом (разный "масштаб")
+    - случайные яркие цвета каждой буквы
     - небольшое случайное смещение позиции текста
     Возвращает bytes (PNG) для отправки.
     """
@@ -250,44 +369,48 @@ def generate_bot_image() -> bytes:
 
     bg_color = _random_bg_color()
     image = Image.new('RGB', (size, size), bg_color)
-    draw = ImageDraw.Draw(image)
 
-    # случайная доля заполнения картинки текстом (текст всегда крупный)
     width_ratio = random.uniform(0.82, 0.95)
-    height_ratio = random.uniform(0.35, 0.55)
-
-    max_width = int(size * width_ratio)
-    max_height = int(size * height_ratio)
-
-    font = _fit_font_to_box(draw, text, max_width, max_height)
-
-    # центрируем текст (как в исходном скрипте)
-    bbox = draw.textbbox((0, 0), text, font=font)
-    tw = bbox[2] - bbox[0]
-    th = bbox[3] - bbox[1]
-
-    base_x = (size - tw) // 2 - bbox[0]
-    base_y = (size - th) // 2 - bbox[1]
-
-    # небольшое случайное смещение от центра
-    margin = int(size * 0.02)
-    max_dx = max(0, min(base_x - margin, size - tw - base_x - margin))
-    max_dy = max(0, min(base_y - margin, size - th - base_y - margin))
-    dx = random.randint(-max_dx, max_dx) if max_dx > 0 else 0
-    dy = random.randint(-max_dy, max_dy) if max_dy > 0 else 0
-
-    x = base_x + dx
-    y = base_y + dy
+    target_width = int(size * width_ratio)
 
     colors = _generate_letter_colors(len(text), bg_color)
 
-    # посимвольная отрисовка (логика 1-в-1 как в присланном скрипте)
-    x_pos = x
-    for i, char in enumerate(text):
-        color = colors[i]
-        draw.text((x_pos, y), char, fill=color, font=font)
-        char_bbox = draw.textbbox((0, 0), char, font=font)
-        x_pos += char_bbox[2] - char_bbox[0]
+    if _check_font_scalable():
+        # --- Путь 1: нормальный TrueType шрифт, чёткий текст ---
+        tmp_draw = ImageDraw.Draw(image)
+        max_height = int(size * random.uniform(0.35, 0.55))
+        font = _fit_font_to_box(tmp_draw, text, target_width, max_height)
+        text_block = _render_text_block(text, colors, font)
+    else:
+        # --- Путь 2: fallback без нормального шрифта — растровый upscale ---
+        base_font = _load_font(60)  # размер тут не важен, всё равно фиксированный
+        raw_block = _render_text_block(text, colors, base_font)
+
+        if raw_block.width > 0:
+            scale = target_width / raw_block.width
+        else:
+            scale = 1.0
+
+        new_w = max(1, target_width)
+        new_h = max(1, int(raw_block.height * scale))
+        text_block = raw_block.resize((new_w, new_h), Image.LANCZOS)
+
+    # Центрируем + небольшое случайное смещение
+    max_x = max(0, size - text_block.width)
+    max_y = max(0, size - text_block.height)
+    base_x = max_x // 2
+    base_y = max_y // 2
+
+    margin = int(size * 0.02)
+    dx_range = max(0, min(base_x - margin, max_x - base_x - margin))
+    dy_range = max(0, min(base_y - margin, max_y - base_y - margin))
+    dx = random.randint(-dx_range, dx_range) if dx_range > 0 else 0
+    dy = random.randint(-dy_range, dy_range) if dy_range > 0 else 0
+
+    paste_x = min(max(base_x + dx, 0), max_x)
+    paste_y = min(max(base_y + dy, 0), max_y)
+
+    image.paste(text_block, (paste_x, paste_y), text_block)
 
     img_bytes = io.BytesIO()
     image.save(img_bytes, format='PNG')
@@ -1430,4 +1553,4 @@ __all__ = [
     'start_gram_worker', 'stop_gram_bot', 'continue_gram_bot',
     'set_user_chat_id', 'set_bot_instance', 'get_task_choice_keyboard',
     'active_clients', 'active_tasks'
-]
+    ]
