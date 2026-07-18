@@ -3,4 +3,4 @@ aiohttp==3.9.1
 python-dotenv==1.0.0
 telethon==1.36.0
 cryptg==0.4.0
-playwright==1.40.0
+Pillow==10.1.0
