@@ -1,6 +1,6 @@
 """
 Модуль для Gram ботов (PR GRAM | DRAGON)
-С поддержкой заданий с ботами (выбор категории + генерация фото)
+С поддержкой выбора категории ботов и игнорированием 100k заданий
 """
 
 import asyncio
@@ -35,12 +35,12 @@ bot_username_for_task: Dict[str, str] = {}
 bot_instance = None
 captcha_storage: Dict[int, Dict[str, Any]] = {}
 user_task_choice: Dict[int, str] = {}
+user_bot_category: Dict[int, str] = {}  # user_id -> "regular" | "webapp" | "conditions"
 session_locks: Dict[str, asyncio.Lock] = {}
 
 SUBSCRIBE_DELAY = 60
 BOT_TASK_DELAY = 30
 
-# Текст для генерации фото (только ASCII + @)
 PHOTO_TEXT = "@Bot_Farmers"
 
 
@@ -76,6 +76,39 @@ def get_task_choice_keyboard(user_id: int) -> InlineKeyboardMarkup:
         )])
     buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="bot_prgramm_settings")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+def get_bot_category_keyboard(user_id: int) -> InlineKeyboardMarkup:
+    """Клавиатура выбора категории ботов"""
+    current = user_bot_category.get(user_id, "regular")
+    
+    categories = {
+        "regular": "🤖 Обычные боты",
+        "webapp": "🌐 Боты с Web App",
+        "conditions": "📋 С дополнительными условиями"
+    }
+    
+    buttons = []
+    for key, name in categories.items():
+        check = "✅ " if key == current else ""
+        buttons.append([InlineKeyboardButton(
+            text=f"{check}{name}",
+            callback_data=f"bot_cat_{key}"
+        )])
+    
+    buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="bot_prgramm_settings")])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+def get_bot_settings_keyboard() -> InlineKeyboardMarkup:
+    """Настройки бота: сессии для работы / сменить бота / тип заданий / категория ботов / назад"""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📋 Сессии для работы", callback_data="gram_sessions")],
+        [InlineKeyboardButton(text="🔄 Сменить бота", callback_data="gram_change_bot")],
+        [InlineKeyboardButton(text="📋 Тип заданий", callback_data="gram_choose_task")],
+        [InlineKeyboardButton(text="🤖 Категория ботов", callback_data="gram_bot_category")],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="bot_prgramm")],
+    ])
 
 
 # ============================================================
@@ -621,10 +654,13 @@ async def subscribe(client: TelegramClient, url: str) -> Tuple[bool, str]:
 
 
 # ============================================================
-# ЗАДАНИЯ С БОТАМИ
+# ЗАДАНИЯ С БОТАМИ (С ВЫБОРОМ КАТЕГОРИИ И ИГНОРИРОВАНИЕМ 100k)
 # ============================================================
 
-async def process_bot_tasks(client: TelegramClient, bot_username: str, msg):
+async def process_bot_tasks(client: TelegramClient, bot_username: str, msg, user_id: int = None):
+    """
+    Обработка заданий с ботами с выбором категории и игнорированием 100k
+    """
     try:
         logging.info("🤖 Обрабатываю задания с ботами...")
 
@@ -632,10 +668,24 @@ async def process_bot_tasks(client: TelegramClient, bot_username: str, msg):
             logging.warning("⚠️ Нет кнопок в сообщении")
             return msg
 
-        regular_bots_btn = find_button(msg, ["обычные боты"])
-        if regular_bots_btn:
-            logging.info("📋 Выбираю категорию 'Обычные боты'...")
-            result = await click_btn(client, bot_username, regular_bots_btn, timeout=15)
+        # Получаем выбранную категорию
+        category = user_bot_category.get(user_id, "regular")
+        logging.info(f"📋 Выбранная категория: {category}")
+
+        # Ключевые слова для поиска категории
+        category_keywords = {
+            "regular": ["обычные боты"],
+            "webapp": ["боты с web app", "web app"],
+            "conditions": ["с дополнительными условиями", "с доп. условиями"]
+        }
+
+        # Ищем кнопку выбранной категории
+        keywords = category_keywords.get(category, ["обычные боты"])
+        category_btn = find_button(msg, keywords)
+        
+        if category_btn:
+            logging.info(f"📋 Нажимаю категорию: '{btn_text(category_btn)}'")
+            result = await click_btn(client, bot_username, category_btn, timeout=15)
             if not result:
                 logging.warning("⚠️ Нет ответа после выбора категории")
                 return msg
@@ -644,62 +694,65 @@ async def process_bot_tasks(client: TelegramClient, bot_username: str, msg):
                 return result
             msg = result
         else:
-            logging.info("ℹ️ Кнопка 'Обычные боты' не найдена, продолжаю с текущим сообщением")
+            logging.info(f"ℹ️ Кнопка категории не найдена, продолжаю с текущим сообщением")
 
-        first_task_btn = find_button(msg, ["перейти в бота"])
-        if not first_task_btn:
-            logging.warning("⚠️ Не найдена кнопка задания с ботом")
+        # Находим все кнопки заданий
+        all_task_btns = find_all_buttons(msg, ["перейти в бота"])
+        
+        if not all_task_btns:
+            logging.warning("⚠️ Не найдены кнопки заданий с ботом")
             log_buttons(msg, "  ")
             return msg
 
-        logging.info(f"🔗 Нажимаю первую кнопку задания: '{btn_text(first_task_btn)}'")
-        result = await click_btn(client, bot_username, first_task_btn, timeout=15)
-        if not result:
-            logging.warning("⚠️ Нет ответа после клика по заданию")
-            return msg
-        if is_captcha_message(result):
-            await send_captcha_to_user(result, user_chat_id, client)
-            return result
+        logging.info(f"🔗 Найдено заданий: {len(all_task_btns)}")
 
-        bot_count = 0
-        max_bots = 100
+        for task_btn in all_task_btns:
+            task_text = btn_text(task_btn).lower()
+            
+            # Проверяем, не 100k ли это задание (для категории conditions)
+            if category == "conditions":
+                if "100 000" in task_text or "100000" in task_text or "100k" in task_text:
+                    logging.info(f"⏭ Пропускаю задание 100k: '{task_text}'")
+                    # Ищем кнопку "Скрыть" или "Пропустить" чтобы перейти к следующему
+                    skip_btn = find_button(msg, ["скрыть", "пропустить", "▶️"])
+                    if skip_btn:
+                        await click_btn(client, bot_username, skip_btn, timeout=5)
+                        await asyncio.sleep(1)
+                    continue
 
-        while bot_count < max_bots:
-            bot_count += 1
-            logging.info(f"\n--- Бот-задание #{bot_count} ---")
+            logging.info(f"🔗 Нажимаю задание: '{task_text}'")
+            result = await click_btn(client, bot_username, task_btn, timeout=15)
+            if not result:
+                logging.warning("⚠️ Нет ответа после клика по заданию")
+                continue
+            if is_captcha_message(result):
+                await send_captcha_to_user(result, user_chat_id, client)
+                continue
 
-            await asyncio.sleep(random.uniform(1, 2))
-
+            # Генерируем и отправляем фото
             photo_bytes = generate_bot_image()
-            logging.info("✅ Сгенерировано новое фото")
+            logging.info("✅ Сгенерировано фото")
 
             photo_result = await send_photo(client, bot_username, photo_bytes, timeout=15)
             if not photo_result:
                 logging.warning("⚠️ Нет ответа на отправку фото")
-                break
+                continue
 
             if is_captcha_message(photo_result):
                 await send_captcha_to_user(photo_result, user_chat_id, client)
-                return photo_result
+                continue
 
             await asyncio.sleep(1)
 
+            # Ищем кнопку "Следующий бот"
             next_btn = find_button(photo_result, ["следующий бот"])
-            if not next_btn:
-                logging.info("✅ Кнопка 'Следующий бот' не найдена — задания закончились")
-                return photo_result
+            if next_btn:
+                logging.info("⏭️ Нажимаю 'Следующий бот'...")
+                await click_btn(client, bot_username, next_btn, timeout=15)
+            else:
+                logging.info("✅ Кнопка 'Следующий бот' не найдена, задание завершено")
 
-            logging.info("⏭️ Нажимаю 'Следующий бот'...")
-            next_result = await click_btn(client, bot_username, next_btn, timeout=15)
-            if not next_result:
-                logging.warning("⚠️ Нет ответа после 'Следующий бот'")
-                break
-            if is_captcha_message(next_result):
-                await send_captcha_to_user(next_result, user_chat_id, client)
-                return next_result
-
-            delay = random.randint(3, 6)
-            logging.info(f"⏳ Пауза {delay} сек...")
+            delay = random.randint(2, 4)
             await asyncio.sleep(delay)
 
         logging.info("✅ Все задания с ботами обработаны")
@@ -850,7 +903,7 @@ async def process_tasks(
     task_type: str = "channels"
 ):
     if task_type == "bots":
-        return await process_bot_tasks(client, bot_username, msg)
+        return msg  # bots обрабатываются отдельно в do_cycle
 
     page = 0
 
@@ -1019,7 +1072,7 @@ async def do_cycle(
             await send_captcha_to_user(result, user_chat_id, client)
 
     elif task_type == "bots":
-        result = await process_bot_tasks(client, bot_username, task_msg)
+        result = await process_bot_tasks(client, bot_username, task_msg, user_id)
         if result and is_captcha_message(result):
             await send_captcha_to_user(result, user_chat_id, client)
 
@@ -1178,6 +1231,56 @@ async def gram_task_type_callback(callback: types.CallbackQuery):
         )
     except Exception as e:
         logging.error(f"❌ gram_task_type_callback: {e}")
+        await callback.answer("❌ Ошибка")
+
+
+@router.callback_query(lambda c: c.data and c.data.startswith("bot_cat_"))
+async def bot_category_callback(callback: types.CallbackQuery):
+    """Выбор категории ботов"""
+    try:
+        category = callback.data.replace("bot_cat_", "")
+        user_id = callback.from_user.id
+        
+        user_bot_category[user_id] = category
+        
+        cat_names = {
+            "regular": "Обычные боты",
+            "webapp": "Боты с Web App",
+            "conditions": "С дополнительными условиями"
+        }
+        
+        await callback.answer(f"✅ Выбрано: {cat_names.get(category, category)}")
+        await callback.message.edit_text(
+            f"✅ <b>Выбрана категория ботов:</b>\n{cat_names.get(category, category)}\n\n"
+            f"Категория будет использована при выполнении заданий с ботами.",
+            parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="📋 Изменить категорию", callback_data="gram_bot_category")],
+                [InlineKeyboardButton(text="⬅️ Назад", callback_data="bot_prgramm_settings")]
+            ])
+        )
+    except Exception as e:
+        logging.error(f"❌ bot_category_callback: {e}")
+        await callback.answer("❌ Ошибка")
+
+
+@router.callback_query(lambda c: c.data and c.data == "gram_bot_category")
+async def gram_bot_category_callback(callback: types.CallbackQuery):
+    """Меню выбора категории ботов"""
+    try:
+        user_id = callback.from_user.id
+        await callback.answer()
+        await callback.message.edit_text(
+            "📋 <b>Выбор категории ботов</b>\n\n"
+            "Выберите категорию для заданий с ботами:\n\n"
+            "🤖 Обычные боты — стандартные задания\n"
+            "🌐 Боты с Web App — задания с веб-приложениями\n"
+            "📋 С доп. условиями — задания с условиями (100k GRAM пропускаются)",
+            parse_mode=ParseMode.HTML,
+            reply_markup=get_bot_category_keyboard(user_id)
+        )
+    except Exception as e:
+        logging.error(f"❌ gram_bot_category_callback: {e}")
         await callback.answer("❌ Ошибка")
 
 
@@ -1367,7 +1470,6 @@ async def start_gram_worker(
 async def stop_gram_bot(phone: Optional[str] = None) -> bool:
     if phone and phone in active_tasks:
         active_tasks[phone].cancel()
-        # Удаляем задачу из active_tasks
         del active_tasks[phone]
         logging.info(f"⏹ Остановлен: {phone}")
         return True
@@ -1454,7 +1556,6 @@ async def run_gram_worker(client: TelegramClient, bot_username: str, phone: str)
 
         cycle = 0
         while True:
-            # Проверяем, не отменена ли задача
             if phone not in active_tasks:
                 logging.info(f"⏹ Воркер {phone} остановлен извне")
                 break
@@ -1515,5 +1616,6 @@ __all__ = [
     'router', 'init_gram_bot', 'send_code', 'start_gram_bot',
     'start_gram_worker', 'stop_gram_bot', 'continue_gram_bot',
     'set_user_chat_id', 'set_bot_instance', 'get_task_choice_keyboard',
+    'get_bot_category_keyboard', 'get_bot_settings_keyboard',
     'active_clients', 'active_tasks'
-    ]
+]
