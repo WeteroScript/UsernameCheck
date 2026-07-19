@@ -25,6 +25,8 @@ from gram_bot import (
     stop_gram_bot, 
     set_bot_instance as set_gram_bot_instance,
     get_task_choice_keyboard,
+    get_bot_category_keyboard,
+    get_bot_settings_keyboard,
     continue_gram_bot,
     send_code,
     start_gram_bot as start_gram_bot_auth
@@ -196,15 +198,6 @@ def get_bot_detail_keyboard(has_session: bool = False, is_running: bool = False)
     buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="bots")])
     
     return InlineKeyboardMarkup(inline_keyboard=buttons)
-
-def get_bot_settings_keyboard() -> InlineKeyboardMarkup:
-    """Настройки бота: сессии для работы / сменить бота / тип заданий / назад"""
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📋 Сессии для работы", callback_data="gram_sessions")],
-        [InlineKeyboardButton(text="🔄 Сменить бота", callback_data="gram_change_bot")],
-        [InlineKeyboardButton(text="📋 Тип заданий", callback_data="gram_choose_task")],
-        [InlineKeyboardButton(text="⬅️ Назад", callback_data="bot_prgramm")],
-    ])
 
 def get_work_sessions_keyboard(user_id: int) -> InlineKeyboardMarkup:
     buttons = []
@@ -439,7 +432,7 @@ async def bot_prgramm_menu(callback: types.CallbackQuery):
 
 @dp.callback_query(lambda c: c.data == "bot_prgramm_settings")
 async def bot_prgramm_settings(callback: types.CallbackQuery):
-    """Настройки бота: сессии для работы / сменить бота / тип заданий / назад"""
+    """Настройки бота"""
     await callback.answer()
     
     text = "⚙️ <b>Настройки — PR GRAMM</b>\n\n"
@@ -459,6 +452,8 @@ async def bot_prgramm_settings(callback: types.CallbackQuery):
             reply_markup=get_bot_settings_keyboard()
         )
 
+
+# ============ СЕССИИ ДЛЯ РАБОТЫ ============
 
 @dp.callback_query(lambda c: c.data == "gram_sessions")
 async def gram_sessions(callback: types.CallbackQuery):
@@ -624,6 +619,8 @@ async def work_start_all(callback: types.CallbackQuery):
         await callback.answer(f"❌ Ошибка: {e}")
 
 
+# ============ ВЫБОР ТИПА ЗАДАНИЙ ============
+
 @dp.callback_query(lambda c: c.data == "gram_choose_task")
 async def gram_choose_task(callback: types.CallbackQuery):
     await callback.answer()
@@ -647,6 +644,8 @@ async def gram_choose_task(callback: types.CallbackQuery):
             reply_markup=get_task_choice_keyboard(user_id)
         )
 
+
+# ============ СМЕНА БОТА ============
 
 @dp.callback_query(lambda c: c.data == "gram_change_bot")
 async def gram_change_bot(callback: types.CallbackQuery):
@@ -711,6 +710,8 @@ async def bot_choice(callback: types.CallbackQuery):
     
     await bot_prgramm_menu(callback)
 
+
+# ============ ВКЛЮЧЕНИЕ/ВЫКЛЮЧЕНИЕ БОТА ============
 
 @dp.callback_query(lambda c: c.data == "bot_prgramm_start")
 async def gram_start(callback: types.CallbackQuery):
@@ -1426,6 +1427,31 @@ async def captcha_stop_callback(callback: types.CallbackQuery):
     except Exception as e:
         logging.error(f"❌ Ошибка captcha_stop: {e}")
         await callback.answer(f"❌ Ошибка: {e}")
+
+
+# ============ КАТЕГОРИЯ БОТОВ ============
+
+@router.callback_query(lambda c: c.data == "gram_bot_category")
+async def gram_bot_category_callback(callback: types.CallbackQuery):
+    """Меню выбора категории ботов"""
+    try:
+        user_id = callback.from_user.id
+        await callback.answer()
+        
+        from gram_bot import get_bot_category_keyboard
+        
+        await callback.message.edit_text(
+            "📋 <b>Выбор категории ботов</b>\n\n"
+            "Выберите категорию для заданий с ботами:\n\n"
+            "🤖 Обычные боты — стандартные задания\n"
+            "🌐 Боты с Web App — задания с веб-приложениями\n"
+            "📋 С доп. условиями — задания с условиями (100k GRAM пропускаются)",
+            parse_mode=ParseMode.HTML,
+            reply_markup=get_bot_category_keyboard(user_id)
+        )
+    except Exception as e:
+        logging.error(f"❌ gram_bot_category_callback: {e}")
+        await callback.answer("❌ Ошибка")
 
 
 # ============ ИНИЦИАЛИЗАЦИЯ ============
