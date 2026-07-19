@@ -1429,31 +1429,6 @@ async def captcha_stop_callback(callback: types.CallbackQuery):
         await callback.answer(f"❌ Ошибка: {e}")
 
 
-# ============ КАТЕГОРИЯ БОТОВ ============
-
-@router.callback_query(lambda c: c.data == "gram_bot_category")
-async def gram_bot_category_callback(callback: types.CallbackQuery):
-    """Меню выбора категории ботов"""
-    try:
-        user_id = callback.from_user.id
-        await callback.answer()
-        
-        from gram_bot import get_bot_category_keyboard
-        
-        await callback.message.edit_text(
-            "📋 <b>Выбор категории ботов</b>\n\n"
-            "Выберите категорию для заданий с ботами:\n\n"
-            "🤖 Обычные боты — стандартные задания\n"
-            "🌐 Боты с Web App — задания с веб-приложениями\n"
-            "📋 С доп. условиями — задания с условиями (100k GRAM пропускаются)",
-            parse_mode=ParseMode.HTML,
-            reply_markup=get_bot_category_keyboard(user_id)
-        )
-    except Exception as e:
-        logging.error(f"❌ gram_bot_category_callback: {e}")
-        await callback.answer("❌ Ошибка")
-
-
 # ============ ИНИЦИАЛИЗАЦИЯ ============
 
 async def main():
