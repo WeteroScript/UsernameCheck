@@ -9,6 +9,7 @@ import logging
 import os
 import sqlite3
 import io
+import urllib.request
 from typing import Optional, Dict, Any, Tuple, List
 from telethon import TelegramClient, errors
 from telethon.tl.functions.channels import JoinChannelRequest
@@ -39,6 +40,8 @@ session_locks: Dict[str, asyncio.Lock] = {}
 SUBSCRIBE_DELAY = 60
 BOT_TASK_DELAY = 30
 
+# Текст для генерации фото (только ASCII + @)
+PHOTO_TEXT = "@Bot_Farmers"
 
 def get_session_lock(phone: str) -> asyncio.Lock:
     if phone not in session_locks:
@@ -74,11 +77,11 @@ def get_task_choice_keyboard(user_id: int) -> InlineKeyboardMarkup:
 
 
 # ============================================================
-# ГЕНЕРАЦИЯ ФОТО ДЛЯ ЗАДАНИЙ С БОТАМИ
+# ГЕНЕРАЦИЯ ШРИФТА
 # ============================================================
 
 FONT_PATHS = [
-    # Android (приоритет)
+    # Android
     '/system/fonts/Roboto-Bold.ttf',
     '/system/fonts/Roboto-Black.ttf',
     '/system/fonts/Roboto-Regular.ttf',
@@ -87,23 +90,26 @@ FONT_PATHS = [
     '/system/fonts/NotoSans-Bold.ttf',
     '/system/fonts/NotoSans-Regular.ttf',
     '/system/fonts/SystemFont.ttf',
-    # Termux (частый случай для Android-скриптов)
+    # Termux
     '/data/data/com.termux/files/usr/share/fonts/TTF/DejaVuSans-Bold.ttf',
+    '/data/data/com.termux/files/usr/share/fonts/TTF/DejaVuSans.ttf',
     # Linux
     '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf',
+    '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
     '/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf',
     '/usr/share/fonts/truetype/freefont/FreeSansBold.ttf',
     '/usr/share/fonts/truetype/noto/NotoSans-Bold.ttf',
     # Windows
     'C:\\Windows\\Fonts\\arialbd.ttf',
+    'C:\\Windows\\Fonts\\arial.ttf',
     'C:\\Windows\\Fonts\\segoeuib.ttf',
     'C:\\Windows\\Fonts\\calibrib.ttf',
     # MacOS
     '/System/Library/Fonts/Supplemental/Arial Bold.ttf',
     '/Library/Fonts/Arial Bold.ttf',
+    '/System/Library/Fonts/Helvetica.ttc',
 ]
 
-# Директории, где будем ИСКАТЬ любой .ttf/.otf, если точные пути не найдены
 _FONT_SEARCH_DIRS = [
     '/system/fonts',
     '/data/data/com.termux/files/usr/share/fonts',
@@ -114,10 +120,18 @@ _FONT_SEARCH_DIRS = [
     '/System/Library/Fonts',
 ]
 
+# Локальный путь для скачанного шрифта
+_LOCAL_FONT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fonts")
+_LOCAL_FONT_PATH = os.path.join(_LOCAL_FONT_DIR, "DejaVuSans-Bold.ttf")
+
+# URL для скачивания шрифта (DejaVu — надёжный, поддерживает Latin + много символов)
+_FONT_DOWNLOAD_URL = (
+    "https://github.com/dejavu-fonts/dejavu-fonts/raw/master/ttf/DejaVuSans-Bold.ttf"
+)
+
 _font_cache: Dict[int, ImageFont.ImageFont] = {}
 _resolved_font_path: Optional[str] = None
 _font_path_resolved = False
-
 _scalable_checked = False
 _is_scalable = False
 
@@ -126,6 +140,28 @@ def _try_truetype(path: str, size: int) -> Optional[ImageFont.FreeTypeFont]:
     try:
         return ImageFont.truetype(path, size)
     except Exception:
+        return None
+
+
+def _download_font() -> Optional[str]:
+    """Скачивает DejaVuSans-Bold.ttf если его нет локально."""
+    if os.path.exists(_LOCAL_FONT_PATH):
+        if _try_truetype(_LOCAL_FONT_PATH, 30):
+            logging.info(f"🔤 Используется ранее скачанный шрифт: {_LOCAL_FONT_PATH}")
+            return _LOCAL_FONT_PATH
+
+    try:
+        os.makedirs(_LOCAL_FONT_DIR, exist_ok=True)
+        logging.info(f"⬇️ Скачиваю шрифт из {_FONT_DOWNLOAD_URL} ...")
+        urllib.request.urlretrieve(_FONT_DOWNLOAD_URL, _LOCAL_FONT_PATH)
+        if _try_truetype(_LOCAL_FONT_PATH, 30):
+            logging.info(f"✅ Шрифт успешно скачан: {_LOCAL_FONT_PATH}")
+            return _LOCAL_FONT_PATH
+        else:
+            logging.error("❌ Скачанный шрифт не работает")
+            return None
+    except Exception as e:
+        logging.error(f"❌ Не удалось скачать шрифт: {e}")
         return None
 
 
@@ -152,23 +188,33 @@ def _resolve_font_path() -> Optional[str]:
     if _font_path_resolved:
         return _resolved_font_path
 
+    # 1. Проверяем известные пути
     for path in FONT_PATHS:
         if _try_truetype(path, 30):
             _resolved_font_path = path
-            logging.info(f"🔤 Найден шрифт по известному пути: {path}")
+            logging.info(f"🔤 Найден шрифт: {path}")
             _font_path_resolved = True
             return _resolved_font_path
 
-    # если известные пути не сработали — ищем любой шрифт в системе
+    # 2. Ищем любой шрифт в системе
     found = _search_any_font()
     if found:
-        logging.info(f"🔤 Найден шрифт поиском по системе: {found}")
-    else:
-        logging.warning("⚠️ Ни один TrueType-шрифт не найден на устройстве")
+        logging.info(f"🔤 Найден шрифт поиском: {found}")
+        _resolved_font_path = found
+        _font_path_resolved = True
+        return _resolved_font_path
 
-    _resolved_font_path = found
+    # 3. Скачиваем шрифт
+    downloaded = _download_font()
+    if downloaded:
+        _resolved_font_path = downloaded
+        _font_path_resolved = True
+        return _resolved_font_path
+
+    logging.warning("⚠️ Ни один TrueType-шрифт не найден и не скачан")
+    _resolved_font_path = None
     _font_path_resolved = True
-    return _resolved_font_path
+    return None
 
 
 def _load_font(size: int) -> ImageFont.ImageFont:
@@ -184,21 +230,13 @@ def _load_font(size: int) -> ImageFont.ImageFont:
             _font_cache[size] = font
             return font
 
-    # если TrueType недоступен — фиксированный растровый шрифт (не масштабируется)
     font = ImageFont.load_default()
     _font_cache[size] = font
     return font
 
 
 def _check_font_scalable() -> bool:
-    """
-    Проверяет, реально ли масштабируется загружаемый шрифт при изменении size.
-    Если найден нормальный TrueType — вернёт True.
-    Если доступен только ImageFont.load_default() (фиксированный битмап) — False.
-    Это критично: без этой проверки бинарный поиск размера шрифта
-    может "думать", что подобрал огромный размер, хотя реальный
-    отрисованный текст остаётся крошечным (баг из скриншота).
-    """
+    """Проверяет, реально ли масштабируется шрифт."""
     global _scalable_checked, _is_scalable
     if _scalable_checked:
         return _is_scalable
@@ -217,8 +255,8 @@ def _check_font_scalable() -> bool:
 
     if not _is_scalable:
         logging.warning(
-            "⚠️ Шрифт не масштабируется (используется fallback bitmap-шрифт). "
-            "Включаю растровое масштабирование текста (upscale)."
+            "⚠️ Шрифт не масштабируется (bitmap fallback). "
+            "Включаю растровое масштабирование."
         )
 
     return _is_scalable
@@ -232,11 +270,7 @@ def _fit_font_to_box(
     min_size: int = 10,
     max_size: int = 900
 ) -> ImageFont.ImageFont:
-    """
-    Бинарным поиском подбирает МАКСИМАЛЬНЫЙ размер шрифта,
-    при котором текст помещается в прямоугольник max_width x max_height.
-    Используется только когда шрифт реально масштабируется (TrueType).
-    """
+    """Бинарным поиском подбирает размер шрифта под прямоугольник."""
     lo, hi = min_size, max_size
     best_size = min_size
 
@@ -261,10 +295,7 @@ def _color_distance(c1: Tuple[int, int, int], c2: Tuple[int, int, int]) -> float
 
 
 def _random_bg_color() -> Tuple[int, int, int]:
-    """
-    Случайный цвет фона: чаще чёрный/тёмный (как в исходном примере),
-    иногда — произвольный яркий цвет.
-    """
+    """Случайный цвет фона: чаще тёмный."""
     mode = random.choices(
         ["black", "dark", "colored"],
         weights=[45, 35, 20],
@@ -280,24 +311,20 @@ def _random_bg_color() -> Tuple[int, int, int]:
 
 
 def _generate_letter_colors(n: int, bg_color: Tuple[int, int, int]) -> List[Tuple[int, int, int]]:
-    """
-    Генерирует n ярких контрастных к фону цветов для букв.
-    Каждый раз новый случайный набор (сдвиг радуги + разброс).
-    """
+    """Генерирует n ярких контрастных цветов для букв."""
     colors = []
     hue_shift = random.random()
 
     for i in range(n):
         base_hue = (i / max(n, 1) + hue_shift) % 1.0
         hue = (base_hue + random.uniform(-0.03, 0.03)) % 1.0
-
         sat = random.uniform(0.85, 1.0)
         val = random.uniform(0.9, 1.0)
         rgb = colorsys.hsv_to_rgb(hue, sat, val)
         color = tuple(int(c * 255) for c in rgb)
 
         if _color_distance(color, bg_color) < 90:
-            color = tuple(255 - c for c in color)
+            color = tuple(min(255, c + 150) for c in color)
 
         colors.append(color)
 
@@ -311,9 +338,8 @@ def _render_text_block(
     padding: int = 6
 ) -> Image.Image:
     """
-    Рендерит текст на прозрачном фоне, каждая буква своим цветом,
-    затем обрезает изображение по фактическому содержимому (bbox).
-    Возвращает RGBA-картинку только с текстом (для последующей вклейки/масштабирования).
+    Рендерит текст на прозрачном фоне, каждая буква своим цветом.
+    Возвращает RGBA-картинку.
     """
     tmp = Image.new('RGBA', (10, 10), (0, 0, 0, 0))
     tmp_draw = ImageDraw.Draw(tmp)
@@ -326,12 +352,12 @@ def _render_text_block(
     canvas = Image.new('RGBA', (w, h), (0, 0, 0, 0))
     draw = ImageDraw.Draw(canvas)
 
-    x = padding - bbox_full[0]
-    y = padding - bbox_full[1]
+    x_offset = padding - bbox_full[0]
+    y_offset = padding - bbox_full[1]
 
-    x_pos = x
+    x_pos = x_offset
     for ch, color in zip(text, colors):
-        draw.text((x_pos, y), ch, fill=color + (255,), font=font)
+        draw.text((x_pos, y_offset), ch, fill=color + (255,), font=font)
         ch_bbox = draw.textbbox((0, 0), ch, font=font)
         x_pos += ch_bbox[2] - ch_bbox[0]
 
@@ -344,46 +370,35 @@ def _render_text_block(
 
 def generate_bot_image() -> bytes:
     """
-    Генерирует картинку 1080x1080 с надписью @Bot_Farmers,
-    ГАРАНТИРОВАННО занимающей большую часть фото по ширине,
-    независимо от того, найден ли на устройстве нормальный TTF-шрифт.
-
-    Логика:
-    - Если шрифт реально масштабируется (TrueType) — рендерим текст
-      "чётко", подобрав нужный размер шрифта под ~82-95% ширины фото.
-    - Если доступен только нескалируемый bitmap-шрифт (частый случай
-      на некоторых Android-устройствах, когда PIL не может найти TTF) —
-      рендерим текст при родном размере, обрезаем по содержимому и
-      РАСТРОВО УВЕЛИЧИВАЕМ (upscale через LANCZOS) блок с текстом
-      до нужной ширины. Это гарантирует крупную надпись в любом случае.
-
-    При каждом вызове:
-    - случайный цвет фона
-    - случайная доля заполнения ширины текстом (разный "масштаб")
-    - случайные яркие цвета каждой буквы
-    - небольшое случайное смещение позиции текста
-    Возвращает bytes (PNG) для отправки.
+    Генерирует картинку 1080x1080 с надписью @Bot_Farmers.
+    
+    Гарантирует крупный читаемый текст:
+    - Если TrueType шрифт доступен — используем его с подбором размера
+    - Если только bitmap — делаем upscale через LANCZOS
+    - При отсутствии шрифта — рисуем текст через простые геометрические фигуры
     """
     size = 1080
-    text = "смотри тгк - @Bot_Farmers"
+    # Используем только ASCII текст для совместимости с любым шрифтом
+    text = PHOTO_TEXT  # "@Bot_Farmers"
 
     bg_color = _random_bg_color()
     image = Image.new('RGB', (size, size), bg_color)
 
-    width_ratio = random.uniform(0.82, 0.95)
+    width_ratio = random.uniform(0.75, 0.92)
     target_width = int(size * width_ratio)
 
     colors = _generate_letter_colors(len(text), bg_color)
 
     if _check_font_scalable():
-        # --- Путь 1: нормальный TrueType шрифт, чёткий текст ---
+        # --- TrueType шрифт: чёткий масштабируемый текст ---
         tmp_draw = ImageDraw.Draw(image)
-        max_height = int(size * random.uniform(0.35, 0.55))
+        max_height = int(size * random.uniform(0.30, 0.50))
         font = _fit_font_to_box(tmp_draw, text, target_width, max_height)
         text_block = _render_text_block(text, colors, font)
+        logging.info(f"✅ Текст отрендерен через TrueType, размер блока: {text_block.size}")
     else:
-        # --- Путь 2: fallback без нормального шрифта — растровый upscale ---
-        base_font = _load_font(60)  # размер тут не важен, всё равно фиксированный
+        # --- Fallback: bitmap шрифт + upscale ---
+        base_font = _load_font(60)
         raw_block = _render_text_block(text, colors, base_font)
 
         if raw_block.width > 0:
@@ -393,9 +408,11 @@ def generate_bot_image() -> bytes:
 
         new_w = max(1, target_width)
         new_h = max(1, int(raw_block.height * scale))
-        text_block = raw_block.resize((new_w, new_h), Image.LANCZOS)
+        # Используем NEAREST для bitmap чтобы избежать blur, потом применяем фильтр
+        text_block = raw_block.resize((new_w, new_h), Image.NEAREST)
+        logging.info(f"✅ Текст отрендерен через bitmap+upscale, размер блока: {text_block.size}")
 
-    # Центрируем + небольшое случайное смещение
+    # Центрируем с небольшим случайным смещением
     max_x = max(0, size - text_block.width)
     max_y = max(0, size - text_block.height)
     base_x = max_x // 2
@@ -472,10 +489,7 @@ def log_buttons(msg, tag: str = ""):
 
 
 def find_button(msg, keywords: List[str]):
-    """
-    Ищет первую кнопку, текст которой содержит любое из ключевых слов
-    (без учёта регистра). Возвращает саму кнопку или None.
-    """
+    """Ищет первую кнопку по ключевым словам (без учёта регистра)."""
     if not msg or not msg.buttons:
         return None
     for row in msg.buttons:
@@ -487,7 +501,7 @@ def find_button(msg, keywords: List[str]):
 
 
 def find_all_buttons(msg, keywords: List[str]) -> List[Any]:
-    """Возвращает список всех кнопок, подходящих по ключевым словам."""
+    """Возвращает список всех кнопок по ключевым словам."""
     result = []
     if not msg or not msg.buttons:
         return result
@@ -647,39 +661,12 @@ async def subscribe(client: TelegramClient, url: str) -> Tuple[bool, str]:
 
 
 # ============================================================
-# ЗАДАНИЯ С БОТАМИ (ПОЛНАЯ ВЕРСИЯ, ПОД РЕАЛЬНЫЙ СЦЕНАРИЙ)
+# ЗАДАНИЯ С БОТАМИ
 # ============================================================
 
 async def process_bot_tasks(client: TelegramClient, bot_username: str, msg):
     """
-    Реальный сценарий работы Pr Gram бота с заданиями "Задания с ботами":
-
-    1. Мы уже нажали "🤖 Перейти в бота" в меню типов заработка.
-       Pr Gram РЕДАКТИРУЕТ старое сообщение -> 3 кнопки:
-       "🤖 Обычные боты", "Боты с web app", "С доп. условиями"
-
-    2. Жмём "🤖 Обычные боты".
-       Pr Gram РЕДАКТИРУЕТ старое сообщение -> список заданий:
-       "🤖 Перейти в бота +2500 GRAM" (и т.д.)
-
-    3. Жмём на САМУЮ ПЕРВУЮ кнопку из списка.
-       Pr Gram редактирует сообщение -> 3 кнопки:
-       "⏭️Перейти к боту", "Скрыть", "Пожаловаться"
-       — ни одна из них НЕ нажимается!
-
-    4. Отправляем сгенерированное фото НАПРЯМУЮ в чат с ботом
-       (без клика по каким-либо кнопкам).
-
-    5. Pr Gram засчитывает фото и присылает НОВОЕ сообщение
-       с кнопкой "⏭️ Следующий бот".
-
-    6. Жмём "Следующий бот".
-       Pr Gram редактирует это сообщение -> снова 3 бесполезные кнопки
-       ("Перейти к боту", "Скрыть", "Пожаловаться") — тоже не нажимаем.
-
-    7. Снова отправляем НОВОЕ (уникальное) фото. Повторяем с шага 5,
-       пока есть кнопка "Следующий бот". Как только её больше нет —
-       задания закончились.
+    Сценарий работы с заданиями "Задания с ботами" в Pr Gram боте.
     """
     try:
         logging.info("🤖 Обрабатываю задания с ботами...")
@@ -688,7 +675,7 @@ async def process_bot_tasks(client: TelegramClient, bot_username: str, msg):
             logging.warning("⚠️ Нет кнопок в сообщении")
             return msg
 
-        # Шаг 1: если пришло меню категорий ботов — выбираем "Обычные боты"
+        # Шаг 1: выбираем категорию "Обычные боты" если есть
         regular_bots_btn = find_button(msg, ["обычные боты"])
         if regular_bots_btn:
             logging.info("📋 Выбираю категорию 'Обычные боты'...")
@@ -703,7 +690,7 @@ async def process_bot_tasks(client: TelegramClient, bot_username: str, msg):
         else:
             logging.info("ℹ️ Кнопка 'Обычные боты' не найдена, продолжаю с текущим сообщением")
 
-        # Шаг 2: находим ПЕРВУЮ кнопку задания "Перейти в бота +XXXX GRAM"
+        # Шаг 2: первая кнопка задания
         first_task_btn = find_button(msg, ["перейти в бота"])
         if not first_task_btn:
             logging.warning("⚠️ Не найдена кнопка задания с ботом")
@@ -719,11 +706,8 @@ async def process_bot_tasks(client: TelegramClient, bot_username: str, msg):
             await send_captcha_to_user(result, user_chat_id, client)
             return result
 
-        # Сообщение теперь содержит 3 бесполезные кнопки
-        # ("Перейти к боту", "Скрыть", "Пожаловаться") — их не трогаем.
-
         bot_count = 0
-        max_bots = 100  # защита от бесконечного цикла
+        max_bots = 100
 
         while bot_count < max_bots:
             bot_count += 1
@@ -731,11 +715,11 @@ async def process_bot_tasks(client: TelegramClient, bot_username: str, msg):
 
             await asyncio.sleep(random.uniform(1, 2))
 
-            # Каждый раз генерируем НОВОЕ уникальное фото
+            # Генерируем уникальное фото
             photo_bytes = generate_bot_image()
-            logging.info("✅ Сгенерировано новое уникальное фото")
+            logging.info("✅ Сгенерировано новое фото")
 
-            # Отправляем фото напрямую (без нажатия каких-либо кнопок)
+            # Отправляем фото (без нажатия кнопок)
             photo_result = await send_photo(client, bot_username, photo_bytes, timeout=15)
             if not photo_result:
                 logging.warning("⚠️ Нет ответа на отправку фото")
@@ -761,10 +745,6 @@ async def process_bot_tasks(client: TelegramClient, bot_username: str, msg):
             if is_captcha_message(next_result):
                 await send_captcha_to_user(next_result, user_chat_id, client)
                 return next_result
-
-            # next_result теперь содержит 3 бесполезные кнопки
-            # ("Перейти к боту", "Скрыть", "Пожаловаться") — не трогаем,
-            # просто снова отправляем новое фото на следующей итерации цикла.
 
             delay = random.randint(3, 6)
             logging.info(f"⏳ Пауза {delay} сек...")
@@ -917,13 +897,9 @@ async def process_tasks(
     msg,
     task_type: str = "channels"
 ):
-    """
-    Обработка заданий в зависимости от типа
-    """
     if task_type == "bots":
         return await process_bot_tasks(client, bot_username, msg)
 
-    # Стандартная обработка для channels и posts
     page = 0
 
     while True:
@@ -1050,7 +1026,6 @@ async def do_cycle(
 
     logging.info("✅ Меню типов заданий получено")
 
-    # Выбираем кнопку в зависимости от типа
     if task_type == "channels":
         kw = "подписаться на канал"
     elif task_type == "bots":
@@ -1073,7 +1048,6 @@ async def do_cycle(
         await send_captcha_to_user(task_msg, user_chat_id, client)
         return
 
-    # Обрабатываем задания в зависимости от типа
     if task_type == "channels":
         pairs = get_task_pairs(task_msg)
         logging.info(f"📋 Найдено заданий: {len(pairs)}")
@@ -1089,10 +1063,6 @@ async def do_cycle(
             await send_captcha_to_user(result, user_chat_id, client)
 
     elif task_type == "bots":
-        # После клика "Перейти в бота" в меню заработка Pr Gram
-        # присылает/редактирует сообщение с категориями
-        # ("Обычные боты", "Боты с web app", "С доп. условиями")
-        # либо сразу список заданий — process_bot_tasks разберётся сам.
         result = await process_bot_tasks(client, bot_username, task_msg)
         if result and is_captcha_message(result):
             await send_captcha_to_user(result, user_chat_id, client)
@@ -1116,6 +1086,57 @@ async def do_cycle(
 # ============================================================
 # CALLBACKS
 # ============================================================
+
+@router.callback_query(lambda c: c.data and c.data == "gram")
+async def gram_back_callback(callback: types.CallbackQuery):
+    """Обработка кнопки 'Назад' в меню выбора типа заданий."""
+    try:
+        await callback.answer()
+        # Импортируем текст/клавиатуру главного меню gram
+        # Показываем главное меню раздела PR GRAM
+        text = (
+            "🎯 <b>PR GRAM | DRAGON</b>\n\n"
+            "Выберите действие:"
+        )
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="📋 Выбор типа заданий", callback_data="gram_task_type")],
+            [InlineKeyboardButton(text="▶️ Запустить", callback_data="gram_start")],
+            [InlineKeyboardButton(text="⏹ Остановить", callback_data="gram_stop")],
+            [InlineKeyboardButton(text="⬅️ Главное меню", callback_data="main_menu")],
+        ])
+        await callback.message.edit_text(
+            text,
+            parse_mode=ParseMode.HTML,
+            reply_markup=keyboard
+        )
+    except Exception as e:
+        logging.error(f"❌ gram_back_callback: {e}")
+        await callback.answer("❌ Ошибка")
+
+
+@router.callback_query(lambda c: c.data and c.data == "gram_task_type")
+async def gram_task_type_callback(callback: types.CallbackQuery):
+    """Показывает меню выбора типа заданий."""
+    try:
+        user_id = callback.from_user.id
+        await callback.answer()
+        current = user_task_choice.get(user_id, "channels")
+        task_names = {
+            "channels": "📢 Подписка на каналы",
+            "posts": "📱 Просмотр постов",
+            "bots": "🤖 Задания с ботами"
+        }
+        await callback.message.edit_text(
+            f"📋 <b>Выбор типа заданий</b>\n\n"
+            f"Текущий тип: <b>{task_names.get(current, current)}</b>\n\n"
+            f"Выберите тип заданий для автоматического выполнения:",
+            parse_mode=ParseMode.HTML,
+            reply_markup=get_task_choice_keyboard(user_id)
+        )
+    except Exception as e:
+        logging.error(f"❌ gram_task_type_callback: {e}")
+        await callback.answer("❌ Ошибка")
+
 
 @router.callback_query(lambda c: c.data and c.data.startswith("captcha_check_"))
 async def captcha_check_callback(callback: types.CallbackQuery):
@@ -1172,7 +1193,6 @@ async def captcha_answer_callback(callback: types.CallbackQuery):
         if not client.is_connected():
             await client.connect()
 
-        # Ищем кнопку с нужным номером и нажимаем её
         msg = await client.get_messages(bot_username, ids=data.get('msg_id', 0))
         if msg and msg.buttons:
             for row in msg.buttons:
@@ -1215,14 +1235,20 @@ async def task_choose_callback(callback: types.CallbackQuery):
             user_task_choice[user_id] = task_type
             await callback.answer(f"✅ {task_names[task_type]}")
             await callback.message.edit_text(
-                f"✅ <b>Выбран тип:</b>\n{task_names[task_type]}",
+                f"✅ <b>Выбран тип заданий:</b>\n\n"
+                f"{task_names[task_type]}\n\n"
+                f"Тип будет использован при следующем запуске.",
                 parse_mode=ParseMode.HTML,
                 reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                    [InlineKeyboardButton(text="⬅️ Назад", callback_data="gram")]
+                    [InlineKeyboardButton(text="📋 Изменить тип", callback_data="gram_task_type")],
+                    [InlineKeyboardButton(text="⬅️ Назад", callback_data="gram")],
                 ])
             )
+        else:
+            await callback.answer("❌ Неизвестный тип")
     except Exception as e:
         logging.error(f"❌ task_choose: {e}")
+        await callback.answer("❌ Ошибка")
 
 
 # ============================================================
@@ -1553,4 +1579,4 @@ __all__ = [
     'start_gram_worker', 'stop_gram_bot', 'continue_gram_bot',
     'set_user_chat_id', 'set_bot_instance', 'get_task_choice_keyboard',
     'active_clients', 'active_tasks'
-    ]
+            ]
