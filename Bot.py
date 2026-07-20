@@ -12,27 +12,29 @@ from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
+from aiogram.exceptions import TelegramBadRequest
 from dotenv import load_dotenv
 
 from username_bot import router as username_router, init_username_bot
 from gram_bot import (
-    router as gram_router, 
-    init_gram_bot, 
-    active_clients, 
-    active_tasks, 
-    set_user_chat_id, 
-    start_gram_worker, 
-    stop_gram_bot, 
+    router as gram_router,
+    init_gram_bot,
+    active_clients,
+    active_tasks,
+    set_user_chat_id,
+    start_gram_worker,
+    stop_gram_bot,
     set_bot_instance as set_gram_bot_instance,
     get_task_choice_keyboard,
     get_bot_category_keyboard,
     get_bot_settings_keyboard,
     continue_gram_bot,
     send_code,
-    start_gram_bot as start_gram_bot_auth
+    start_gram_bot as start_gram_bot_auth,
+    set_session_config as set_gram_session_config,
+    get_session_config as get_gram_session_config
 )
 
-# Импорты для капчи
 from captcha_solver import (
     set_captcha_bot,
     set_captcha_clients,
@@ -58,11 +60,10 @@ bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=storage)
 
 # Храним сессии пользователей
-user_sessions: Dict[int, List[str]] = {}  # user_id -> [phone1, phone2, ...]
-user_bot_choice: Dict[int, str] = {}  # user_id -> bot_username
-user_session_config: Dict[int, Dict[str, Dict[str, Any]]] = {}  # user_id -> {phone: {"enabled": bool, "task_type": str, "bot_category": str}}
+user_sessions: Dict[int, List[str]] = {}
+user_bot_choice: Dict[int, str] = {}
+user_session_config: Dict[int, Dict[str, Dict[str, Any]]] = {}
 
-# Файлы для сохранения
 SESSIONS_FILE = "user_sessions.json"
 BOT_CHOICE_FILE = "user_bot_choice.json"
 SESSION_CONFIG_FILE = "user_session_config.json"
@@ -86,7 +87,6 @@ def save_sessions():
     try:
         with open(SESSIONS_FILE, 'w', encoding='utf-8') as f:
             json.dump(user_sessions, f, indent=2, ensure_ascii=False)
-        logging.info("✅ Сессии сохранены")
     except Exception as e:
         logging.error(f"Ошибка сохранения сессий: {e}")
 
@@ -104,7 +104,6 @@ def save_bot_choices():
     try:
         with open(BOT_CHOICE_FILE, 'w', encoding='utf-8') as f:
             json.dump(user_bot_choice, f, indent=2, ensure_ascii=False)
-        logging.info("✅ Выбор ботов сохранен")
     except Exception as e:
         logging.error(f"Ошибка сохранения выбора ботов: {e}")
 
@@ -122,7 +121,6 @@ def save_session_config():
     try:
         with open(SESSION_CONFIG_FILE, 'w', encoding='utf-8') as f:
             json.dump(user_session_config, f, indent=2, ensure_ascii=False)
-        logging.info("✅ Конфигурация сессий сохранена")
     except Exception as e:
         logging.error(f"Ошибка сохранения конфигурации сессий: {e}")
 
@@ -143,14 +141,26 @@ def set_session_config(user_id: int, phone: str, key: str, value: Any):
     config = get_session_config(user_id, phone)
     config[key] = value
     save_session_config()
+    set_gram_session_config(user_id, phone, key, value)
 
 
-# ============ КЛАВИАТУРЫ ДЛЯ СЕССИЙ ============
+# ============ БЕЗОПАСНОЕ РЕДАКТИРОВАНИЕ ============
+
+async def safe_edit_message(message: types.Message, text: str, **kwargs):
+    """Редактирует сообщение, игнорируя 'message is not modified'"""
+    try:
+        await message.edit_text(text, **kwargs)
+    except TelegramBadRequest as e:
+        if "message is not modified" in str(e):
+            pass
+        else:
+            raise
+
+
+# ============ КЛАВИАТУРЫ ============
 
 def get_sessions_keyboard(user_id: int) -> InlineKeyboardMarkup:
-    """Главное меню PR GRAMM со списком сессий"""
     buttons = []
-    
     if user_id in user_sessions and user_sessions[user_id]:
         for phone in user_sessions[user_id]:
             config = get_session_config(user_id, phone)
@@ -159,27 +169,21 @@ def get_sessions_keyboard(user_id: int) -> InlineKeyboardMarkup:
                 text=f"{status} {phone}",
                 callback_data=f"sess_item_{phone}"
             )])
-        
         buttons.append([InlineKeyboardButton(text="🚀 Запустить все сессии", callback_data="sess_start_all")])
         buttons.append([InlineKeyboardButton(text="⏹ Остановить все", callback_data="sess_stop_all")])
-        
         if len(user_sessions[user_id]) < MAX_SESSIONS:
             buttons.append([InlineKeyboardButton(text="➕ Добавить сессию", callback_data="sess_add")])
     else:
         buttons.append([InlineKeyboardButton(text="❌ Нет сессий", callback_data="no_action")])
         buttons.append([InlineKeyboardButton(text="➕ Добавить сессию", callback_data="sess_add")])
-    
     buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="bots")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
 def get_session_item_keyboard(user_id: int, phone: str) -> InlineKeyboardMarkup:
-    """Меню управления конкретной сессией (Включить/Выключить + Настройки)"""
     config = get_session_config(user_id, phone)
     is_enabled = config.get("enabled", False)
-    
     toggle_text = "⏹ Выключить" if is_enabled else "▶️ Включить"
-    
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📱 " + phone, callback_data="no_action")],
         [InlineKeyboardButton(text=toggle_text, callback_data=f"sess_toggle_{phone}")],
@@ -189,24 +193,11 @@ def get_session_item_keyboard(user_id: int, phone: str) -> InlineKeyboardMarkup:
 
 
 def get_session_settings_keyboard(user_id: int, phone: str) -> InlineKeyboardMarkup:
-    """Настройки для конкретной сессии"""
     config = get_session_config(user_id, phone)
     task_type = config.get("task_type", "channels")
     bot_category = config.get("bot_category", "regular")
-    
-    task_names = {
-        "channels": "📢 Подписка",
-        "groups": "👥 Группы",
-        "posts": "📱 Посты",
-        "bots": "🤖 Боты"
-    }
-    
-    cat_names = {
-        "regular": "Обычные",
-        "webapp": "Web App",
-        "conditions": "С условиями"
-    }
-    
+    task_names = {"channels": "📢 Подписка", "groups": "👥 Группы", "posts": "📱 Посты", "bots": "🤖 Боты"}
+    cat_names = {"regular": "Обычные", "webapp": "Web App", "conditions": "С условиями"}
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=f"📋 Тип: {task_names.get(task_type, task_type)}", callback_data=f"sess_task_{phone}")],
         [InlineKeyboardButton(text=f"🤖 Категория: {cat_names.get(bot_category, bot_category)}", callback_data=f"sess_cat_{phone}")],
@@ -215,8 +206,6 @@ def get_session_settings_keyboard(user_id: int, phone: str) -> InlineKeyboardMar
     ])
 
 
-# ============ ОБЩИЕ КЛАВИАТУРЫ ============
-
 def get_main_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🤖 Боты", callback_data="bots")],
@@ -224,11 +213,13 @@ def get_main_keyboard() -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="📱 Мои сессии", callback_data="sessions")],
     ])
 
+
 def get_bots_list_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📢 PR GRAMM", callback_data="bot_prgramm")],
         [InlineKeyboardButton(text="⬅️ Назад", callback_data="main")],
     ])
+
 
 def get_username_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
@@ -239,12 +230,13 @@ def get_username_keyboard() -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="⬅️ Назад", callback_data="main")],
     ])
 
+
 def get_session_delete_keyboard(user_id: int) -> InlineKeyboardMarkup:
     buttons = []
     if user_id in user_sessions:
         for phone in user_sessions[user_id]:
             buttons.append([InlineKeyboardButton(
-                text=f"❌ {phone}", 
+                text=f"❌ {phone}",
                 callback_data=f"sess_del_{phone}"
             )])
     buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="sessions")])
@@ -263,7 +255,6 @@ class SessionStates(StatesGroup):
 @dp.message(Command("start"))
 async def start_command(message: types.Message):
     user_id = message.from_user.id
-    
     global user_sessions, user_bot_choice, user_session_config
     
     if not user_sessions:
@@ -276,10 +267,8 @@ async def start_command(message: types.Message):
     if user_id not in user_bot_choice:
         user_bot_choice[user_id] = "@gram_prbot"
         save_bot_choices()
-    
     if user_id not in user_sessions:
         user_sessions[user_id] = []
-    
     if user_id not in user_session_config:
         user_session_config[user_id] = {}
     
@@ -296,40 +285,24 @@ async def start_command(message: types.Message):
 @dp.callback_query(lambda c: c.data == "main")
 async def main_menu(callback: types.CallbackQuery):
     await callback.answer()
-    try:
-        await callback.message.edit_text(
-            "🏠 <b>Главное меню</b>\n\nВыбери раздел:",
-            parse_mode=ParseMode.HTML,
-            reply_markup=get_main_keyboard()
-        )
-    except Exception as e:
-        logging.error(f"Ошибка main_menu: {e}")
-        await callback.message.answer(
-            "🏠 <b>Главное меню</b>\n\nВыбери раздел:",
-            parse_mode=ParseMode.HTML,
-            reply_markup=get_main_keyboard()
-        )
+    await safe_edit_message(
+        callback.message,
+        "🏠 <b>Главное меню</b>\n\nВыбери раздел:",
+        parse_mode=ParseMode.HTML,
+        reply_markup=get_main_keyboard()
+    )
 
 
 @dp.callback_query(lambda c: c.data == "bots")
 async def bots_menu(callback: types.CallbackQuery):
     await callback.answer()
-    try:
-        await callback.message.edit_text(
-            "🤖 <b>Боты</b>\n\nВыбери бота:",
-            parse_mode=ParseMode.HTML,
-            reply_markup=get_bots_list_keyboard()
-        )
-    except Exception as e:
-        logging.error(f"Ошибка bots_menu: {e}")
-        await callback.message.answer(
-            "🤖 <b>Боты</b>\n\nВыбери бота:",
-            parse_mode=ParseMode.HTML,
-            reply_markup=get_bots_list_keyboard()
-        )
+    await safe_edit_message(
+        callback.message,
+        "🤖 <b>Боты</b>\n\nВыбери бота:",
+        parse_mode=ParseMode.HTML,
+        reply_markup=get_bots_list_keyboard()
+    )
 
-
-# ============ PR GRAMM ГЛАВНОЕ МЕНЮ ============
 
 @dp.callback_query(lambda c: c.data == "bot_prgramm")
 async def bot_prgramm_menu(callback: types.CallbackQuery):
@@ -349,35 +322,20 @@ async def bot_prgramm_menu(callback: types.CallbackQuery):
             config = get_session_config(user_id, phone)
             status = "🟢" if config.get("enabled", False) else "🔴"
             task_type = config.get("task_type", "channels")
-            task_names = {
-                "channels": "📢 Подписка",
-                "groups": "👥 Группы",
-                "posts": "📱 Посты",
-                "bots": "🤖 Боты"
-            }
+            task_names = {"channels": "📢 Подписка", "groups": "👥 Группы", "posts": "📱 Посты", "bots": "🤖 Боты"}
             text += f"  {status} {phone} — {task_names.get(task_type, task_type)}\n"
-        
         text += f"\n📊 Сессий: {len(user_sessions[user_id])}/{MAX_SESSIONS}"
     else:
         text += "❌ Нет подключенных сессий\n\n"
         text += "Добавь сессию в разделе 'Мои сессии'"
     
-    try:
-        await callback.message.edit_text(
-            text,
-            parse_mode=ParseMode.HTML,
-            reply_markup=get_sessions_keyboard(user_id)
-        )
-    except Exception as e:
-        logging.error(f"Ошибка bot_prgramm_menu: {e}")
-        await callback.message.answer(
-            text,
-            parse_mode=ParseMode.HTML,
-            reply_markup=get_sessions_keyboard(user_id)
-        )
+    await safe_edit_message(
+        callback.message,
+        text,
+        parse_mode=ParseMode.HTML,
+        reply_markup=get_sessions_keyboard(user_id)
+    )
 
-
-# ============ УПРАВЛЕНИЕ СЕССИЕЙ ============
 
 @dp.callback_query(lambda c: c.data and c.data.startswith("sess_item_"))
 async def sess_item_callback(callback: types.CallbackQuery):
@@ -402,7 +360,8 @@ async def sess_item_callback(callback: types.CallbackQuery):
         text += f"🤖 Бот: {user_bot_choice.get(user_id, '@gram_prbot')}\n\n"
         text += "Выбери действие:"
         
-        await callback.message.edit_text(
+        await safe_edit_message(
+            callback.message,
             text,
             parse_mode=ParseMode.HTML,
             reply_markup=get_session_item_keyboard(user_id, phone)
@@ -446,7 +405,8 @@ async def sess_settings_callback(callback: types.CallbackQuery):
         user_id = callback.from_user.id
         await callback.answer()
         
-        await callback.message.edit_text(
+        await safe_edit_message(
+            callback.message,
             f"⚙️ <b>Настройки — {phone}</b>\n\n"
             "Выбери настройку:",
             parse_mode=ParseMode.HTML,
@@ -464,7 +424,8 @@ async def sess_task_callback(callback: types.CallbackQuery):
         user_id = callback.from_user.id
         await callback.answer()
         
-        await callback.message.edit_text(
+        await safe_edit_message(
+            callback.message,
             f"📋 <b>Выбор типа заданий для {phone}</b>\n\n"
             "Выбери тип заданий:",
             parse_mode=ParseMode.HTML,
@@ -482,7 +443,8 @@ async def sess_cat_callback(callback: types.CallbackQuery):
         user_id = callback.from_user.id
         await callback.answer()
         
-        await callback.message.edit_text(
+        await safe_edit_message(
+            callback.message,
             f"📋 <b>Выбор категории ботов для {phone}</b>\n\n"
             "Выбери категорию:",
             parse_mode=ParseMode.HTML,
@@ -500,11 +462,7 @@ async def sess_bot_callback(callback: types.CallbackQuery):
         user_id = callback.from_user.id
         
         current_bot = user_bot_choice.get(user_id, "@gram_prbot")
-        bots = [
-            ("@gram_piarbot", "g_piar"),
-            ("@gram_prbot", "g_pr"),
-        ]
-        
+        bots = [("@gram_piarbot", "g_piar"), ("@gram_prbot", "g_pr")]
         buttons = []
         for name, code in bots:
             check = "✅ " if name == current_bot else ""
@@ -514,7 +472,8 @@ async def sess_bot_callback(callback: types.CallbackQuery):
             )])
         buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=f"sess_item_{phone}")])
         
-        await callback.message.edit_text(
+        await safe_edit_message(
+            callback.message,
             f"🔄 <b>Смена бота для {phone}</b>\n\n"
             "Выбери бота:",
             parse_mode=ParseMode.HTML,
@@ -533,11 +492,7 @@ async def sess_bot_choice_callback(callback: types.CallbackQuery):
         phone = parts[4]
         user_id = callback.from_user.id
         
-        if bot_code == "g_piar":
-            bot_name = "@gram_piarbot"
-        else:
-            bot_name = "@gram_prbot"
-        
+        bot_name = "@gram_piarbot" if bot_code == "g_piar" else "@gram_prbot"
         user_bot_choice[user_id] = bot_name
         save_bot_choices()
         
@@ -547,8 +502,6 @@ async def sess_bot_choice_callback(callback: types.CallbackQuery):
         logging.error(f"❌ sess_bot_choice_callback: {e}")
         await callback.answer("❌ Ошибка")
 
-
-# ============ ЗАПУСК/ОСТАНОВКА ВСЕХ ============
 
 @dp.callback_query(lambda c: c.data == "sess_start_all")
 async def sess_start_all_callback(callback: types.CallbackQuery):
@@ -563,11 +516,9 @@ async def sess_start_all_callback(callback: types.CallbackQuery):
             config = get_session_config(user_id, phone)
             if not config.get("enabled", False):
                 continue
-            
             if phone not in active_clients:
                 failed += 1
                 continue
-            
             client = active_clients[phone]
             if not client.is_connected():
                 try:
@@ -575,21 +526,19 @@ async def sess_start_all_callback(callback: types.CallbackQuery):
                 except:
                     failed += 1
                     continue
-            
             if not await client.is_user_authorized():
                 failed += 1
                 continue
-            
             if phone in active_tasks and not active_tasks[phone].done():
                 started += 1
                 continue
-            
             bot_name = user_bot_choice.get(user_id, "@gram_prbot")
             await start_gram_worker(client, bot_name, phone, user_id)
             started += 1
             await asyncio.sleep(0.5)
         
-        await callback.message.edit_text(
+        await safe_edit_message(
+            callback.message,
             f"🚀 <b>Запуск завершен!</b>\n\n"
             f"✅ Запущено: {started}\n"
             f"❌ Ошибок: {failed}\n"
@@ -610,16 +559,15 @@ async def sess_stop_all_callback(callback: types.CallbackQuery):
     try:
         user_id = callback.from_user.id
         await callback.answer("⏹ Останавливаю...")
-        
         stopped = 0
-        
         for phone in user_sessions.get(user_id, []):
             if phone in active_tasks and not active_tasks[phone].done():
                 await stop_gram_bot(phone)
                 stopped += 1
                 await asyncio.sleep(0.3)
         
-        await callback.message.edit_text(
+        await safe_edit_message(
+            callback.message,
             f"⏹ <b>Остановка завершена!</b>\n\n"
             f"✅ Остановлено: {stopped} сессий",
             parse_mode=ParseMode.HTML,
@@ -633,8 +581,6 @@ async def sess_stop_all_callback(callback: types.CallbackQuery):
         await callback.answer("❌ Ошибка")
 
 
-# ============ ДОБАВЛЕНИЕ СЕССИЙ ============
-
 @dp.callback_query(lambda c: c.data == "sess_add")
 async def session_add(callback: types.CallbackQuery, state: FSMContext):
     await callback.answer()
@@ -647,31 +593,20 @@ async def session_add(callback: types.CallbackQuery, state: FSMContext):
     await state.set_state(SessionStates.waiting_phone)
     await state.update_data(user_id=user_id)
     
-    try:
-        await callback.message.edit_text(
-            f"📱 <b>Добавление сессии</b>\n\n"
-            f"Сессий: {len(user_sessions.get(user_id, []))}/{MAX_SESSIONS}\n\n"
-            "Введите номер телефона в формате:\n"
-            "<code>+79172993848</code>\n\n"
-            "или отправьте /cancel для отмены",
-            parse_mode=ParseMode.HTML
-        )
-    except Exception as e:
-        logging.error(f"Ошибка session_add: {e}")
-        await callback.message.answer(
-            f"📱 <b>Добавление сессии</b>\n\n"
-            f"Сессий: {len(user_sessions.get(user_id, []))}/{MAX_SESSIONS}\n\n"
-            "Введите номер телефона в формате:\n"
-            "<code>+79172993848</code>\n\n"
-            "или отправьте /cancel для отмены",
-            parse_mode=ParseMode.HTML
-        )
+    await safe_edit_message(
+        callback.message,
+        f"📱 <b>Добавление сессии</b>\n\n"
+        f"Сессий: {len(user_sessions.get(user_id, []))}/{MAX_SESSIONS}\n\n"
+        "Введите номер телефона в формате:\n"
+        "<code>+79172993848</code>\n\n"
+        "или отправьте /cancel для отмены",
+        parse_mode=ParseMode.HTML
+    )
 
 
 @dp.message(SessionStates.waiting_phone)
 async def session_phone(message: types.Message, state: FSMContext):
     phone = message.text.strip()
-    
     if not re.match(r'^\+?\d{10,15}$', phone):
         await message.answer(
             "❌ Неверный формат номера.\n"
@@ -682,7 +617,6 @@ async def session_phone(message: types.Message, state: FSMContext):
     
     await state.update_data(phone=phone)
     await state.set_state(SessionStates.waiting_code)
-    
     set_user_chat_id(message.chat.id)
     result = await send_code(phone, "gram_prbot")
     
@@ -705,26 +639,19 @@ async def session_phone(message: types.Message, state: FSMContext):
 async def session_code(message: types.Message, state: FSMContext):
     code = message.text.strip()
     user_id = message.from_user.id
-    
     data = await state.get_data()
     phone = data.get("phone")
-    
     result = await start_gram_bot_auth(phone, code, "gram_prbot", message.chat.id)
-    
     await state.clear()
     
     if result:
         if user_id not in user_sessions:
             user_sessions[user_id] = []
-        
         if phone not in user_sessions[user_id]:
             user_sessions[user_id].append(phone)
             save_sessions()
-            
             get_session_config(user_id, phone)
-        
         bot_name = user_bot_choice.get(user_id, "@gram_prbot")
-        
         await message.answer(
             f"✅ <b>Сессия добавлена!</b>\n\n"
             f"📱 {phone}\n"
@@ -745,40 +672,29 @@ async def session_code(message: types.Message, state: FSMContext):
         )
 
 
-# ============ УДАЛЕНИЕ СЕССИЙ ============
-
 @dp.callback_query(lambda c: c.data == "sessions")
 async def sessions_menu(callback: types.CallbackQuery):
     await callback.answer()
     user_id = callback.from_user.id
     
     text = "📱 <b>Мои сессии</b>\n\n"
-    
     if user_id in user_sessions and user_sessions[user_id]:
         text += f"📊 Сессий: {len(user_sessions[user_id])}/{MAX_SESSIONS}\n\n"
         for phone in user_sessions[user_id]:
             config = get_session_config(user_id, phone)
             status = "🟢 Вкл" if config.get("enabled", False) else "🔴 Выкл"
             text += f"  {status} 📱 {phone}\n"
-        
         text += "\n<i>Нажми на номер для удаления</i>"
     else:
         text += "❌ Нет активных сессий\n\n"
         text += f"Максимум: {MAX_SESSIONS} сессий"
     
-    try:
-        await callback.message.edit_text(
-            text,
-            parse_mode=ParseMode.HTML,
-            reply_markup=get_session_delete_keyboard(user_id)
-        )
-    except Exception as e:
-        logging.error(f"Ошибка sessions_menu: {e}")
-        await callback.message.answer(
-            text,
-            parse_mode=ParseMode.HTML,
-            reply_markup=get_session_delete_keyboard(user_id)
-        )
+    await safe_edit_message(
+        callback.message,
+        text,
+        parse_mode=ParseMode.HTML,
+        reply_markup=get_session_delete_keyboard(user_id)
+    )
 
 
 @dp.callback_query(lambda c: c.data and c.data.startswith("sess_del_"))
@@ -793,7 +709,6 @@ async def session_delete_execute(callback: types.CallbackQuery):
         
         if phone in active_tasks:
             await stop_gram_bot(phone)
-        
         if phone in active_clients:
             try:
                 await active_clients[phone].disconnect()
@@ -803,7 +718,6 @@ async def session_delete_execute(callback: types.CallbackQuery):
         
         user_sessions[user_id].remove(phone)
         save_sessions()
-        
         if user_id in user_session_config and phone in user_session_config[user_id]:
             del user_session_config[user_id][phone]
             save_session_config()
@@ -815,37 +729,23 @@ async def session_delete_execute(callback: types.CallbackQuery):
         await callback.answer(f"❌ Ошибка: {e}")
 
 
-# ============ ЮЗЕРНЕЙМЫ ============
-
 @dp.callback_query(lambda c: c.data == "users")
 async def username_menu(callback: types.CallbackQuery):
     await callback.answer()
-    try:
-        await callback.message.edit_text(
-            "👤 <b>Раздел Юзернеймы</b>\n\n"
-            "🔍 Поиск свободных 5-значных юзернеймов\n\n"
-            "Выбери действие:",
-            parse_mode=ParseMode.HTML,
-            reply_markup=get_username_keyboard()
-        )
-    except Exception as e:
-        logging.error(f"Ошибка username_menu: {e}")
-        await callback.message.answer(
-            "👤 <b>Раздел Юзернеймы</b>\n\n"
-            "🔍 Поиск свободных 5-значных юзернеймов\n\n"
-            "Выбери действие:",
-            parse_mode=ParseMode.HTML,
-            reply_markup=get_username_keyboard()
-        )
+    await safe_edit_message(
+        callback.message,
+        "👤 <b>Раздел Юзернеймы</b>\n\n"
+        "🔍 Поиск свободных 5-значных юзернеймов\n\n"
+        "Выбери действие:",
+        parse_mode=ParseMode.HTML,
+        reply_markup=get_username_keyboard()
+    )
 
 
 @dp.message(Command("cancel"))
 async def cancel_command(message: types.Message, state: FSMContext):
     await state.clear()
-    await message.answer(
-        "❌ Отменено.",
-        reply_markup=get_main_keyboard()
-    )
+    await message.answer("❌ Отменено.", reply_markup=get_main_keyboard())
 
 
 # ============ КАПЧА ============
@@ -856,16 +756,12 @@ async def captcha_answer_callback(callback: types.CallbackQuery):
         parts = callback.data.split("_")
         chat_id = int(parts[2])
         number = parts[3]
-        
         await callback.answer(f"✅ Выбрано: {number}")
-        
         success, msg = await handle_captcha_answer(chat_id, number)
-        
         if success:
-            await callback.message.edit_text(f"✅ {msg}", parse_mode=ParseMode.HTML)
+            await safe_edit_message(callback.message, f"✅ {msg}", parse_mode=ParseMode.HTML)
         else:
-            await callback.message.edit_text(f"⏳ {msg}", parse_mode=ParseMode.HTML)
-            
+            await safe_edit_message(callback.message, f"⏳ {msg}", parse_mode=ParseMode.HTML)
     except Exception as e:
         logging.error(f"❌ Ошибка captcha_answer: {e}")
         await callback.answer(f"❌ Ошибка: {e}")
@@ -876,14 +772,11 @@ async def captcha_check_callback(callback: types.CallbackQuery):
     try:
         chat_id = int(callback.data.split("_")[2])
         await callback.answer("🔄 Проверяю...")
-        
         success, msg = await check_captcha_status(chat_id)
-        
         if success:
-            await callback.message.edit_text(f"✅ {msg}", parse_mode=ParseMode.HTML)
+            await safe_edit_message(callback.message, f"✅ {msg}", parse_mode=ParseMode.HTML)
         else:
-            await callback.message.edit_text(f"⏳ {msg}", parse_mode=ParseMode.HTML)
-            
+            await safe_edit_message(callback.message, f"⏳ {msg}", parse_mode=ParseMode.HTML)
     except Exception as e:
         logging.error(f"❌ Ошибка captcha_check: {e}")
         await callback.answer(f"❌ Ошибка: {e}")
@@ -893,38 +786,27 @@ async def captcha_check_callback(callback: types.CallbackQuery):
 async def captcha_stop_callback(callback: types.CallbackQuery):
     try:
         chat_id = int(callback.data.split("_")[2])
-        
         stop_captcha(chat_id)
-        
         await callback.answer("⏹ Остановлен")
-        await callback.message.edit_text("⏹ Капча остановлена", parse_mode=ParseMode.HTML)
+        await safe_edit_message(callback.message, "⏹ Капча остановлена", parse_mode=ParseMode.HTML)
     except Exception as e:
         logging.error(f"❌ Ошибка captcha_stop: {e}")
         await callback.answer(f"❌ Ошибка: {e}")
 
 
-# ============ ОБРАБОТЧИКИ ДЛЯ КНОПОК ИЗ gram_bot.py ============
+# ============ ОБРАБОТЧИКИ ИЗ gram_bot.py ============
 
 @dp.callback_query(lambda c: c.data == "gram_choose_task")
 async def gram_choose_task(callback: types.CallbackQuery):
     await callback.answer()
     user_id = callback.from_user.id
-    
-    try:
-        await callback.message.edit_text(
-            "📋 <b>Выбор типа заданий</b>\n\n"
-            "Выбери тип заданий:",
-            parse_mode=ParseMode.HTML,
-            reply_markup=get_task_choice_keyboard(user_id)
-        )
-    except Exception as e:
-        logging.error(f"Ошибка gram_choose_task: {e}")
-        await callback.message.answer(
-            "📋 <b>Выбор типа заданий</b>\n\n"
-            "Выбери тип заданий:",
-            parse_mode=ParseMode.HTML,
-            reply_markup=get_task_choice_keyboard(user_id)
-        )
+    await safe_edit_message(
+        callback.message,
+        "📋 <b>Выбор типа заданий</b>\n\n"
+        "Выбери тип заданий:",
+        parse_mode=ParseMode.HTML,
+        reply_markup=get_task_choice_keyboard(user_id)
+    )
 
 
 @dp.callback_query(lambda c: c.data == "gram_change_bot")
@@ -932,36 +814,22 @@ async def gram_change_bot(callback: types.CallbackQuery):
     await callback.answer()
     user_id = callback.from_user.id
     current_bot = user_bot_choice.get(user_id, "@gram_prbot")
-    
-    bots = [
-        ("@gram_piarbot", "g_piar"),
-        ("@gram_prbot", "g_pr"),
-    ]
-    
+    bots = [("@gram_piarbot", "g_piar"), ("@gram_prbot", "g_pr")]
     buttons = []
     for name, code in bots:
         check = "✅ " if name == current_bot else ""
         buttons.append([InlineKeyboardButton(
-            text=f"{check}{name}", 
+            text=f"{check}{name}",
             callback_data=f"bot_choice_{code}"
         )])
     buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="bot_prgramm")])
-    
-    try:
-        await callback.message.edit_text(
-            "🔄 <b>Выбор Gram бота</b>\n\n"
-            "Выбери бота для работы:",
-            parse_mode=ParseMode.HTML,
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons)
-        )
-    except Exception as e:
-        logging.error(f"Ошибка gram_change_bot: {e}")
-        await callback.message.answer(
-            "🔄 <b>Выбор Gram бота</b>\n\n"
-            "Выбери бота для работы:",
-            parse_mode=ParseMode.HTML,
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons)
-        )
+    await safe_edit_message(
+        callback.message,
+        "🔄 <b>Выбор Gram бота</b>\n\n"
+        "Выбери бота для работы:",
+        parse_mode=ParseMode.HTML,
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons)
+    )
 
 
 @dp.callback_query(lambda c: c.data.startswith("bot_choice_"))
@@ -969,16 +837,11 @@ async def bot_choice_callback(callback: types.CallbackQuery):
     await callback.answer()
     user_id = callback.from_user.id
     bot_code = callback.data.replace("bot_choice_", "")
-    
-    if bot_code == "g_piar":
-        bot_name = "@gram_piarbot"
-    else:
-        bot_name = "@gram_prbot"
-    
+    bot_name = "@gram_piarbot" if bot_code == "g_piar" else "@gram_prbot"
     user_bot_choice[user_id] = bot_name
     save_bot_choices()
-    
-    await callback.message.edit_text(
+    await safe_edit_message(
+        callback.message,
         f"✅ <b>Бот изменен!</b>\n\n"
         f"🤖 Выбран: <b>{bot_name}</b>",
         parse_mode=ParseMode.HTML,
@@ -986,7 +849,6 @@ async def bot_choice_callback(callback: types.CallbackQuery):
             [InlineKeyboardButton(text="⬅️ Назад", callback_data="bot_prgramm")]
         ])
     )
-    
     await bot_prgramm_menu(callback)
 
 
@@ -994,6 +856,9 @@ async def bot_choice_callback(callback: types.CallbackQuery):
 
 async def main():
     global user_sessions, user_bot_choice, user_session_config
+    
+    os.makedirs("sessions", exist_ok=True)
+    os.makedirs("fonts", exist_ok=True)
     
     user_sessions.update(load_sessions())
     user_bot_choice.update(load_bot_choices())
@@ -1013,6 +878,7 @@ async def main():
     init_gram_bot(dp)
     
     await dp.start_polling(bot)
+
 
 if __name__ == "__main__":
     try:
