@@ -37,6 +37,7 @@ captcha_storage: Dict[int, Dict[str, Any]] = {}
 user_task_choice: Dict[int, str] = {}
 user_bot_category: Dict[int, str] = {}
 session_locks: Dict[str, asyncio.Lock] = {}
+session_config_store: Dict[int, Dict[str, Dict[str, Any]]] = {}
 
 SUBSCRIBE_DELAY = 60
 BOT_TASK_DELAY = 30
@@ -67,6 +68,32 @@ def set_user_chat_id(chat_id: int):
     user_chat_id = chat_id
 
 
+def set_session_config(user_id: int, phone: str, key: str, value: Any):
+    """Сохраняет настройки сессии в локальное хранилище"""
+    if user_id not in session_config_store:
+        session_config_store[user_id] = {}
+    if phone not in session_config_store[user_id]:
+        session_config_store[user_id][phone] = {
+            "enabled": False,
+            "task_type": "channels",
+            "bot_category": "regular"
+        }
+    session_config_store[user_id][phone][key] = value
+
+
+def get_session_config(user_id: int, phone: str) -> Dict[str, Any]:
+    """Получает настройки сессии из локального хранилища"""
+    if user_id not in session_config_store:
+        session_config_store[user_id] = {}
+    if phone not in session_config_store[user_id]:
+        session_config_store[user_id][phone] = {
+            "enabled": False,
+            "task_type": "channels",
+            "bot_category": "regular"
+        }
+    return session_config_store[user_id][phone]
+
+
 def get_task_choice_keyboard(user_id: int, phone: str = None) -> InlineKeyboardMarkup:
     """Клавиатура выбора типа заданий (для сессии или глобально)"""
     task_types = {
@@ -94,9 +121,10 @@ def get_task_choice_keyboard(user_id: int, phone: str = None) -> InlineKeyboardM
 
 
 def get_bot_category_keyboard(user_id: int, phone: str = None) -> InlineKeyboardMarkup:
-    """Клавиатура выбора категории ботов (БЕЗ надписи про 100k)"""
+    """Клавиатура выбора категории ботов"""
     if phone:
-        current = user_bot_category.get(user_id, "regular")
+        config = get_session_config(user_id, phone)
+        current = config.get("bot_category", "regular")
         callback_prefix = f"bot_cat_sess_"
         back_callback = f"sess_item_{phone}"
     else:
@@ -132,16 +160,12 @@ def get_bot_settings_keyboard() -> InlineKeyboardMarkup:
 
 
 # ============================================================
-# ШРИФТЫ (С ЛОГИРОВАНИЕМ)
+# ШРИФТЫ (УЛУЧШЕННАЯ ВЕРСИЯ С ПОДДЕРЖКОЙ КИРИЛЛИЦЫ)
 # ============================================================
 
 _font_cache: Dict[int, ImageFont.ImageFont] = {}
-_resolved_font_path: Optional[str] = None
-_font_path_resolved = False
-_scalable_checked = False
-_is_scalable = False
-_font_logged = False
-
+_font_path: Optional[str] = None
+_font_loaded = False
 
 def download_font_from_google(font_name: str = None) -> Optional[str]:
     """Скачивает шрифт с Google Fonts"""
@@ -149,19 +173,17 @@ def download_font_from_google(font_name: str = None) -> Optional[str]:
         font_name = FONT_CHOICE
     
     if font_name not in GOOGLE_FONTS:
-        logging.warning(f"⚠️ Шрифт {font_name} не найден в списке")
         return None
     
     os.makedirs("fonts", exist_ok=True)
     font_path = os.path.join("fonts", f"{font_name}.ttf")
     
     if os.path.exists(font_path):
-        logging.info(f"🔤 Шрифт уже есть: {font_path}")
         return font_path
     
     url = GOOGLE_FONTS[font_name]
     try:
-        logging.info(f"⬇️ Скачиваю шрифт {font_name} из {url}")
+        logging.info(f"⬇️ Скачиваю шрифт {font_name}...")
         urllib.request.urlretrieve(url, font_path)
         logging.info(f"✅ Шрифт скачан: {font_path}")
         return font_path
@@ -170,286 +192,195 @@ def download_font_from_google(font_name: str = None) -> Optional[str]:
     
     return None
 
-
-def _try_truetype(path: str, size: int) -> Optional[ImageFont.FreeTypeFont]:
-    try:
-        return ImageFont.truetype(path, size)
-    except Exception as e:
-        logging.debug(f"Не удалось загрузить {path}: {e}")
-        return None
-
-
-def _resolve_font_path() -> Optional[str]:
-    """Определяет путь к шрифту с логированием"""
-    global _resolved_font_path, _font_path_resolved, _font_logged
+def get_font_path() -> Optional[str]:
+    """Возвращает путь к шрифту с поддержкой кириллицы"""
+    global _font_path, _font_loaded
     
-    if _font_path_resolved:
-        return _resolved_font_path
-
-    logging.info("🔍 Ищу шрифт...")
-
+    if _font_loaded:
+        return _font_path
+    
     # 1. Скачиваем с Google
     google_font = download_font_from_google()
-    if google_font and _try_truetype(google_font, 30):
-        _resolved_font_path = google_font
-        _font_path_resolved = True
-        logging.info(f"✅ Найден шрифт: {google_font}")
-        return _resolved_font_path
-
-    # 2. Локальный файл
-    local_font = os.path.join(os.path.dirname(__file__), "fonts", f"{FONT_CHOICE}.ttf")
-    if os.path.exists(local_font) and _try_truetype(local_font, 30):
-        _resolved_font_path = local_font
-        _font_path_resolved = True
-        logging.info(f"✅ Найден локальный шрифт: {local_font}")
-        return _resolved_font_path
-
-    # 3. Системные пути
-    font_paths = [
-        '/system/fonts/Roboto-Bold.ttf',
-        '/system/fonts/Roboto-Regular.ttf',
-        '/system/fonts/NotoSans-Bold.ttf',
-        '/system/fonts/DroidSans-Bold.ttf',
-        '/system/fonts/SystemFont.ttf',
+    if google_font:
+        try:
+            ImageFont.truetype(google_font, 30)
+            _font_path = google_font
+            _font_loaded = True
+            logging.info(f"✅ Шрифт загружен: {google_font}")
+            return _font_path
+        except Exception as e:
+            logging.warning(f"⚠️ Не удалось загрузить скачанный шрифт: {e}")
+    
+    # 2. Локальные файлы
+    local_fonts = [
+        os.path.join("fonts", f"{FONT_CHOICE}.ttf"),
+        os.path.join("fonts", "inter.ttf"),
+        os.path.join("fonts", "roboto.ttf"),
+        os.path.join("fonts", "DejaVuSans-Bold.ttf"),
+    ]
+    for path in local_fonts:
+        if os.path.exists(path):
+            try:
+                ImageFont.truetype(path, 30)
+                _font_path = path
+                _font_loaded = True
+                logging.info(f"✅ Найден локальный шрифт: {path}")
+                return path
+            except Exception as e:
+                continue
+    
+    # 3. Системные пути с кириллицей
+    system_fonts = [
+        '/System/Library/Fonts/Supplemental/Arial Bold.ttf',
+        '/System/Library/Fonts/Supplemental/Helvetica Bold.ttf',
+        '/System/Library/Fonts/SFProDisplay-Bold.ttf',
         '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf',
         '/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf',
         '/usr/share/fonts/truetype/noto/NotoSans-Bold.ttf',
-        '/data/data/com.termux/files/usr/share/fonts/TTF/DejaVuSans-Bold.ttf',
+        '/usr/share/fonts/truetype/noto/NotoSansCJK-Bold.ttc',
+        '/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc',
         'C:\\Windows\\Fonts\\arialbd.ttf',
         'C:\\Windows\\Fonts\\segoeuib.ttf',
-        '/System/Library/Fonts/Supplemental/Arial Bold.ttf',
+        'C:\\Windows\\Fonts\\timesbd.ttf',
+        '/data/data/com.termux/files/usr/share/fonts/TTF/DejaVuSans-Bold.ttf',
+        '/system/fonts/Roboto-Bold.ttf',
+        '/system/fonts/NotoSans-Bold.ttf',
+        '/system/fonts/DroidSans-Bold.ttf',
     ]
-
-    for path in font_paths:
-        if os.path.exists(path) and _try_truetype(path, 30):
-            _resolved_font_path = path
-            _font_path_resolved = True
-            logging.info(f"✅ Найден системный шрифт: {path}")
-            return _resolved_font_path
-
-    logging.warning("⚠️ НИ ОДИН ШРИФТ НЕ НАЙДЕН! Будет использован стандартный (размытый)")
-    _resolved_font_path = None
-    _font_path_resolved = True
+    
+    for path in system_fonts:
+        if os.path.exists(path):
+            try:
+                ImageFont.truetype(path, 30)
+                _font_path = path
+                _font_loaded = True
+                logging.info(f"✅ Найден системный шрифт: {path}")
+                return path
+            except Exception as e:
+                continue
+    
+    _font_loaded = True
+    logging.warning("⚠️ Шрифт не найден, будет использован стандартный")
     return None
 
-
-def _load_font(size: int) -> ImageFont.ImageFont:
-    """Загружает шрифт нужного размера с логированием"""
-    global _font_logged
-    
-    size = max(1, int(size))
+def load_font(size: int) -> ImageFont.ImageFont:
+    """Загружает шрифт нужного размера с кэшированием"""
     if size in _font_cache:
         return _font_cache[size]
-
-    path = _resolve_font_path()
+    
+    path = get_font_path()
     if path:
         try:
             font = ImageFont.truetype(path, size)
             _font_cache[size] = font
-            if not _font_logged:
-                logging.info(f"✅ Шрифт загружен: {path}, размер {size}")
-                _font_logged = True
             return font
         except Exception as e:
-            logging.error(f"❌ Ошибка загрузки шрифта {path}: {e}")
+            logging.error(f"❌ Ошибка загрузки шрифта: {e}")
     
-    # Fallback
+    # Fallback - используем стандартный
     font = ImageFont.load_default()
     _font_cache[size] = font
-    if not _font_logged:
-        logging.warning(f"⚠️ Использую дефолтный шрифт (размытый). Размер: {size}")
-        _font_logged = True
     return font
 
 
-def _check_font_scalable() -> bool:
-    """Проверяет, масштабируется ли шрифт"""
-    global _scalable_checked, _is_scalable
-    if _scalable_checked:
-        return _is_scalable
+# ============================================================
+# ГЕНЕРАЦИЯ ФОТО (УЛУЧШЕННАЯ)
+# ============================================================
 
-    tmp_img = Image.new('RGB', (10, 10))
-    tmp_draw = ImageDraw.Draw(tmp_img)
+def random_bg_color() -> Tuple[int, int, int]:
+    """Случайный фон"""
+    modes = [
+        (0, 0, 0),      # черный
+        (10, 10, 20),   # темно-синий
+        (20, 10, 10),   # темно-красный
+        (5, 20, 5),     # темно-зеленый
+        (15, 10, 25),   # фиолетовый
+        (25, 20, 10),   # темно-оранжевый
+        (10, 10, 30),   # темно-фиолетовый
+    ]
+    return random.choice(modes)
 
-    f_small = _load_font(30)
-    f_big = _load_font(200)
-
-    w_small = tmp_draw.textbbox((0, 0), "A", font=f_small)[2]
-    w_big = tmp_draw.textbbox((0, 0), "A", font=f_big)[2]
-
-    _is_scalable = w_big > w_small * 1.5
-    _scalable_checked = True
-
-    if not _is_scalable:
-        logging.warning("⚠️ Шрифт НЕ масштабируется (bitmap), будет растровое увеличение")
-    else:
-        logging.info("✅ Шрифт масштабируется (TrueType)")
-
-    return _is_scalable
-
-
-def _fit_font_to_box(
-    draw: ImageDraw.ImageDraw,
-    text: str,
-    max_width: int,
-    max_height: int,
-    min_size: int = 10,
-    max_size: int = 900
-) -> ImageFont.ImageFont:
-    """Бинарный поиск размера шрифта под прямоугольник"""
-    lo, hi = min_size, max_size
-    best_size = min_size
-
-    while lo <= hi:
-        mid = (lo + hi) // 2
-        font = _load_font(mid)
-        bbox = draw.textbbox((0, 0), text, font=font)
-        w = bbox[2] - bbox[0]
-        h = bbox[3] - bbox[1]
-
-        if w <= max_width and h <= max_height:
-            best_size = mid
-            lo = mid + 1
-        else:
-            hi = mid - 1
-
-    logging.info(f"📏 Подобран размер шрифта: {best_size}")
-    return _load_font(best_size)
-
-
-def _color_distance(c1: Tuple[int, int, int], c2: Tuple[int, int, int]) -> float:
-    return sum((a - b) ** 2 for a, b in zip(c1, c2)) ** 0.5
-
-
-def _random_bg_color() -> Tuple[int, int, int]:
-    """Случайный фон: чёрный/тёмный/цветной"""
-    mode = random.choices(
-        ["black", "dark", "colored"],
-        weights=[45, 35, 20],
-        k=1
-    )[0]
-
-    if mode == "black":
-        return (0, 0, 0)
-    elif mode == "dark":
-        return tuple(random.randint(0, 35) for _ in range(3))
-    else:
-        return tuple(random.randint(0, 255) for _ in range(3))
-
-
-def _generate_letter_colors(n: int, bg_color: Tuple[int, int, int]) -> List[Tuple[int, int, int]]:
-    """Генерирует n ярких цветов для букв"""
-    colors = []
-    hue_shift = random.random()
-
-    for i in range(n):
-        base_hue = (i / max(n, 1) + hue_shift) % 1.0
-        hue = (base_hue + random.uniform(-0.03, 0.03)) % 1.0
-        sat = random.uniform(0.85, 1.0)
-        val = random.uniform(0.9, 1.0)
-        rgb = colorsys.hsv_to_rgb(hue, sat, val)
-        color = tuple(int(c * 255) for c in rgb)
-
-        if _color_distance(color, bg_color) < 90:
-            color = tuple(min(255, c + 150) for c in color)
-
-        colors.append(color)
-
-    return colors
-
-
-def _render_text_block(
-    text: str,
-    colors: List[Tuple[int, int, int]],
-    font: ImageFont.ImageFont,
-    padding: int = 6
-) -> Image.Image:
-    """Рендерит текст на прозрачном фоне"""
-    tmp = Image.new('RGBA', (10, 10), (0, 0, 0, 0))
-    tmp_draw = ImageDraw.Draw(tmp)
-    bbox_full = tmp_draw.textbbox((0, 0), text, font=font)
-    w = (bbox_full[2] - bbox_full[0]) + padding * 2
-    h = (bbox_full[3] - bbox_full[1]) + padding * 2
-    w = max(w, 1)
-    h = max(h, 1)
-
-    canvas = Image.new('RGBA', (w, h), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(canvas)
-
-    x_offset = padding - bbox_full[0]
-    y_offset = padding - bbox_full[1]
-
-    x_pos = x_offset
-    for ch, color in zip(text, colors):
-        draw.text((x_pos, y_offset), ch, fill=color + (255,), font=font)
-        ch_bbox = draw.textbbox((0, 0), ch, font=font)
-        x_pos += ch_bbox[2] - ch_bbox[0]
-
-    bbox_content = canvas.getbbox()
-    if bbox_content:
-        canvas = canvas.crop(bbox_content)
-
-    return canvas
-
+def random_text_color(bg: Tuple[int, int, int]) -> Tuple[int, int, int]:
+    """Яркий цвет для текста, контрастный с фоном"""
+    colors = [
+        (255, 255, 255),  # белый
+        (255, 200, 50),   # желтый
+        (50, 200, 255),   # голубой
+        (255, 100, 100),  # красный
+        (100, 255, 100),  # зеленый
+        (255, 150, 255),  # розовый
+        (200, 200, 255),  # светло-синий
+        (255, 200, 150),  # оранжевый
+        (150, 255, 200),  # мятный
+    ]
+    return random.choice(colors)
 
 def generate_bot_image() -> bytes:
-    """Генерирует картинку 1080x1080 с надписью"""
-    logging.info("🖼 Генерация фото...")
-    
+    """Генерирует картинку 1080x1080 с надписью (поддержка кириллицы)"""
     size = 1080
     text = PHOTO_TEXT
-
-    bg_color = _random_bg_color()
-    image = Image.new('RGB', (size, size), bg_color)
-
-    width_ratio = random.uniform(0.75, 0.92)
-    target_width = int(size * width_ratio)
-    logging.info(f"📐 Целевая ширина текста: {target_width}px")
-
-    colors = _generate_letter_colors(len(text), bg_color)
-
-    if _check_font_scalable():
-        tmp_draw = ImageDraw.Draw(image)
-        max_height = int(size * random.uniform(0.30, 0.50))
-        font = _fit_font_to_box(tmp_draw, text, target_width, max_height)
-        text_block = _render_text_block(text, colors, font)
-        logging.info(f"✅ Текст отрендерен через TrueType, размер блока: {text_block.size}")
-    else:
-        base_font = _load_font(60)
-        raw_block = _render_text_block(text, colors, base_font)
-
-        if raw_block.width > 0:
-            scale = target_width / raw_block.width
-        else:
-            scale = 1.0
-
-        new_w = max(1, target_width)
-        new_h = max(1, int(raw_block.height * scale))
-        text_block = raw_block.resize((new_w, new_h), Image.NEAREST)
-        logging.info(f"✅ Текст отрендерен через bitmap+upscale, размер блока: {text_block.size}")
-
-    # Центрируем
-    max_x = max(0, size - text_block.width)
-    max_y = max(0, size - text_block.height)
-    base_x = max_x // 2
-    base_y = max_y // 2
-
-    margin = int(size * 0.02)
-    dx_range = max(0, min(base_x - margin, max_x - base_x - margin))
-    dy_range = max(0, min(base_y - margin, max_y - base_y - margin))
-    dx = random.randint(-dx_range, dx_range) if dx_range > 0 else 0
-    dy = random.randint(-dy_range, dy_range) if dy_range > 0 else 0
-
-    paste_x = min(max(base_x + dx, 0), max_x)
-    paste_y = min(max(base_y + dy, 0), max_y)
-
-    image.paste(text_block, (paste_x, paste_y), text_block)
-
+    
+    # Создаем фон
+    bg = random_bg_color()
+    image = Image.new('RGB', (size, size), bg)
+    draw = ImageDraw.Draw(image)
+    
+    # Подбираем размер шрифта
+    max_width = int(size * 0.85)
+    max_height = int(size * 0.4)
+    
+    font_size = 50
+    best_size = 50
+    
+    for test_size in range(50, 500, 10):
+        try:
+            font = load_font(test_size)
+            bbox = draw.textbbox((0, 0), text, font=font)
+            w = bbox[2] - bbox[0]
+            h = bbox[3] - bbox[1]
+            if w <= max_width and h <= max_height:
+                best_size = test_size
+            else:
+                break
+        except:
+            break
+    
+    font = load_font(best_size)
+    text_color = random_text_color(bg)
+    
+    # Добавляем обводку для читаемости
+    bbox = draw.textbbox((0, 0), text, font=font)
+    tw = bbox[2] - bbox[0]
+    th = bbox[3] - bbox[1]
+    
+    x = (size - tw) // 2 + random.randint(-30, 30)
+    y = (size - th) // 2 + random.randint(-30, 30)
+    
+    # Рисуем тень
+    shadow_color = (0, 0, 0)
+    shadow_offset = max(3, best_size // 30)
+    for dx in range(-shadow_offset, shadow_offset + 1, shadow_offset):
+        for dy in range(-shadow_offset, shadow_offset + 1, shadow_offset):
+            if dx == 0 and dy == 0:
+                continue
+            draw.text((x + dx, y + dy), text, font=font, fill=shadow_color)
+    
+    # Рисуем основной текст
+    draw.text((x, y), text, font=font, fill=text_color)
+    
+    # Добавляем небольшую рамку
+    border_size = max(5, size // 200)
+    draw.rectangle(
+        [border_size, border_size, size - border_size, size - border_size],
+        outline=(255, 255, 255),
+        width=border_size
+    )
+    
+    # Конвертируем в bytes
     img_bytes = io.BytesIO()
     image.save(img_bytes, format='PNG')
     img_bytes.seek(0)
     
-    logging.info(f"✅ Фото сгенерировано, размер: {len(img_bytes.getvalue())} байт")
     return img_bytes.read()
 
 
@@ -463,7 +394,6 @@ def btn_text(btn) -> str:
     except:
         return ""
 
-
 def btn_url(btn) -> Optional[str]:
     try:
         if hasattr(btn, 'url') and btn.url:
@@ -475,13 +405,11 @@ def btn_url(btn) -> Optional[str]:
         pass
     return None
 
-
 def is_tg_url(url: Optional[str]) -> bool:
     if not url:
         return False
     u = url.lower()
     return "t.me/" in u or "telegram.me/" in u
-
 
 def msg_snap(msg) -> str:
     if not msg:
@@ -493,7 +421,6 @@ def msg_snap(msg) -> str:
                 parts.append(btn_text(b))
     return "|".join(parts)
 
-
 def log_buttons(msg, tag: str = ""):
     if not msg or not msg.buttons:
         return
@@ -504,7 +431,6 @@ def log_buttons(msg, tag: str = ""):
             u = btn_url(b)
             logging.info(f"  {tag}[{ri}][{bi}] {t} | '{btn_text(b)}' | url={u}")
 
-
 def find_button(msg, keywords: List[str]):
     if not msg or not msg.buttons:
         return None
@@ -514,7 +440,6 @@ def find_button(msg, keywords: List[str]):
             if any(k in t for k in keywords):
                 return b
     return None
-
 
 def find_all_buttons(msg, keywords: List[str]) -> List[Any]:
     result = []
@@ -542,7 +467,6 @@ async def get_last_msg(client: TelegramClient, bot_username: str):
         logging.error(f"❌ get_last_msg: {e}")
         return None
 
-
 async def wait_bot_response(
     client: TelegramClient,
     bot_username: str,
@@ -557,14 +481,10 @@ async def wait_bot_response(
         if not msg:
             continue
         if msg.id != id_before:
-            logging.info("📨 Бот прислал новое сообщение")
             return msg
         if msg_snap(msg) != snap_before:
-            logging.info("✏️ Бот отредактировал сообщение")
             return msg
-    logging.warning(f"⚠️ Нет ответа за {timeout} сек")
     return await get_last_msg(client, bot_username)
-
 
 async def send_text(
     client: TelegramClient,
@@ -577,10 +497,8 @@ async def send_text(
     before = await get_last_msg(client, bot_username)
     snap = msg_snap(before)
     mid = before.id if before else 0
-    logging.info(f"📤 Текст: '{text}'")
     await client.send_message(bot_username, text)
     return await wait_bot_response(client, bot_username, snap, mid, timeout)
-
 
 async def click_btn(
     client: TelegramClient,
@@ -593,14 +511,12 @@ async def click_btn(
     before = await get_last_msg(client, bot_username)
     snap = msg_snap(before)
     mid = before.id if before else 0
-    logging.info(f"🖱 Кнопка: '{btn_text(btn)}'")
     try:
         await btn.click()
     except Exception as e:
         logging.error(f"❌ click: {e}")
         return None
     return await wait_bot_response(client, bot_username, snap, mid, timeout)
-
 
 async def send_photo(
     client: TelegramClient,
@@ -613,7 +529,6 @@ async def send_photo(
     before = await get_last_msg(client, bot_username)
     snap = msg_snap(before)
     mid = before.id if before else 0
-    logging.info(f"📸 Отправляю фото в {bot_username}")
     try:
         buf = io.BytesIO(photo_bytes)
         buf.name = "bot_farmers.png"
@@ -630,7 +545,6 @@ async def send_photo(
 
 async def subscribe(client: TelegramClient, url: str) -> Tuple[bool, str]:
     try:
-        logging.info(f"📢 Подписываюсь: {url}")
         if not client.is_connected():
             await client.connect()
 
@@ -654,129 +568,94 @@ async def subscribe(client: TelegramClient, url: str) -> Tuple[bool, str]:
                 entity = await client.get_entity(f"@{username}")
                 await client(JoinChannelRequest(entity))
 
-            logging.info(f"✅ Подписался: {url}")
             return True, "success"
 
         return False, f"unknown url format: {url}"
 
     except errors.FloodWaitError as e:
-        logging.error(f"⏳ Flood: {e.seconds} сек")
         return False, f"flood:{e.seconds}"
     except Exception as e:
         err = str(e).lower()
         if "already" in err or "already participant" in err:
-            logging.info("✅ Уже подписан")
             return True, "already"
         if "successfully requested" in err:
-            logging.info("✅ Запрос отправлен")
             return True, "requested"
-        logging.error(f"❌ Ошибка подписки {url}: {e}")
         return False, str(e)
 
 
 # ============================================================
-# ЗАДАНИЯ С БОТАМИ (ИГНОРИРУЕМ КАПЧУ + ПРОПУСК 100k)
+# ЗАДАНИЯ С БОТАМИ
 # ============================================================
 
 async def process_bot_tasks(client: TelegramClient, bot_username: str, msg, user_id: int = None):
-    """
-    Обработка заданий с ботами. Капча игнорируется.
-    """
     try:
-        logging.info("🤖 Обрабатываю задания с ботами...")
-
         if not msg or not msg.buttons:
-            logging.warning("⚠️ Нет кнопок в сообщении")
             return msg
 
-        # Получаем выбранную категорию
-        category = user_bot_category.get(user_id, "regular")
-        logging.info(f"📋 Выбранная категория: {category}")
+        # Получаем категорию из конфига сессии или глобальную
+        if user_id:
+            config = get_session_config(user_id, "")
+            category = config.get("bot_category", "regular")
+        else:
+            category = user_bot_category.get(user_id, "regular")
 
-        # Ключевые слова для поиска категории
         category_keywords = {
             "regular": ["обычные боты"],
             "webapp": ["боты с web app", "web app"],
             "conditions": ["с дополнительными условиями", "с доп. условиями"]
         }
 
-        # Ищем кнопку выбранной категории
         keywords = category_keywords.get(category, ["обычные боты"])
         category_btn = find_button(msg, keywords)
         
         if category_btn:
-            logging.info(f"📋 Нажимаю категорию: '{btn_text(category_btn)}'")
             result = await click_btn(client, bot_username, category_btn, timeout=15)
             if not result:
-                logging.warning("⚠️ Нет ответа после выбора категории")
                 return msg
             if is_captcha_message(result):
-                logging.info("⏭ Пропускаю капчу в категории ботов")
                 return await get_last_msg(client, bot_username)
             msg = result
-        else:
-            logging.info(f"ℹ️ Кнопка категории не найдена, продолжаю с текущим сообщением")
 
-        # Находим все кнопки заданий
         all_task_btns = find_all_buttons(msg, ["перейти в бота"])
         
         if not all_task_btns:
-            logging.warning("⚠️ Не найдены кнопки заданий с ботом")
-            log_buttons(msg, "  ")
             return msg
-
-        logging.info(f"🔗 Найдено заданий: {len(all_task_btns)}")
 
         for task_btn in all_task_btns:
             task_text = btn_text(task_btn)
             
-            # Проверяем 100k (любой вариант написания)
             if re.search(r'100\s*000|100k|100000', task_text, re.IGNORECASE):
-                logging.info(f"⏭ Пропускаю задание 100k: '{task_text}'")
-                # Ищем кнопку чтобы пропустить
                 skip_btn = find_button(msg, ["скрыть", "пропустить", "▶️", "следующий"])
                 if skip_btn:
                     await click_btn(client, bot_username, skip_btn, timeout=5)
                     await asyncio.sleep(1)
                 continue
 
-            logging.info(f"🔗 Нажимаю задание: '{task_text}'")
             result = await click_btn(client, bot_username, task_btn, timeout=15)
             if not result:
-                logging.warning("⚠️ Нет ответа после клика по заданию")
                 continue
             
             if is_captcha_message(result):
-                logging.info("⏭ Пропускаю капчу в задании с ботом")
                 continue
 
             photo_bytes = generate_bot_image()
-            logging.info("✅ Сгенерировано фото")
 
             photo_result = await send_photo(client, bot_username, photo_bytes, timeout=15)
             if not photo_result:
-                logging.warning("⚠️ Нет ответа на отправку фото")
                 continue
 
             if is_captcha_message(photo_result):
-                logging.info("⏭ Пропускаю капчу после отправки фото")
                 continue
 
             await asyncio.sleep(1)
 
             next_btn = find_button(photo_result, ["следующий бот"])
             if next_btn:
-                logging.info("⏭️ Нажимаю 'Следующий бот'...")
-                next_result = await click_btn(client, bot_username, next_btn, timeout=15)
-                if next_result and is_captcha_message(next_result):
-                    logging.info("⏭ Пропускаю капчу после 'Следующий бот'")
-            else:
-                logging.info("✅ Кнопка 'Следующий бот' не найдена, задание завершено")
+                await click_btn(client, bot_username, next_btn, timeout=15)
 
             delay = random.randint(2, 4)
             await asyncio.sleep(delay)
 
-        logging.info("✅ Все задания с ботами обработаны")
         return await get_last_msg(client, bot_username)
 
     except Exception as e:
@@ -808,7 +687,6 @@ def get_task_pairs(msg) -> List[Tuple[Any, Any]]:
 
     return pairs
 
-
 def is_earn_type_menu(msg) -> bool:
     if not msg or not msg.buttons:
         return False
@@ -824,7 +702,6 @@ def is_earn_type_menu(msg) -> bool:
                 return True
     return False
 
-
 def is_captcha_message(msg) -> bool:
     if not msg:
         return False
@@ -833,7 +710,6 @@ def is_captcha_message(msg) -> bool:
         "подтвердите, что вы человек", "captcha", "verify you are human",
         "на какой фотографии изображён", "выберите правильный ответ"
     ])
-
 
 def find_next_page(msg):
     if not msg or not msg.buttons:
@@ -883,7 +759,6 @@ async def send_captcha_to_user(msg, chat_id: int, client: TelegramClient) -> boo
                         BufferedInputFile(file_data, filename="captcha.jpg"),
                         caption="🖼 Выбери правильный ответ"
                     )
-                    logging.info(f"✅ Фото капчи отправлено")
             except Exception as e:
                 logging.error(f"❌ Ошибка отправки фото: {e}")
 
@@ -965,7 +840,6 @@ async def captcha_answer_callback(callback: types.CallbackQuery):
             await callback.message.edit_text(f"❌ Кнопка {number} не найдена")
             return
 
-        logging.info(f"🖱 Нажимаю кнопку {number} в @{bot_username}")
         await target_btn.click()
         
         data['answered'] = True
@@ -1030,16 +904,12 @@ async def captcha_stop_callback(callback: types.CallbackQuery):
 @router.callback_query(lambda c: c.data and c.data.startswith("task_choose_"))
 async def task_choose_callback(callback: types.CallbackQuery):
     try:
-        # Определяем, откуда вызов
         if "_sess_" in callback.data:
-            # Для сессии
             parts = callback.data.split("_")
             task_type = parts[2]
             phone = parts[3]
             user_id = callback.from_user.id
-            from bot import set_session_config
         else:
-            # Глобальный вызов
             task_type = callback.data.replace("task_choose_", "")
             user_id = callback.from_user.id
             phone = None
@@ -1053,11 +923,9 @@ async def task_choose_callback(callback: types.CallbackQuery):
         
         if task_type in task_names:
             if phone:
-                # Сохраняем для сессии
                 set_session_config(user_id, phone, "task_type", task_type)
                 await callback.answer(f"✅ {task_names[task_type]}")
                 
-                # ЕСЛИ ВЫБРАНЫ БОТЫ → ОТКРЫВАЕМ КАТЕГОРИИ
                 if task_type == "bots":
                     await callback.message.edit_text(
                         f"📋 <b>Выбор категории ботов для {phone}</b>\n\n"
@@ -1076,11 +944,9 @@ async def task_choose_callback(callback: types.CallbackQuery):
                         ])
                     )
             else:
-                # Глобальный выбор
                 user_task_choice[user_id] = task_type
                 await callback.answer(f"✅ {task_names[task_type]}")
                 
-                # ЕСЛИ ВЫБРАНЫ БОТЫ → ОТКРЫВАЕМ КАТЕГОРИИ
                 if task_type == "bots":
                     await callback.message.edit_text(
                         f"📋 <b>Выбор категории ботов</b>\n\n"
@@ -1109,13 +975,11 @@ async def task_choose_callback(callback: types.CallbackQuery):
 @router.callback_query(lambda c: c.data and c.data.startswith("bot_cat_"))
 async def bot_category_callback(callback: types.CallbackQuery):
     try:
-        # Определяем, откуда вызов
         if "_sess_" in callback.data:
             parts = callback.data.split("_")
             category = parts[2]
             phone = parts[3]
             user_id = callback.from_user.id
-            from bot import set_session_config
         else:
             category = callback.data.replace("bot_cat_", "")
             user_id = callback.from_user.id
@@ -1198,32 +1062,23 @@ async def process_tasks(
         pairs = get_task_pairs(msg)
 
         if not pairs:
-            logging.warning(f"⚠️ Страница {page}: заданий не найдено")
-            log_buttons(msg, "  ")
             return msg
-
-        logging.info(f"📄 Страница {page}: {len(pairs)} заданий")
 
         for i, (sub_btn, chk_btn) in enumerate(pairs, 1):
             url = btn_url(sub_btn)
             name = btn_text(sub_btn)
-            logging.info(f"\n--- [{i}/{len(pairs)}] '{name}' ---")
-            logging.info(f"URL: {url}")
 
             ok, res = await subscribe(client, url)
             if not ok and res.startswith("flood:"):
                 secs = int(res.split(":")[1])
-                logging.warning(f"⏳ Flood {secs} сек")
                 await asyncio.sleep(min(secs, 300))
 
             await asyncio.sleep(random.uniform(2, 4))
 
-            logging.info(f"⏳ Жду {SUBSCRIBE_DELAY} сек перед проверкой...")
             await asyncio.sleep(SUBSCRIBE_DELAY)
 
             cur_chk = chk_btn
             for attempt in range(1, 4):
-                logging.info(f"🔄 Проверить (попытка {attempt}/3)")
                 result = await click_btn(client, bot_username, cur_chk, timeout=15)
 
                 if not result:
@@ -1237,15 +1092,12 @@ async def process_tasks(
                     return result
 
                 resp = (result.raw_text or "").lower()
-                logging.info(f"📝 Ответ: {resp[:200]}")
 
                 if any(w in resp for w in ["начислено", "успешно", "подписались"]):
-                    logging.info(f"💰 Начислено за '{name}'!")
                     msg = result
                     break
 
                 if "не подписан" in resp:
-                    logging.warning("⚠️ Не засчитано, повторяю...")
                     await subscribe(client, url)
                     await asyncio.sleep(random.uniform(2, 4))
                     await asyncio.sleep(SUBSCRIBE_DELAY)
@@ -1271,13 +1123,11 @@ async def process_tasks(
 
         nxt = find_next_page(msg)
         if nxt:
-            logging.info("➡️ Следующая страница...")
             r = await click_btn(client, bot_username, nxt, timeout=10)
             if r:
                 msg = r
                 continue
 
-        logging.info("✅ Все задания обработаны")
         return msg
 
 
@@ -1291,8 +1141,11 @@ async def do_cycle(
     user_id: int,
     phone: str
 ):
-    task_type = user_task_choice.get(user_id, "channels")
-    logging.info(f"📋 Тип задания: {task_type}")
+    # Получаем тип задания из конфига сессии
+    config = get_session_config(user_id, phone)
+    task_type = config.get("task_type", "channels")
+    
+    logging.info(f"📋 Тип задания: {task_type} (сессия {phone})")
 
     cur = await get_last_msg(client, bot_username)
     if cur and is_captcha_message(cur):
@@ -1301,7 +1154,6 @@ async def do_cycle(
 
     earn_msg = await send_text(client, bot_username, "👨‍💻 Заработать", timeout=15)
     if not earn_msg:
-        logging.warning("⚠️ Нет ответа на Заработать")
         return
     if is_captcha_message(earn_msg):
         await send_captcha_to_user(earn_msg, user_chat_id, client)
@@ -1312,10 +1164,7 @@ async def do_cycle(
         earn_msg = await get_last_msg(client, bot_username)
 
     if not earn_msg or not is_earn_type_menu(earn_msg):
-        logging.warning("⚠️ Не получили меню типов заданий")
         return
-
-    logging.info("✅ Меню типов заданий получено")
 
     if task_type == "channels":
         kw = "подписаться на канал"
@@ -1329,13 +1178,10 @@ async def do_cycle(
     target_btn = find_button(earn_msg, [kw])
 
     if not target_btn:
-        logging.warning(f"⚠️ Кнопка '{kw}' не найдена")
-        log_buttons(earn_msg, "  ")
         return
 
     task_msg = await click_btn(client, bot_username, target_btn, timeout=15)
     if not task_msg:
-        logging.warning("⚠️ Нет ответа после нажатия типа задания")
         return
     if is_captcha_message(task_msg):
         await send_captcha_to_user(task_msg, user_chat_id, client)
@@ -1343,12 +1189,7 @@ async def do_cycle(
 
     if task_type == "channels" or task_type == "groups":
         pairs = get_task_pairs(task_msg)
-        logging.info(f"📋 Найдено заданий: {len(pairs)}")
-
         if not pairs:
-            logging.warning("⚠️ Заданий нет в сообщении:")
-            logging.warning(f"Текст: '{(task_msg.raw_text or '')[:150]}'")
-            log_buttons(task_msg, "  ")
             return
 
         result = await process_tasks(client, bot_username, task_msg, task_type)
@@ -1358,12 +1199,10 @@ async def do_cycle(
     elif task_type == "bots":
         result = await process_bot_tasks(client, bot_username, task_msg, user_id)
         if result and is_captcha_message(result):
-            logging.info("⏭ Капча в заданиях с ботами — игнорирую")
             return
 
     else:
         wait_time = random.randint(8, 15)
-        logging.info(f"👀 Читаю пост {wait_time} сек...")
         await asyncio.sleep(wait_time)
         if task_msg.buttons:
             for row in task_msg.buttons:
@@ -1394,7 +1233,6 @@ def cleanup_session_files(phone: str):
     except:
         pass
 
-
 def _cleanup_wal(sn: str):
     for ext in ("-journal", "-wal", "-shm"):
         p = f"{sn}.session{ext}"
@@ -1403,7 +1241,6 @@ def _cleanup_wal(sn: str):
                 os.remove(p)
             except:
                 pass
-
 
 async def _wal(client: TelegramClient):
     try:
@@ -1416,7 +1253,6 @@ async def _wal(client: TelegramClient):
             conn.execute("PRAGMA busy_timeout=10000")
     except:
         pass
-
 
 async def send_code(phone: str, bot_username: str) -> bool:
     phone = phone.strip()
@@ -1437,16 +1273,13 @@ async def send_code(phone: str, bot_username: str) -> bool:
             await _wal(client)
             if not await client.is_user_authorized():
                 await client.send_code_request(phone)
-                logging.info(f"📱 Код отправлен: {phone}")
             else:
                 logging.info(f"✅ Уже авторизован: {phone}")
             active_clients[phone] = client
             return True
         except errors.FloodWaitError as e:
-            logging.error(f"⏳ Flood: {e.seconds}")
             return False
         except errors.PhoneNumberInvalidError:
-            logging.error("❌ Неверный номер")
             return False
         except sqlite3.OperationalError as e:
             if "database is locked" in str(e):
@@ -1457,8 +1290,6 @@ async def send_code(phone: str, bot_username: str) -> bool:
         except Exception as e:
             logging.error(f"❌ send_code: {e}")
             return False
-    return await send_code(phone, bot_username)
-
 
 async def start_gram_bot(
     phone: str, code: str, bot_username: str, chat_id: int = None
@@ -1486,19 +1317,14 @@ async def start_gram_bot(
             if not client.is_connected():
                 await client.connect()
             if await client.is_user_authorized():
-                logging.info(f"✅ Уже авторизован: {phone}")
                 return True
             await client.sign_in(phone, code)
-            logging.info(f"✅ Авторизован: {phone}")
             return True
         except errors.SessionPasswordNeededError:
-            logging.error("❌ 2FA")
             return False
         except errors.PhoneCodeInvalidError:
-            logging.error("❌ Неверный код")
             return False
         except errors.PhoneCodeExpiredError:
-            logging.error("❌ Код истёк")
             return False
         except sqlite3.OperationalError as e:
             if "database is locked" in str(e):
@@ -1509,8 +1335,6 @@ async def start_gram_bot(
         except Exception as e:
             logging.error(f"❌ start_gram_bot: {e}")
             return False
-    return await start_gram_bot(phone, code, bot_username, chat_id)
-
 
 async def start_gram_worker(
     client: TelegramClient, bot_username: str,
@@ -1520,7 +1344,6 @@ async def start_gram_worker(
         set_user_chat_id(user_id)
 
     if not client.is_connected():
-        logging.info(f"🔄 Подключаюсь к сессии {phone}...")
         try:
             await client.connect()
         except Exception as e:
@@ -1534,11 +1357,9 @@ async def start_gram_worker(
                 )
                 await new_client.connect()
                 if await new_client.is_user_authorized():
-                    logging.info(f"✅ Клиент пересоздан для {phone}")
                     client = new_client
                     active_clients[phone] = client
                 else:
-                    logging.error(f"❌ Клиент не авторизован: {phone}")
                     return None
             except Exception as e2:
                 logging.error(f"❌ Ошибка пересоздания клиента: {e2}")
@@ -1546,7 +1367,6 @@ async def start_gram_worker(
 
     try:
         if not await client.is_user_authorized():
-            logging.warning(f"⚠️ Клиент {phone} не авторизован")
             return None
     except Exception as e:
         logging.error(f"❌ Ошибка проверки авторизации: {e}")
@@ -1557,7 +1377,6 @@ async def start_gram_worker(
     active_tasks[phone] = task
     logging.info(f"✅ Воркер запущен: {phone}")
     return task
-
 
 async def stop_gram_bot(phone: Optional[str] = None) -> bool:
     if phone and phone in active_tasks:
@@ -1573,14 +1392,12 @@ async def stop_gram_bot(phone: Optional[str] = None) -> bool:
         return True
     return False
 
-
 async def continue_gram_bot(phone: str) -> bool:
     if phone in active_clients and phone in bot_username_for_task:
         client = active_clients[phone]
         bot_username = bot_username_for_task[phone]
 
         if not client.is_connected():
-            logging.info(f"🔄 Переподключаюсь к {phone}...")
             try:
                 await client.connect()
             except Exception as e:
@@ -1594,11 +1411,9 @@ async def continue_gram_bot(phone: str) -> bool:
                     )
                     await new_client.connect()
                     if await new_client.is_user_authorized():
-                        logging.info(f"✅ Клиент пересоздан для {phone}")
                         client = new_client
                         active_clients[phone] = client
                     else:
-                        logging.error(f"❌ Клиент не авторизован: {phone}")
                         return False
                 except Exception as e2:
                     logging.error(f"❌ Ошибка пересоздания: {e2}")
@@ -1606,7 +1421,6 @@ async def continue_gram_bot(phone: str) -> bool:
 
         try:
             if not await client.is_user_authorized():
-                logging.error(f"❌ Клиент {phone} не авторизован")
                 return False
         except Exception as e:
             logging.error(f"❌ Ошибка проверки авторизации: {e}")
@@ -1629,7 +1443,6 @@ async def run_gram_worker(client: TelegramClient, bot_username: str, phone: str)
         logging.info(f"🚀 Старт: {bot_username} | задержка: {SUBSCRIBE_DELAY} сек")
 
         if not client.is_connected():
-            logging.info("🔄 Подключаюсь...")
             await client.connect()
 
         if not await client.is_user_authorized():
@@ -1649,18 +1462,15 @@ async def run_gram_worker(client: TelegramClient, bot_username: str, phone: str)
         cycle = 0
         while True:
             if phone not in active_tasks:
-                logging.info(f"⏹ Воркер {phone} остановлен извне")
                 break
 
             cycle += 1
             logging.info(f"\n{'='*50}\n🔁 ЦИКЛ #{cycle}\n{'='*50}")
 
             if not client.is_connected():
-                logging.warning("⚠️ Клиент отключен, переподключаю...")
                 try:
                     await client.connect()
                     if not await client.is_user_authorized():
-                        logging.error(f"❌ Клиент не авторизован после переподключения")
                         break
                 except Exception as e:
                     logging.error(f"❌ Ошибка переподключения: {e}")
@@ -1669,7 +1479,6 @@ async def run_gram_worker(client: TelegramClient, bot_username: str, phone: str)
             try:
                 await do_cycle(client, bot_username, user_chat_id, phone)
             except asyncio.CancelledError:
-                logging.info(f"⏹ Цикл {phone} отменён")
                 break
             except Exception as e:
                 logging.error(f"❌ Ошибка цикла: {e}")
@@ -1709,5 +1518,6 @@ __all__ = [
     'start_gram_worker', 'stop_gram_bot', 'continue_gram_bot',
     'set_user_chat_id', 'set_bot_instance', 'get_task_choice_keyboard',
     'get_bot_category_keyboard', 'get_bot_settings_keyboard',
-    'active_clients', 'active_tasks'
-]
+    'active_clients', 'active_tasks',
+    'set_session_config', 'get_session_config'
+        ]
