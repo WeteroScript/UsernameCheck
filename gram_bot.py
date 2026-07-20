@@ -185,7 +185,6 @@ def download_font_from_google(font_name: str = None) -> Optional[str]:
     try:
         logging.info(f"⬇️ Скачиваю шрифт {font_name}...")
         urllib.request.urlretrieve(url, font_path)
-        logging.info(f"✅ Шрифт скачан: {font_path}")
         return font_path
     except Exception as e:
         logging.error(f"❌ Ошибка скачивания шрифта: {e}")
@@ -202,14 +201,9 @@ def get_font_path() -> Optional[str]:
     # 1. Скачиваем с Google
     google_font = download_font_from_google()
     if google_font:
-        try:
-            ImageFont.truetype(google_font, 30)
-            _font_path = google_font
-            _font_loaded = True
-            logging.info(f"✅ Шрифт загружен: {google_font}")
-            return _font_path
-        except Exception as e:
-            logging.warning(f"⚠️ Не удалось загрузить скачанный шрифт: {e}")
+        _font_path = google_font
+        _font_loaded = True
+        return _font_path
     
     # 2. Локальные файлы
     local_fonts = [
@@ -224,9 +218,8 @@ def get_font_path() -> Optional[str]:
                 ImageFont.truetype(path, 30)
                 _font_path = path
                 _font_loaded = True
-                logging.info(f"✅ Найден локальный шрифт: {path}")
                 return path
-            except Exception as e:
+            except:
                 continue
     
     # 3. Системные пути с кириллицей
@@ -254,13 +247,11 @@ def get_font_path() -> Optional[str]:
                 ImageFont.truetype(path, 30)
                 _font_path = path
                 _font_loaded = True
-                logging.info(f"✅ Найден системный шрифт: {path}")
                 return path
-            except Exception as e:
+            except:
                 continue
     
     _font_loaded = True
-    logging.warning("⚠️ Шрифт не найден, будет использован стандартный")
     return None
 
 def load_font(size: int) -> ImageFont.ImageFont:
@@ -290,13 +281,11 @@ def load_font(size: int) -> ImageFont.ImageFont:
 def random_bg_color() -> Tuple[int, int, int]:
     """Случайный фон"""
     modes = [
-        (0, 0, 0),      # черный
-        (10, 10, 20),   # темно-синий
-        (20, 10, 10),   # темно-красный
-        (5, 20, 5),     # темно-зеленый
-        (15, 10, 25),   # фиолетовый
-        (25, 20, 10),   # темно-оранжевый
-        (10, 10, 30),   # темно-фиолетовый
+        (0, 0, 0),  # черный
+        (10, 10, 20),  # темно-синий
+        (20, 10, 10),  # темно-красный
+        (5, 20, 5),  # темно-зеленый
+        (15, 10, 25),  # фиолетовый
     ]
     return random.choice(modes)
 
@@ -311,7 +300,6 @@ def random_text_color(bg: Tuple[int, int, int]) -> Tuple[int, int, int]:
         (255, 150, 255),  # розовый
         (200, 200, 255),  # светло-синий
         (255, 200, 150),  # оранжевый
-        (150, 255, 200),  # мятный
     ]
     return random.choice(colors)
 
@@ -367,14 +355,6 @@ def generate_bot_image() -> bytes:
     
     # Рисуем основной текст
     draw.text((x, y), text, font=font, fill=text_color)
-    
-    # Добавляем небольшую рамку
-    border_size = max(5, size // 200)
-    draw.rectangle(
-        [border_size, border_size, size - border_size, size - border_size],
-        outline=(255, 255, 255),
-        width=border_size
-    )
     
     # Конвертируем в bytes
     img_bytes = io.BytesIO()
@@ -1520,4 +1500,4 @@ __all__ = [
     'get_bot_category_keyboard', 'get_bot_settings_keyboard',
     'active_clients', 'active_tasks',
     'set_session_config', 'get_session_config'
-        ]
+    ]
