@@ -991,8 +991,8 @@ async def task_choose_callback(callback: types.CallbackQuery):
     try:
         if "_sess_" in callback.data:
             parts = callback.data.split("_")
-            task_type = parts[2]
-            phone = parts[3]
+            task_type = parts[3]
+            phone = parts[4]
             user_id = callback.from_user.id
         else:
             task_type = callback.data.replace("task_choose_", "")
@@ -1058,8 +1058,8 @@ async def bot_category_callback(callback: types.CallbackQuery):
     try:
         if "_sess_" in callback.data:
             parts = callback.data.split("_")
-            category = parts[2]
-            phone = parts[3]
+            category = parts[3]
+            phone = parts[4]
             user_id = callback.from_user.id
         else:
             category = callback.data.replace("bot_cat_", "")
