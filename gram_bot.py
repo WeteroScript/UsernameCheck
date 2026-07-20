@@ -1,6 +1,5 @@
 """
 Модуль для Gram ботов (PR GRAM | DRAGON)
-С поддержкой выбора категории ботов и игнорированием 100k заданий
 """
 
 import asyncio
@@ -101,7 +100,7 @@ def get_bot_category_keyboard(user_id: int) -> InlineKeyboardMarkup:
 
 
 def get_bot_settings_keyboard() -> InlineKeyboardMarkup:
-    """Настройки бота: сессии для работы / сменить бота / тип заданий / категория ботов / назад"""
+    """Настройки бота"""
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📋 Сессии для работы", callback_data="gram_sessions")],
         [InlineKeyboardButton(text="🔄 Сменить бота", callback_data="gram_change_bot")],
@@ -654,12 +653,12 @@ async def subscribe(client: TelegramClient, url: str) -> Tuple[bool, str]:
 
 
 # ============================================================
-# ЗАДАНИЯ С БОТАМИ (С ВЫБОРОМ КАТЕГОРИИ И ИГНОРИРОВАНИЕМ 100k)
+# ЗАДАНИЯ С БОТАМИ (ИГНОРИРУЕМ КАПЧУ)
 # ============================================================
 
 async def process_bot_tasks(client: TelegramClient, bot_username: str, msg, user_id: int = None):
     """
-    Обработка заданий с ботами с выбором категории и игнорированием 100k
+    Обработка заданий с ботами. Капча игнорируется.
     """
     try:
         logging.info("🤖 Обрабатываю задания с ботами...")
@@ -689,9 +688,10 @@ async def process_bot_tasks(client: TelegramClient, bot_username: str, msg, user
             if not result:
                 logging.warning("⚠️ Нет ответа после выбора категории")
                 return msg
+            # Игнорируем капчу
             if is_captcha_message(result):
-                await send_captcha_to_user(result, user_chat_id, client)
-                return result
+                logging.info("⏭ Пропускаю капчу в категории ботов")
+                return await get_last_msg(client, bot_username)
             msg = result
         else:
             logging.info(f"ℹ️ Кнопка категории не найдена, продолжаю с текущим сообщением")
@@ -725,8 +725,10 @@ async def process_bot_tasks(client: TelegramClient, bot_username: str, msg, user
             if not result:
                 logging.warning("⚠️ Нет ответа после клика по заданию")
                 continue
+            
+            # Игнорируем капчу
             if is_captcha_message(result):
-                await send_captcha_to_user(result, user_chat_id, client)
+                logging.info("⏭ Пропускаю капчу в задании с ботом")
                 continue
 
             # Генерируем и отправляем фото
@@ -738,8 +740,9 @@ async def process_bot_tasks(client: TelegramClient, bot_username: str, msg, user
                 logging.warning("⚠️ Нет ответа на отправку фото")
                 continue
 
+            # Игнорируем капчу после фото
             if is_captcha_message(photo_result):
-                await send_captcha_to_user(photo_result, user_chat_id, client)
+                logging.info("⏭ Пропускаю капчу после отправки фото")
                 continue
 
             await asyncio.sleep(1)
@@ -748,7 +751,10 @@ async def process_bot_tasks(client: TelegramClient, bot_username: str, msg, user
             next_btn = find_button(photo_result, ["следующий бот"])
             if next_btn:
                 logging.info("⏭️ Нажимаю 'Следующий бот'...")
-                await click_btn(client, bot_username, next_btn, timeout=15)
+                next_result = await click_btn(client, bot_username, next_btn, timeout=15)
+                # Игнорируем капчу после нажатия "Следующий бот"
+                if next_result and is_captcha_message(next_result):
+                    logging.info("⏭ Пропускаю капчу после 'Следующий бот'")
             else:
                 logging.info("✅ Кнопка 'Следующий бот' не найдена, задание завершено")
 
@@ -826,7 +832,7 @@ def find_next_page(msg):
 
 
 # ============================================================
-# КАПЧА
+# КАПЧА С КНОПКАМИ 1-9 (ПРАВИЛЬНАЯ ОБРАБОТКА)
 # ============================================================
 
 async def send_captcha_to_user(msg, chat_id: int, client: TelegramClient) -> bool:
@@ -838,9 +844,15 @@ async def send_captcha_to_user(msg, chat_id: int, client: TelegramClient) -> boo
         except:
             bu = "gram_prbot"
 
-        captcha_storage[chat_id] = {'client': client, 'bot_username': bu, 'msg_id': msg.id}
+        # Сохраняем данные капчи для ответа
+        captcha_storage[chat_id] = {
+            'client': client,
+            'bot_username': bu,
+            'msg_id': msg.id,
+            'answered': False
+        }
 
-        text = f"🚨 <b>Обнаружена капча!</b>\n\n"
+        text = f"🧩 <b>Капча!</b>\n\n"
         text += f"🤖 Бот: @{bu}\n\n"
         if msg.raw_text:
             text += f"📝 {msg.raw_text}\n\n"
@@ -848,6 +860,7 @@ async def send_captcha_to_user(msg, chat_id: int, client: TelegramClient) -> boo
 
         await bot_instance.send_message(chat_id, text, parse_mode=ParseMode.HTML)
 
+        # Отправляем фото (если есть)
         if msg.photo:
             try:
                 file_data = await client.download_media(msg, file=bytes)
@@ -861,6 +874,7 @@ async def send_captcha_to_user(msg, chat_id: int, client: TelegramClient) -> boo
             except Exception as e:
                 logging.error(f"❌ Ошибка отправки фото: {e}")
 
+        # Кнопки 1-9
         buttons = []
         row = []
         for i in range(1, 10):
@@ -892,8 +906,244 @@ async def send_captcha_to_user(msg, chat_id: int, client: TelegramClient) -> boo
         return False
 
 
+@router.callback_query(lambda c: c.data and c.data.startswith("captcha_answer_"))
+async def captcha_answer_callback(callback: types.CallbackQuery):
+    """Пользователь выбрал номер → бот нажимает кнопку в Gram боте"""
+    try:
+        parts = callback.data.split("_")
+        chat_id = int(parts[2])
+        number = parts[3]
+
+        await callback.answer(f"✅ Выбрано: {number}")
+
+        if chat_id not in captcha_storage:
+            await callback.message.edit_text("❌ Капча не найдена")
+            return
+
+        data = captcha_storage[chat_id]
+        client = data['client']
+        bot_username = data['bot_username']
+        msg_id = data['msg_id']
+
+        if data.get('answered', False):
+            await callback.message.edit_text("⏳ Капча уже обработана")
+            return
+
+        if not client:
+            await callback.message.edit_text("❌ Клиент не найден")
+            return
+
+        if not client.is_connected():
+            await client.connect()
+
+        # Получаем сообщение с капчей
+        msg = await client.get_messages(bot_username, ids=msg_id)
+        if not msg or not msg.buttons:
+            await callback.message.edit_text("❌ Сообщение с капчей не найдено")
+            return
+
+        # Ищем кнопку с нужным номером
+        target_btn = None
+        for row in msg.buttons:
+            for btn in row:
+                if btn_text(btn) == number:
+                    target_btn = btn
+                    break
+            if target_btn:
+                break
+
+        if not target_btn:
+            await callback.message.edit_text(f"❌ Кнопка {number} не найдена")
+            return
+
+        # НАЖИМАЕМ КНОПКУ В GRAM БОТЕ
+        logging.info(f"🖱 Нажимаю кнопку {number} в @{bot_username}")
+        await target_btn.click()
+        
+        data['answered'] = True
+        await callback.message.edit_text(f"✅ Нажата кнопка {number} в @{bot_username}")
+
+        # Проверяем результат
+        await asyncio.sleep(2)
+        new_msg = await client.get_messages(bot_username, limit=1)
+
+        if new_msg and not is_captcha_message(new_msg):
+            await callback.message.edit_text("✅ Капча пройдена!")
+            del captcha_storage[chat_id]
+            phone = next((p for p, c in active_clients.items() if c == client), None)
+            if phone:
+                await continue_gram_bot(phone)
+        else:
+            await callback.message.edit_text(f"⏳ Кнопка {number} нажата, капча еще активна. Попробуй другой номер.")
+
+    except Exception as e:
+        logging.error(f"❌ captcha_answer: {e}")
+        await callback.answer(f"❌ Ошибка: {e}")
+
+
+@router.callback_query(lambda c: c.data and c.data.startswith("captcha_check_"))
+async def captcha_check_callback(callback: types.CallbackQuery):
+    try:
+        chat_id = int(callback.data.split("_")[2])
+        await callback.answer("🔄")
+        if chat_id not in captcha_storage:
+            await callback.message.edit_text("✅ Капча пройдена!")
+            return
+        data = captcha_storage[chat_id]
+        client = data['client']
+        bot_username = data['bot_username']
+        new_msg = await get_last_msg(client, bot_username)
+        if new_msg and not is_captcha_message(new_msg):
+            await callback.message.edit_text("✅ Капча пройдена!")
+            del captcha_storage[chat_id]
+            phone = next((p for p, c in active_clients.items() if c == client), None)
+            if phone:
+                await continue_gram_bot(phone)
+        else:
+            await callback.message.edit_text("⏳ Капча ещё активна")
+    except Exception as e:
+        logging.error(f"❌ captcha_check: {e}")
+
+
+@router.callback_query(lambda c: c.data and c.data.startswith("captcha_stop_"))
+async def captcha_stop_callback(callback: types.CallbackQuery):
+    try:
+        chat_id = int(callback.data.split("_")[2])
+        captcha_storage.pop(chat_id, None)
+        await callback.answer("⏹")
+        await callback.message.edit_text("⏹ Остановлен")
+    except Exception as e:
+        logging.error(f"❌ captcha_stop: {e}")
+
+
 # ============================================================
-# ОБРАБОТКА ЗАДАНИЙ
+# ВЫБОР ТИПА ЗАДАНИЙ (БОТЫ -> СРАЗУ КАТЕГОРИЯ)
+# ============================================================
+
+@router.callback_query(lambda c: c.data and c.data.startswith("task_choose_"))
+async def task_choose_callback(callback: types.CallbackQuery):
+    try:
+        task_type = callback.data.replace("task_choose_", "")
+        user_id = callback.from_user.id
+        task_names = {
+            "channels": "📢 Подписка на каналы",
+            "groups": "👥 Вступление в группы",
+            "posts": "📱 Просмотр постов",
+            "bots": "🤖 Задания с ботами"
+        }
+        if task_type in task_names:
+            user_task_choice[user_id] = task_type
+            
+            # Если выбраны "боты" — сразу открываем выбор категории
+            if task_type == "bots":
+                await callback.answer(f"✅ {task_names[task_type]}")
+                # Открываем меню выбора категории ботов
+                await callback.message.edit_text(
+                    "📋 <b>Выбор категории ботов</b>\n\n"
+                    "Выберите категорию для заданий с ботами:\n\n"
+                    "🤖 Обычные боты — стандартные задания\n"
+                    "🌐 Боты с Web App — задания с веб-приложениями\n"
+                    "📋 С доп. условиями — задания с условиями (100k GRAM пропускаются)",
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=get_bot_category_keyboard(user_id)
+                )
+            else:
+                await callback.answer(f"✅ {task_names[task_type]}")
+                await callback.message.edit_text(
+                    f"✅ <b>Выбран тип заданий:</b>\n\n"
+                    f"{task_names[task_type]}\n\n"
+                    f"Тип будет использован при следующем запуске.",
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                        [InlineKeyboardButton(text="📋 Изменить тип", callback_data="gram_task_type")],
+                        [InlineKeyboardButton(text="⬅️ Назад", callback_data="bot_prgramm_settings")],
+                    ])
+                )
+        else:
+            await callback.answer("❌ Неизвестный тип")
+    except Exception as e:
+        logging.error(f"❌ task_choose: {e}")
+        await callback.answer("❌ Ошибка")
+
+
+@router.callback_query(lambda c: c.data and c.data == "gram_task_type")
+async def gram_task_type_callback(callback: types.CallbackQuery):
+    try:
+        user_id = callback.from_user.id
+        await callback.answer()
+        current = user_task_choice.get(user_id, "channels")
+        task_names = {
+            "channels": "📢 Подписка на каналы",
+            "groups": "👥 Вступление в группы",
+            "posts": "📱 Просмотр постов",
+            "bots": "🤖 Задания с ботами"
+        }
+        await callback.message.edit_text(
+            f"📋 <b>Выбор типа заданий</b>\n\n"
+            f"Текущий тип: <b>{task_names.get(current, current)}</b>\n\n"
+            f"Выберите тип заданий для автоматического выполнения:",
+            parse_mode=ParseMode.HTML,
+            reply_markup=get_task_choice_keyboard(user_id)
+        )
+    except Exception as e:
+        logging.error(f"❌ gram_task_type_callback: {e}")
+        await callback.answer("❌ Ошибка")
+
+
+@router.callback_query(lambda c: c.data and c.data.startswith("bot_cat_"))
+async def bot_category_callback(callback: types.CallbackQuery):
+    """Выбор категории ботов"""
+    try:
+        category = callback.data.replace("bot_cat_", "")
+        user_id = callback.from_user.id
+        
+        user_bot_category[user_id] = category
+        
+        cat_names = {
+            "regular": "Обычные боты",
+            "webapp": "Боты с Web App",
+            "conditions": "С дополнительными условиями"
+        }
+        
+        await callback.answer(f"✅ Выбрано: {cat_names.get(category, category)}")
+        
+        # Возвращаемся в настройки с подтверждением
+        await callback.message.edit_text(
+            f"✅ <b>Выбрана категория ботов:</b>\n{cat_names.get(category, category)}\n\n"
+            f"Категория будет использована при выполнении заданий с ботами.",
+            parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="📋 Изменить категорию", callback_data="gram_bot_category")],
+                [InlineKeyboardButton(text="⬅️ Назад", callback_data="bot_prgramm_settings")]
+            ])
+        )
+    except Exception as e:
+        logging.error(f"❌ bot_category_callback: {e}")
+        await callback.answer("❌ Ошибка")
+
+
+@router.callback_query(lambda c: c.data and c.data == "gram_bot_category")
+async def gram_bot_category_callback(callback: types.CallbackQuery):
+    """Меню выбора категории ботов"""
+    try:
+        user_id = callback.from_user.id
+        await callback.answer()
+        await callback.message.edit_text(
+            "📋 <b>Выбор категории ботов</b>\n\n"
+            "Выберите категорию для заданий с ботами:\n\n"
+            "🤖 Обычные боты — стандартные задания\n"
+            "🌐 Боты с Web App — задания с веб-приложениями\n"
+            "📋 С доп. условиями — задания с условиями",
+            parse_mode=ParseMode.HTML,
+            reply_markup=get_bot_category_keyboard(user_id)
+        )
+    except Exception as e:
+        logging.error(f"❌ gram_bot_category_callback: {e}")
+        await callback.answer("❌ Ошибка")
+
+
+# ============================================================
+# ОБРАБОТКА ЗАДАНИЙ (КАНАЛЫ/ГРУППЫ)
 # ============================================================
 
 async def process_tasks(
@@ -903,7 +1153,7 @@ async def process_tasks(
     task_type: str = "channels"
 ):
     if task_type == "bots":
-        return msg  # bots обрабатываются отдельно в do_cycle
+        return msg
 
     page = 0
 
@@ -1073,8 +1323,10 @@ async def do_cycle(
 
     elif task_type == "bots":
         result = await process_bot_tasks(client, bot_username, task_msg, user_id)
+        # Для ботов — игнорируем капчу, не отправляем пользователю
         if result and is_captcha_message(result):
-            await send_captcha_to_user(result, user_chat_id, client)
+            logging.info("⏭ Капча в заданиях с ботами — игнорирую")
+            return
 
     else:
         # Просмотр постов
@@ -1090,198 +1342,6 @@ async def do_cycle(
                         if r and is_captcha_message(r):
                             await send_captcha_to_user(r, user_chat_id, client)
                         return
-
-
-# ============================================================
-# CALLBACKS
-# ============================================================
-
-@router.callback_query(lambda c: c.data and c.data.startswith("captcha_check_"))
-async def captcha_check_callback(callback: types.CallbackQuery):
-    try:
-        chat_id = int(callback.data.split("_")[2])
-        await callback.answer("🔄")
-        if chat_id not in captcha_storage:
-            await callback.message.edit_text("✅ Капча пройдена!")
-            return
-        data = captcha_storage[chat_id]
-        client = data['client']
-        bot_username = data['bot_username']
-        new_msg = await get_last_msg(client, bot_username)
-        if new_msg and not is_captcha_message(new_msg):
-            await callback.message.edit_text("✅ Капча пройдена!")
-            del captcha_storage[chat_id]
-            phone = next((p for p, c in active_clients.items() if c == client), None)
-            if phone:
-                await continue_gram_bot(phone)
-        else:
-            await callback.message.edit_text("⏳ Капча ещё активна")
-    except Exception as e:
-        logging.error(f"❌ captcha_check: {e}")
-
-
-@router.callback_query(lambda c: c.data and c.data.startswith("captcha_stop_"))
-async def captcha_stop_callback(callback: types.CallbackQuery):
-    try:
-        chat_id = int(callback.data.split("_")[2])
-        captcha_storage.pop(chat_id, None)
-        await callback.answer("⏹")
-        await callback.message.edit_text("⏹ Остановлен")
-    except Exception as e:
-        logging.error(f"❌ captcha_stop: {e}")
-
-
-@router.callback_query(lambda c: c.data and c.data.startswith("captcha_answer_"))
-async def captcha_answer_callback(callback: types.CallbackQuery):
-    try:
-        parts = callback.data.split("_")
-        chat_id = int(parts[2])
-        number = parts[3]
-
-        await callback.answer(f"✅ Выбрано: {number}")
-
-        if chat_id not in captcha_storage:
-            await callback.message.edit_text("❌ Капча не найдена")
-            return
-
-        data = captcha_storage[chat_id]
-        client = data['client']
-        bot_username = data['bot_username']
-
-        if not client.is_connected():
-            await client.connect()
-
-        msg = await client.get_messages(bot_username, ids=data.get('msg_id', 0))
-        if msg and msg.buttons:
-            for row in msg.buttons:
-                for btn in row:
-                    if btn_text(btn) == number:
-                        await btn.click()
-                        await asyncio.sleep(2)
-                        break
-                else:
-                    continue
-                break
-
-        new_msg = await get_last_msg(client, bot_username)
-
-        if new_msg and not is_captcha_message(new_msg):
-            await callback.message.edit_text("✅ Капча пройдена!")
-            del captcha_storage[chat_id]
-            phone = next((p for p, c in active_clients.items() if c == client), None)
-            if phone:
-                await continue_gram_bot(phone)
-        else:
-            await callback.message.edit_text(f"⏳ Отправлено {number}, капча ещё активна")
-
-    except Exception as e:
-        logging.error(f"❌ captcha_answer: {e}")
-        await callback.answer(f"❌ Ошибка: {e}")
-
-
-@router.callback_query(lambda c: c.data and c.data.startswith("task_choose_"))
-async def task_choose_callback(callback: types.CallbackQuery):
-    try:
-        task_type = callback.data.replace("task_choose_", "")
-        user_id = callback.from_user.id
-        task_names = {
-            "channels": "📢 Подписка на каналы",
-            "groups": "👥 Вступление в группы",
-            "posts": "📱 Просмотр постов",
-            "bots": "🤖 Задания с ботами"
-        }
-        if task_type in task_names:
-            user_task_choice[user_id] = task_type
-            await callback.answer(f"✅ {task_names[task_type]}")
-            await callback.message.edit_text(
-                f"✅ <b>Выбран тип заданий:</b>\n\n"
-                f"{task_names[task_type]}\n\n"
-                f"Тип будет использован при следующем запуске.",
-                parse_mode=ParseMode.HTML,
-                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                    [InlineKeyboardButton(text="📋 Изменить тип", callback_data="gram_task_type")],
-                    [InlineKeyboardButton(text="⬅️ Назад", callback_data="bot_prgramm_settings")],
-                ])
-            )
-        else:
-            await callback.answer("❌ Неизвестный тип")
-    except Exception as e:
-        logging.error(f"❌ task_choose: {e}")
-        await callback.answer("❌ Ошибка")
-
-
-@router.callback_query(lambda c: c.data and c.data == "gram_task_type")
-async def gram_task_type_callback(callback: types.CallbackQuery):
-    try:
-        user_id = callback.from_user.id
-        await callback.answer()
-        current = user_task_choice.get(user_id, "channels")
-        task_names = {
-            "channels": "📢 Подписка на каналы",
-            "groups": "👥 Вступление в группы",
-            "posts": "📱 Просмотр постов",
-            "bots": "🤖 Задания с ботами"
-        }
-        await callback.message.edit_text(
-            f"📋 <b>Выбор типа заданий</b>\n\n"
-            f"Текущий тип: <b>{task_names.get(current, current)}</b>\n\n"
-            f"Выберите тип заданий для автоматического выполнения:",
-            parse_mode=ParseMode.HTML,
-            reply_markup=get_task_choice_keyboard(user_id)
-        )
-    except Exception as e:
-        logging.error(f"❌ gram_task_type_callback: {e}")
-        await callback.answer("❌ Ошибка")
-
-
-@router.callback_query(lambda c: c.data and c.data.startswith("bot_cat_"))
-async def bot_category_callback(callback: types.CallbackQuery):
-    """Выбор категории ботов"""
-    try:
-        category = callback.data.replace("bot_cat_", "")
-        user_id = callback.from_user.id
-        
-        user_bot_category[user_id] = category
-        
-        cat_names = {
-            "regular": "Обычные боты",
-            "webapp": "Боты с Web App",
-            "conditions": "С дополнительными условиями"
-        }
-        
-        await callback.answer(f"✅ Выбрано: {cat_names.get(category, category)}")
-        await callback.message.edit_text(
-            f"✅ <b>Выбрана категория ботов:</b>\n{cat_names.get(category, category)}\n\n"
-            f"Категория будет использована при выполнении заданий с ботами.",
-            parse_mode=ParseMode.HTML,
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="📋 Изменить категорию", callback_data="gram_bot_category")],
-                [InlineKeyboardButton(text="⬅️ Назад", callback_data="bot_prgramm_settings")]
-            ])
-        )
-    except Exception as e:
-        logging.error(f"❌ bot_category_callback: {e}")
-        await callback.answer("❌ Ошибка")
-
-
-@router.callback_query(lambda c: c.data and c.data == "gram_bot_category")
-async def gram_bot_category_callback(callback: types.CallbackQuery):
-    """Меню выбора категории ботов"""
-    try:
-        user_id = callback.from_user.id
-        await callback.answer()
-        await callback.message.edit_text(
-            "📋 <b>Выбор категории ботов</b>\n\n"
-            "Выберите категорию для заданий с ботами:\n\n"
-            "🤖 Обычные боты — стандартные задания\n"
-            "🌐 Боты с Web App — задания с веб-приложениями\n"
-            "📋 С доп. условиями — задания с условиями (100k GRAM пропускаются)",
-            parse_mode=ParseMode.HTML,
-            reply_markup=get_bot_category_keyboard(user_id)
-        )
-    except Exception as e:
-        logging.error(f"❌ gram_bot_category_callback: {e}")
-        await callback.answer("❌ Ошибка")
 
 
 # ============================================================
@@ -1618,4 +1678,4 @@ __all__ = [
     'set_user_chat_id', 'set_bot_instance', 'get_task_choice_keyboard',
     'get_bot_category_keyboard', 'get_bot_settings_keyboard',
     'active_clients', 'active_tasks'
-]
+    ]
