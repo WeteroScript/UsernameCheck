@@ -9,7 +9,7 @@ import os
 import sqlite3
 import io
 import urllib.request
-import requests
+import re
 from typing import Optional, Dict, Any, Tuple, List
 from telethon import TelegramClient, errors
 from telethon.tl.functions.channels import JoinChannelRequest
@@ -35,19 +35,15 @@ bot_username_for_task: Dict[str, str] = {}
 bot_instance = None
 captcha_storage: Dict[int, Dict[str, Any]] = {}
 user_task_choice: Dict[int, str] = {}
-user_bot_category: Dict[int, str] = {}  # user_id -> "regular" | "webapp" | "conditions"
+user_bot_category: Dict[int, str] = {}
 session_locks: Dict[str, asyncio.Lock] = {}
 
 SUBSCRIBE_DELAY = 60
 BOT_TASK_DELAY = 30
 
-# Текст для генерации фото
 PHOTO_TEXT = "Смотри @Bot_Farmers"
-
-# Какой шрифт использовать: "inter", "roboto" или "dejavu"
 FONT_CHOICE = "inter"
 
-# Google Fonts URL
 GOOGLE_FONTS = {
     "inter": "https://github.com/google/fonts/raw/main/ofl/inter/Inter-Bold.ttf",
     "roboto": "https://github.com/google/fonts/raw/main/apache/roboto/Roboto-Bold.ttf",
@@ -71,27 +67,42 @@ def set_user_chat_id(chat_id: int):
     user_chat_id = chat_id
 
 
-def get_task_choice_keyboard(user_id: int) -> InlineKeyboardMarkup:
+def get_task_choice_keyboard(user_id: int, phone: str = None) -> InlineKeyboardMarkup:
+    """Клавиатура выбора типа заданий (для сессии или глобально)"""
     task_types = {
         "channels": "📢 Подписка на каналы",
         "groups": "👥 Вступление в группы",
         "posts": "📱 Просмотр постов",
         "bots": "🤖 Задания с ботами",
     }
+    
+    if phone:
+        callback_prefix = f"task_choose_sess_"
+        back_callback = f"sess_item_{phone}"
+    else:
+        callback_prefix = "task_choose_"
+        back_callback = "bot_prgramm_settings"
+    
     buttons = []
     for task_key, task_name in task_types.items():
-        is_selected = user_task_choice.get(user_id) == task_key
-        text = f"{'✅ ' if is_selected else ''}{task_name}"
         buttons.append([InlineKeyboardButton(
-            text=text, callback_data=f"task_choose_{task_key}"
+            text=task_name,
+            callback_data=f"{callback_prefix}{task_key}_{phone}" if phone else f"{callback_prefix}{task_key}"
         )])
-    buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="bot_prgramm_settings")])
+    buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=back_callback)])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
-def get_bot_category_keyboard(user_id: int) -> InlineKeyboardMarkup:
+def get_bot_category_keyboard(user_id: int, phone: str = None) -> InlineKeyboardMarkup:
     """Клавиатура выбора категории ботов"""
-    current = user_bot_category.get(user_id, "regular")
+    if phone:
+        current = user_bot_category.get(user_id, "regular")
+        callback_prefix = f"bot_cat_sess_"
+        back_callback = f"sess_item_{phone}"
+    else:
+        current = user_bot_category.get(user_id, "regular")
+        callback_prefix = "bot_cat_"
+        back_callback = "bot_prgramm_settings"
     
     categories = {
         "regular": "🤖 Обычные боты",
@@ -104,63 +115,23 @@ def get_bot_category_keyboard(user_id: int) -> InlineKeyboardMarkup:
         check = "✅ " if key == current else ""
         buttons.append([InlineKeyboardButton(
             text=f"{check}{name}",
-            callback_data=f"bot_cat_{key}"
+            callback_data=f"{callback_prefix}{key}_{phone}" if phone else f"{callback_prefix}{key}"
         )])
     
-    buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="bot_prgramm_settings")])
+    buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=back_callback)])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
 def get_bot_settings_keyboard() -> InlineKeyboardMarkup:
-    """Настройки бота"""
+    """Настройки бота (без лишней кнопки категории)"""
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📋 Сессии для работы", callback_data="gram_sessions")],
         [InlineKeyboardButton(text="🔄 Сменить бота", callback_data="gram_change_bot")],
-        [InlineKeyboardButton(text="📋 Тип заданий", callback_data="gram_choose_task")],
-        [InlineKeyboardButton(text="🤖 Категория ботов", callback_data="gram_bot_category")],
         [InlineKeyboardButton(text="⬅️ Назад", callback_data="bot_prgramm")],
     ])
 
 
 # ============================================================
-# ШРИФТЫ ИЗ GOOGLE FONTS
-# ============================================================
-
-def download_font_from_google(font_name: str = None) -> Optional[str]:
-    """
-    Скачивает шрифт с Google Fonts.
-    Если font_name не указан — используется FONT_CHOICE.
-    """
-    if font_name is None:
-        font_name = FONT_CHOICE
-    
-    if font_name not in GOOGLE_FONTS:
-        logging.warning(f"⚠️ Шрифт {font_name} не найден, используй: {list(GOOGLE_FONTS.keys())}")
-        return None
-    
-    os.makedirs("fonts", exist_ok=True)
-    font_path = os.path.join("fonts", f"{font_name}.ttf")
-    
-    if os.path.exists(font_path):
-        return font_path
-    
-    url = GOOGLE_FONTS[font_name]
-    try:
-        logging.info(f"⬇️ Скачиваю шрифт {font_name} из {url}...")
-        response = requests.get(url, timeout=30)
-        if response.status_code == 200:
-            with open(font_path, 'wb') as f:
-                f.write(response.content)
-            logging.info(f"✅ Шрифт скачан: {font_path}")
-            return font_path
-    except Exception as e:
-        logging.error(f"❌ Ошибка скачивания шрифта: {e}")
-    
-    return None
-
-
-# ============================================================
-# ОСТАЛЬНЫЕ ФУНКЦИИ ШРИФТОВ
+# ШРИФТЫ (С ЛОГИРОВАНИЕМ)
 # ============================================================
 
 _font_cache: Dict[int, ImageFont.ImageFont] = {}
@@ -168,36 +139,73 @@ _resolved_font_path: Optional[str] = None
 _font_path_resolved = False
 _scalable_checked = False
 _is_scalable = False
+_font_logged = False
+
+
+def download_font_from_google(font_name: str = None) -> Optional[str]:
+    """Скачивает шрифт с Google Fonts"""
+    if font_name is None:
+        font_name = FONT_CHOICE
+    
+    if font_name not in GOOGLE_FONTS:
+        logging.warning(f"⚠️ Шрифт {font_name} не найден в списке")
+        return None
+    
+    os.makedirs("fonts", exist_ok=True)
+    font_path = os.path.join("fonts", f"{font_name}.ttf")
+    
+    if os.path.exists(font_path):
+        logging.info(f"🔤 Шрифт уже есть: {font_path}")
+        return font_path
+    
+    url = GOOGLE_FONTS[font_name]
+    try:
+        logging.info(f"⬇️ Скачиваю шрифт {font_name} из {url}")
+        urllib.request.urlretrieve(url, font_path)
+        logging.info(f"✅ Шрифт скачан: {font_path}")
+        return font_path
+    except Exception as e:
+        logging.error(f"❌ Ошибка скачивания шрифта: {e}")
+    
+    return None
 
 
 def _try_truetype(path: str, size: int) -> Optional[ImageFont.FreeTypeFont]:
     try:
         return ImageFont.truetype(path, size)
-    except Exception:
+    except Exception as e:
+        logging.debug(f"Не удалось загрузить {path}: {e}")
         return None
 
 
 def _resolve_font_path() -> Optional[str]:
-    """Определяет путь к шрифту (приоритет: Google Fonts → локальный → системный)"""
-    global _resolved_font_path, _font_path_resolved
+    """Определяет путь к шрифту с логированием"""
+    global _resolved_font_path, _font_path_resolved, _font_logged
     
     if _font_path_resolved:
         return _resolved_font_path
 
-    # 1. Пробуем скачать шрифт с Google Fonts
+    logging.info("🔍 Ищу шрифт...")
+
+    # 1. Скачиваем с Google
     google_font = download_font_from_google()
     if google_font and _try_truetype(google_font, 30):
         _resolved_font_path = google_font
         _font_path_resolved = True
-        logging.info(f"🔤 Использую Google шрифт: {google_font}")
+        logging.info(f"✅ Найден шрифт: {google_font}")
         return _resolved_font_path
 
-    # 2. Проверяем локальные и системные пути
+    # 2. Локальный файл
+    local_font = os.path.join(os.path.dirname(__file__), "fonts", f"{FONT_CHOICE}.ttf")
+    if os.path.exists(local_font) and _try_truetype(local_font, 30):
+        _resolved_font_path = local_font
+        _font_path_resolved = True
+        logging.info(f"✅ Найден локальный шрифт: {local_font}")
+        return _resolved_font_path
+
+    # 3. Системные пути
     font_paths = [
-        os.path.join(os.path.dirname(__file__), "fonts", f"{FONT_CHOICE}.ttf"),
-        os.path.join(os.path.dirname(__file__), "fonts", "DejaVuSans-Bold.ttf"),
         '/system/fonts/Roboto-Bold.ttf',
-        '/system/fonts/Roboto-Black.ttf',
         '/system/fonts/Roboto-Regular.ttf',
         '/system/fonts/NotoSans-Bold.ttf',
         '/system/fonts/DroidSans-Bold.ttf',
@@ -206,42 +214,50 @@ def _resolve_font_path() -> Optional[str]:
         '/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf',
         '/usr/share/fonts/truetype/noto/NotoSans-Bold.ttf',
         '/data/data/com.termux/files/usr/share/fonts/TTF/DejaVuSans-Bold.ttf',
-        '/data/data/com.termux/files/usr/share/fonts/TTF/DejaVuSans.ttf',
         'C:\\Windows\\Fonts\\arialbd.ttf',
         'C:\\Windows\\Fonts\\segoeuib.ttf',
-        'C:\\Windows\\Fonts\\calibrib.ttf',
         '/System/Library/Fonts/Supplemental/Arial Bold.ttf',
-        '/Library/Fonts/Arial Bold.ttf',
     ]
 
     for path in font_paths:
-        if _try_truetype(path, 30):
+        if os.path.exists(path) and _try_truetype(path, 30):
             _resolved_font_path = path
             _font_path_resolved = True
-            logging.info(f"🔤 Найден шрифт: {path}")
+            logging.info(f"✅ Найден системный шрифт: {path}")
             return _resolved_font_path
 
-    logging.warning("⚠️ Ни один шрифт не найден")
+    logging.warning("⚠️ НИ ОДИН ШРИФТ НЕ НАЙДЕН! Будет использован стандартный (размытый)")
     _resolved_font_path = None
     _font_path_resolved = True
     return None
 
 
 def _load_font(size: int) -> ImageFont.ImageFont:
-    """Загружает шрифт нужного размера (с кэшем)"""
+    """Загружает шрифт нужного размера с логированием"""
+    global _font_logged
+    
     size = max(1, int(size))
     if size in _font_cache:
         return _font_cache[size]
 
     path = _resolve_font_path()
     if path:
-        font = _try_truetype(path, size)
-        if font:
+        try:
+            font = ImageFont.truetype(path, size)
             _font_cache[size] = font
+            if not _font_logged:
+                logging.info(f"✅ Шрифт загружен: {path}, размер {size}")
+                _font_logged = True
             return font
-
+        except Exception as e:
+            logging.error(f"❌ Ошибка загрузки шрифта {path}: {e}")
+    
+    # Fallback
     font = ImageFont.load_default()
     _font_cache[size] = font
+    if not _font_logged:
+        logging.warning(f"⚠️ Использую дефолтный шрифт (размытый). Размер: {size}")
+        _font_logged = True
     return font
 
 
@@ -264,7 +280,9 @@ def _check_font_scalable() -> bool:
     _scalable_checked = True
 
     if not _is_scalable:
-        logging.warning("⚠️ Шрифт не масштабируется, включаю растровое масштабирование.")
+        logging.warning("⚠️ Шрифт НЕ масштабируется (bitmap), будет растровое увеличение")
+    else:
+        logging.info("✅ Шрифт масштабируется (TrueType)")
 
     return _is_scalable
 
@@ -294,6 +312,7 @@ def _fit_font_to_box(
         else:
             hi = mid - 1
 
+    logging.info(f"📏 Подобран размер шрифта: {best_size}")
     return _load_font(best_size)
 
 
@@ -374,6 +393,8 @@ def _render_text_block(
 
 def generate_bot_image() -> bytes:
     """Генерирует картинку 1080x1080 с надписью"""
+    logging.info("🖼 Генерация фото...")
+    
     size = 1080
     text = PHOTO_TEXT
 
@@ -382,6 +403,7 @@ def generate_bot_image() -> bytes:
 
     width_ratio = random.uniform(0.75, 0.92)
     target_width = int(size * width_ratio)
+    logging.info(f"📐 Целевая ширина текста: {target_width}px")
 
     colors = _generate_letter_colors(len(text), bg_color)
 
@@ -405,6 +427,7 @@ def generate_bot_image() -> bytes:
         text_block = raw_block.resize((new_w, new_h), Image.NEAREST)
         logging.info(f"✅ Текст отрендерен через bitmap+upscale, размер блока: {text_block.size}")
 
+    # Центрируем
     max_x = max(0, size - text_block.width)
     max_y = max(0, size - text_block.height)
     base_x = max_x // 2
@@ -424,7 +447,8 @@ def generate_bot_image() -> bytes:
     img_bytes = io.BytesIO()
     image.save(img_bytes, format='PNG')
     img_bytes.seek(0)
-
+    
+    logging.info(f"✅ Фото сгенерировано, размер: {len(img_bytes.getvalue())} байт")
     return img_bytes.read()
 
 
@@ -650,7 +674,7 @@ async def subscribe(client: TelegramClient, url: str) -> Tuple[bool, str]:
 
 
 # ============================================================
-# ЗАДАНИЯ С БОТАМИ (ИГНОРИРУЕМ КАПЧУ)
+# ЗАДАНИЯ С БОТАМИ (ИГНОРИРУЕМ КАПЧУ + ПРОПУСК 100k)
 # ============================================================
 
 async def process_bot_tasks(client: TelegramClient, bot_username: str, msg, user_id: int = None):
@@ -685,7 +709,6 @@ async def process_bot_tasks(client: TelegramClient, bot_username: str, msg, user
             if not result:
                 logging.warning("⚠️ Нет ответа после выбора категории")
                 return msg
-            # Игнорируем капчу
             if is_captcha_message(result):
                 logging.info("⏭ Пропускаю капчу в категории ботов")
                 return await get_last_msg(client, bot_username)
@@ -704,17 +727,17 @@ async def process_bot_tasks(client: TelegramClient, bot_username: str, msg, user
         logging.info(f"🔗 Найдено заданий: {len(all_task_btns)}")
 
         for task_btn in all_task_btns:
-            task_text = btn_text(task_btn).lower()
+            task_text = btn_text(task_btn)
             
-            # Проверяем, не 100k ли это задание (для категории conditions)
-            if category == "conditions":
-                if "100 000" in task_text or "100000" in task_text or "100k" in task_text:
-                    logging.info(f"⏭ Пропускаю задание 100k: '{task_text}'")
-                    skip_btn = find_button(msg, ["скрыть", "пропустить", "▶️"])
-                    if skip_btn:
-                        await click_btn(client, bot_username, skip_btn, timeout=5)
-                        await asyncio.sleep(1)
-                    continue
+            # Проверяем 100k (любой вариант написания)
+            if re.search(r'100\s*000|100k|100000', task_text, re.IGNORECASE):
+                logging.info(f"⏭ Пропускаю задание 100k: '{task_text}'")
+                # Ищем кнопку чтобы пропустить
+                skip_btn = find_button(msg, ["скрыть", "пропустить", "▶️", "следующий"])
+                if skip_btn:
+                    await click_btn(client, bot_username, skip_btn, timeout=5)
+                    await asyncio.sleep(1)
+                continue
 
             logging.info(f"🔗 Нажимаю задание: '{task_text}'")
             result = await click_btn(client, bot_username, task_btn, timeout=15)
@@ -722,12 +745,10 @@ async def process_bot_tasks(client: TelegramClient, bot_username: str, msg, user
                 logging.warning("⚠️ Нет ответа после клика по заданию")
                 continue
             
-            # Игнорируем капчу
             if is_captcha_message(result):
                 logging.info("⏭ Пропускаю капчу в задании с ботом")
                 continue
 
-            # Генерируем и отправляем фото
             photo_bytes = generate_bot_image()
             logging.info("✅ Сгенерировано фото")
 
@@ -736,14 +757,12 @@ async def process_bot_tasks(client: TelegramClient, bot_username: str, msg, user
                 logging.warning("⚠️ Нет ответа на отправку фото")
                 continue
 
-            # Игнорируем капчу после фото
             if is_captcha_message(photo_result):
                 logging.info("⏭ Пропускаю капчу после отправки фото")
                 continue
 
             await asyncio.sleep(1)
 
-            # Ищем кнопку "Следующий бот"
             next_btn = find_button(photo_result, ["следующий бот"])
             if next_btn:
                 logging.info("⏭️ Нажимаю 'Следующий бот'...")
@@ -900,7 +919,6 @@ async def send_captcha_to_user(msg, chat_id: int, client: TelegramClient) -> boo
 
 @router.callback_query(lambda c: c.data and c.data.startswith("captcha_answer_"))
 async def captcha_answer_callback(callback: types.CallbackQuery):
-    """Пользователь выбрал номер → бот нажимает кнопку в Gram боте"""
     try:
         parts = callback.data.split("_")
         chat_id = int(parts[2])
@@ -1005,35 +1023,58 @@ async def captcha_stop_callback(callback: types.CallbackQuery):
 
 
 # ============================================================
-# ВЫБОР ТИПА ЗАДАНИЙ
+# ВЫБОР ТИПА ЗАДАНИЙ И КАТЕГОРИИ
 # ============================================================
 
 @router.callback_query(lambda c: c.data and c.data.startswith("task_choose_"))
 async def task_choose_callback(callback: types.CallbackQuery):
     try:
-        task_type = callback.data.replace("task_choose_", "")
-        user_id = callback.from_user.id
+        # Определяем, откуда вызов
+        if "_sess_" in callback.data:
+            # Для сессии
+            parts = callback.data.split("_")
+            task_type = parts[2]
+            phone = parts[3]
+            user_id = callback.from_user.id
+        else:
+            # Глобальный вызов
+            task_type = callback.data.replace("task_choose_", "")
+            user_id = callback.from_user.id
+            phone = None
+        
         task_names = {
             "channels": "📢 Подписка на каналы",
             "groups": "👥 Вступление в группы",
             "posts": "📱 Просмотр постов",
             "bots": "🤖 Задания с ботами"
         }
+        
         if task_type in task_names:
-            user_task_choice[user_id] = task_type
-            
-            if task_type == "bots":
+            if phone:
+                # Сохраняем для сессии
+                from bot import set_session_config
+                set_session_config(user_id, phone, "task_type", task_type)
                 await callback.answer(f"✅ {task_names[task_type]}")
-                await callback.message.edit_text(
-                    "📋 <b>Выбор категории ботов</b>\n\n"
-                    "Выберите категорию для заданий с ботами:\n\n"
-                    "🤖 Обычные боты — стандартные задания\n"
-                    "🌐 Боты с Web App — задания с веб-приложениями\n"
-                    "📋 С доп. условиями — задания с условиями (100k GRAM пропускаются)",
-                    parse_mode=ParseMode.HTML,
-                    reply_markup=get_bot_category_keyboard(user_id)
-                )
+                
+                if task_type == "bots":
+                    await callback.message.edit_text(
+                        f"📋 <b>Выбор категории ботов для {phone}</b>\n\n"
+                        "Выбери категорию:",
+                        parse_mode=ParseMode.HTML,
+                        reply_markup=get_bot_category_keyboard(user_id, phone)
+                    )
+                else:
+                    await callback.message.edit_text(
+                        f"✅ <b>Выбран тип:</b>\n{task_names[task_type]}\n\n"
+                        f"Для сессии {phone}",
+                        parse_mode=ParseMode.HTML,
+                        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                            [InlineKeyboardButton(text="⬅️ Назад", callback_data=f"sess_item_{phone}")],
+                            [InlineKeyboardButton(text="📋 Изменить", callback_data=f"sess_task_{phone}")]
+                        ])
+                    )
             else:
+                user_task_choice[user_id] = task_type
                 await callback.answer(f"✅ {task_names[task_type]}")
                 await callback.message.edit_text(
                     f"✅ <b>Выбран тип заданий:</b>\n\n"
@@ -1052,38 +1093,20 @@ async def task_choose_callback(callback: types.CallbackQuery):
         await callback.answer("❌ Ошибка")
 
 
-@router.callback_query(lambda c: c.data and c.data == "gram_task_type")
-async def gram_task_type_callback(callback: types.CallbackQuery):
-    try:
-        user_id = callback.from_user.id
-        await callback.answer()
-        current = user_task_choice.get(user_id, "channels")
-        task_names = {
-            "channels": "📢 Подписка на каналы",
-            "groups": "👥 Вступление в группы",
-            "posts": "📱 Просмотр постов",
-            "bots": "🤖 Задания с ботами"
-        }
-        await callback.message.edit_text(
-            f"📋 <b>Выбор типа заданий</b>\n\n"
-            f"Текущий тип: <b>{task_names.get(current, current)}</b>\n\n"
-            f"Выберите тип заданий для автоматического выполнения:",
-            parse_mode=ParseMode.HTML,
-            reply_markup=get_task_choice_keyboard(user_id)
-        )
-    except Exception as e:
-        logging.error(f"❌ gram_task_type_callback: {e}")
-        await callback.answer("❌ Ошибка")
-
-
 @router.callback_query(lambda c: c.data and c.data.startswith("bot_cat_"))
 async def bot_category_callback(callback: types.CallbackQuery):
-    """Выбор категории ботов"""
     try:
-        category = callback.data.replace("bot_cat_", "")
-        user_id = callback.from_user.id
-        
-        user_bot_category[user_id] = category
+        # Определяем, откуда вызов
+        if "_sess_" in callback.data:
+            parts = callback.data.split("_")
+            category = parts[2]
+            phone = parts[3]
+            user_id = callback.from_user.id
+            from bot import set_session_config
+        else:
+            category = callback.data.replace("bot_cat_", "")
+            user_id = callback.from_user.id
+            phone = None
         
         cat_names = {
             "regular": "Обычные боты",
@@ -1091,17 +1114,33 @@ async def bot_category_callback(callback: types.CallbackQuery):
             "conditions": "С дополнительными условиями"
         }
         
-        await callback.answer(f"✅ Выбрано: {cat_names.get(category, category)}")
-        
-        await callback.message.edit_text(
-            f"✅ <b>Выбрана категория ботов:</b>\n{cat_names.get(category, category)}\n\n"
-            f"Категория будет использована при выполнении заданий с ботами.",
-            parse_mode=ParseMode.HTML,
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="📋 Изменить категорию", callback_data="gram_bot_category")],
-                [InlineKeyboardButton(text="⬅️ Назад", callback_data="bot_prgramm_settings")]
-            ])
-        )
+        if category in cat_names:
+            if phone:
+                set_session_config(user_id, phone, "bot_category", category)
+                await callback.answer(f"✅ {cat_names[category]}")
+                await callback.message.edit_text(
+                    f"✅ <b>Выбрана категория:</b>\n{cat_names[category]}\n\n"
+                    f"Для сессии {phone}",
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                        [InlineKeyboardButton(text="⬅️ Назад", callback_data=f"sess_item_{phone}")],
+                        [InlineKeyboardButton(text="📋 Изменить", callback_data=f"sess_cat_{phone}")]
+                    ])
+                )
+            else:
+                user_bot_category[user_id] = category
+                await callback.answer(f"✅ {cat_names[category]}")
+                await callback.message.edit_text(
+                    f"✅ <b>Выбрана категория ботов:</b>\n{cat_names[category]}\n\n"
+                    f"Категория будет использована при выполнении заданий с ботами.",
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                        [InlineKeyboardButton(text="📋 Изменить категорию", callback_data="gram_bot_category")],
+                        [InlineKeyboardButton(text="⬅️ Назад", callback_data="bot_prgramm_settings")]
+                    ])
+                )
+        else:
+            await callback.answer("❌ Неизвестная категория")
     except Exception as e:
         logging.error(f"❌ bot_category_callback: {e}")
         await callback.answer("❌ Ошибка")
@@ -1109,7 +1148,6 @@ async def bot_category_callback(callback: types.CallbackQuery):
 
 @router.callback_query(lambda c: c.data and c.data == "gram_bot_category")
 async def gram_bot_category_callback(callback: types.CallbackQuery):
-    """Меню выбора категории ботов"""
     try:
         user_id = callback.from_user.id
         await callback.answer()
@@ -1118,7 +1156,7 @@ async def gram_bot_category_callback(callback: types.CallbackQuery):
             "Выберите категорию для заданий с ботами:\n\n"
             "🤖 Обычные боты — стандартные задания\n"
             "🌐 Боты с Web App — задания с веб-приложениями\n"
-            "📋 С доп. условиями — задания с условиями (100k GRAM пропускаются)",
+            "📋 С доп. условиями — задания с дополнительными условиями",
             parse_mode=ParseMode.HTML,
             reply_markup=get_bot_category_keyboard(user_id)
         )
@@ -1659,4 +1697,4 @@ __all__ = [
     'set_user_chat_id', 'set_bot_instance', 'get_task_choice_keyboard',
     'get_bot_category_keyboard', 'get_bot_settings_keyboard',
     'active_clients', 'active_tasks'
-            ]
+]
