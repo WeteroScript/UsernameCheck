@@ -9,6 +9,7 @@ import os
 import sqlite3
 import io
 import urllib.request
+import requests
 from typing import Optional, Dict, Any, Tuple, List
 from telethon import TelegramClient, errors
 from telethon.tl.functions.channels import JoinChannelRequest
@@ -40,7 +41,18 @@ session_locks: Dict[str, asyncio.Lock] = {}
 SUBSCRIBE_DELAY = 60
 BOT_TASK_DELAY = 30
 
-PHOTO_TEXT = "@Bot_Farmers"
+# Текст для генерации фото
+PHOTO_TEXT = "Смотри @Bot_Farmers"
+
+# Какой шрифт использовать: "inter", "roboto" или "dejavu"
+FONT_CHOICE = "inter"
+
+# Google Fonts URL
+GOOGLE_FONTS = {
+    "inter": "https://github.com/google/fonts/raw/main/ofl/inter/Inter-Bold.ttf",
+    "roboto": "https://github.com/google/fonts/raw/main/apache/roboto/Roboto-Bold.ttf",
+    "dejavu": "https://github.com/dejavu-fonts/dejavu-fonts/raw/master/ttf/DejaVuSans-Bold.ttf",
+}
 
 
 def get_session_lock(phone: str) -> asyncio.Lock:
@@ -111,49 +123,45 @@ def get_bot_settings_keyboard() -> InlineKeyboardMarkup:
 
 
 # ============================================================
-# ГЕНЕРАЦИЯ ШРИФТА
+# ШРИФТЫ ИЗ GOOGLE FONTS
 # ============================================================
 
-FONT_PATHS = [
-    '/system/fonts/Roboto-Bold.ttf',
-    '/system/fonts/Roboto-Black.ttf',
-    '/system/fonts/Roboto-Regular.ttf',
-    '/system/fonts/Roboto-Medium.ttf',
-    '/system/fonts/DroidSans-Bold.ttf',
-    '/system/fonts/NotoSans-Bold.ttf',
-    '/system/fonts/NotoSans-Regular.ttf',
-    '/system/fonts/SystemFont.ttf',
-    '/data/data/com.termux/files/usr/share/fonts/TTF/DejaVuSans-Bold.ttf',
-    '/data/data/com.termux/files/usr/share/fonts/TTF/DejaVuSans.ttf',
-    '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf',
-    '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
-    '/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf',
-    '/usr/share/fonts/truetype/freefont/FreeSansBold.ttf',
-    '/usr/share/fonts/truetype/noto/NotoSans-Bold.ttf',
-    'C:\\Windows\\Fonts\\arialbd.ttf',
-    'C:\\Windows\\Fonts\\arial.ttf',
-    'C:\\Windows\\Fonts\\segoeuib.ttf',
-    'C:\\Windows\\Fonts\\calibrib.ttf',
-    '/System/Library/Fonts/Supplemental/Arial Bold.ttf',
-    '/Library/Fonts/Arial Bold.ttf',
-    '/System/Library/Fonts/Helvetica.ttc',
-]
+def download_font_from_google(font_name: str = None) -> Optional[str]:
+    """
+    Скачивает шрифт с Google Fonts.
+    Если font_name не указан — используется FONT_CHOICE.
+    """
+    if font_name is None:
+        font_name = FONT_CHOICE
+    
+    if font_name not in GOOGLE_FONTS:
+        logging.warning(f"⚠️ Шрифт {font_name} не найден, используй: {list(GOOGLE_FONTS.keys())}")
+        return None
+    
+    os.makedirs("fonts", exist_ok=True)
+    font_path = os.path.join("fonts", f"{font_name}.ttf")
+    
+    if os.path.exists(font_path):
+        return font_path
+    
+    url = GOOGLE_FONTS[font_name]
+    try:
+        logging.info(f"⬇️ Скачиваю шрифт {font_name} из {url}...")
+        response = requests.get(url, timeout=30)
+        if response.status_code == 200:
+            with open(font_path, 'wb') as f:
+                f.write(response.content)
+            logging.info(f"✅ Шрифт скачан: {font_path}")
+            return font_path
+    except Exception as e:
+        logging.error(f"❌ Ошибка скачивания шрифта: {e}")
+    
+    return None
 
-_FONT_SEARCH_DIRS = [
-    '/system/fonts',
-    '/data/data/com.termux/files/usr/share/fonts',
-    '/usr/share/fonts',
-    os.path.expanduser('~/.fonts'),
-    'C:\\Windows\\Fonts',
-    '/Library/Fonts',
-    '/System/Library/Fonts',
-]
 
-_LOCAL_FONT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fonts")
-_LOCAL_FONT_PATH = os.path.join(_LOCAL_FONT_DIR, "DejaVuSans-Bold.ttf")
-_FONT_DOWNLOAD_URL = (
-    "https://github.com/dejavu-fonts/dejavu-fonts/raw/master/ttf/DejaVuSans-Bold.ttf"
-)
+# ============================================================
+# ОСТАЛЬНЫЕ ФУНКЦИИ ШРИФТОВ
+# ============================================================
 
 _font_cache: Dict[int, ImageFont.ImageFont] = {}
 _resolved_font_path: Optional[str] = None
@@ -169,75 +177,58 @@ def _try_truetype(path: str, size: int) -> Optional[ImageFont.FreeTypeFont]:
         return None
 
 
-def _download_font() -> Optional[str]:
-    if os.path.exists(_LOCAL_FONT_PATH):
-        if _try_truetype(_LOCAL_FONT_PATH, 30):
-            logging.info(f"🔤 Используется ранее скачанный шрифт: {_LOCAL_FONT_PATH}")
-            return _LOCAL_FONT_PATH
-
-    try:
-        os.makedirs(_LOCAL_FONT_DIR, exist_ok=True)
-        logging.info(f"⬇️ Скачиваю шрифт из {_FONT_DOWNLOAD_URL} ...")
-        urllib.request.urlretrieve(_FONT_DOWNLOAD_URL, _LOCAL_FONT_PATH)
-        if _try_truetype(_LOCAL_FONT_PATH, 30):
-            logging.info(f"✅ Шрифт успешно скачан: {_LOCAL_FONT_PATH}")
-            return _LOCAL_FONT_PATH
-        else:
-            logging.error("❌ Скачанный шрифт не работает")
-            return None
-    except Exception as e:
-        logging.error(f"❌ Не удалось скачать шрифт: {e}")
-        return None
-
-
-def _search_any_font() -> Optional[str]:
-    for d in _FONT_SEARCH_DIRS:
-        if not os.path.isdir(d):
-            continue
-        try:
-            for root, _, files in os.walk(d):
-                for f in files:
-                    if f.lower().endswith(('.ttf', '.otf')):
-                        full = os.path.join(root, f)
-                        if _try_truetype(full, 30):
-                            return full
-        except Exception:
-            continue
-    return None
-
-
 def _resolve_font_path() -> Optional[str]:
+    """Определяет путь к шрифту (приоритет: Google Fonts → локальный → системный)"""
     global _resolved_font_path, _font_path_resolved
+    
     if _font_path_resolved:
         return _resolved_font_path
 
-    for path in FONT_PATHS:
+    # 1. Пробуем скачать шрифт с Google Fonts
+    google_font = download_font_from_google()
+    if google_font and _try_truetype(google_font, 30):
+        _resolved_font_path = google_font
+        _font_path_resolved = True
+        logging.info(f"🔤 Использую Google шрифт: {google_font}")
+        return _resolved_font_path
+
+    # 2. Проверяем локальные и системные пути
+    font_paths = [
+        os.path.join(os.path.dirname(__file__), "fonts", f"{FONT_CHOICE}.ttf"),
+        os.path.join(os.path.dirname(__file__), "fonts", "DejaVuSans-Bold.ttf"),
+        '/system/fonts/Roboto-Bold.ttf',
+        '/system/fonts/Roboto-Black.ttf',
+        '/system/fonts/Roboto-Regular.ttf',
+        '/system/fonts/NotoSans-Bold.ttf',
+        '/system/fonts/DroidSans-Bold.ttf',
+        '/system/fonts/SystemFont.ttf',
+        '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf',
+        '/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf',
+        '/usr/share/fonts/truetype/noto/NotoSans-Bold.ttf',
+        '/data/data/com.termux/files/usr/share/fonts/TTF/DejaVuSans-Bold.ttf',
+        '/data/data/com.termux/files/usr/share/fonts/TTF/DejaVuSans.ttf',
+        'C:\\Windows\\Fonts\\arialbd.ttf',
+        'C:\\Windows\\Fonts\\segoeuib.ttf',
+        'C:\\Windows\\Fonts\\calibrib.ttf',
+        '/System/Library/Fonts/Supplemental/Arial Bold.ttf',
+        '/Library/Fonts/Arial Bold.ttf',
+    ]
+
+    for path in font_paths:
         if _try_truetype(path, 30):
             _resolved_font_path = path
-            logging.info(f"🔤 Найден шрифт: {path}")
             _font_path_resolved = True
+            logging.info(f"🔤 Найден шрифт: {path}")
             return _resolved_font_path
 
-    found = _search_any_font()
-    if found:
-        logging.info(f"🔤 Найден шрифт поиском: {found}")
-        _resolved_font_path = found
-        _font_path_resolved = True
-        return _resolved_font_path
-
-    downloaded = _download_font()
-    if downloaded:
-        _resolved_font_path = downloaded
-        _font_path_resolved = True
-        return _resolved_font_path
-
-    logging.warning("⚠️ Ни один TrueType-шрифт не найден и не скачан")
+    logging.warning("⚠️ Ни один шрифт не найден")
     _resolved_font_path = None
     _font_path_resolved = True
     return None
 
 
 def _load_font(size: int) -> ImageFont.ImageFont:
+    """Загружает шрифт нужного размера (с кэшем)"""
     size = max(1, int(size))
     if size in _font_cache:
         return _font_cache[size]
@@ -255,6 +246,7 @@ def _load_font(size: int) -> ImageFont.ImageFont:
 
 
 def _check_font_scalable() -> bool:
+    """Проверяет, масштабируется ли шрифт"""
     global _scalable_checked, _is_scalable
     if _scalable_checked:
         return _is_scalable
@@ -285,6 +277,7 @@ def _fit_font_to_box(
     min_size: int = 10,
     max_size: int = 900
 ) -> ImageFont.ImageFont:
+    """Бинарный поиск размера шрифта под прямоугольник"""
     lo, hi = min_size, max_size
     best_size = min_size
 
@@ -309,6 +302,7 @@ def _color_distance(c1: Tuple[int, int, int], c2: Tuple[int, int, int]) -> float
 
 
 def _random_bg_color() -> Tuple[int, int, int]:
+    """Случайный фон: чёрный/тёмный/цветной"""
     mode = random.choices(
         ["black", "dark", "colored"],
         weights=[45, 35, 20],
@@ -324,6 +318,7 @@ def _random_bg_color() -> Tuple[int, int, int]:
 
 
 def _generate_letter_colors(n: int, bg_color: Tuple[int, int, int]) -> List[Tuple[int, int, int]]:
+    """Генерирует n ярких цветов для букв"""
     colors = []
     hue_shift = random.random()
 
@@ -349,6 +344,7 @@ def _render_text_block(
     font: ImageFont.ImageFont,
     padding: int = 6
 ) -> Image.Image:
+    """Рендерит текст на прозрачном фоне"""
     tmp = Image.new('RGBA', (10, 10), (0, 0, 0, 0))
     tmp_draw = ImageDraw.Draw(tmp)
     bbox_full = tmp_draw.textbbox((0, 0), text, font=font)
@@ -377,6 +373,7 @@ def _render_text_block(
 
 
 def generate_bot_image() -> bytes:
+    """Генерирует картинку 1080x1080 с надписью"""
     size = 1080
     text = PHOTO_TEXT
 
@@ -713,7 +710,6 @@ async def process_bot_tasks(client: TelegramClient, bot_username: str, msg, user
             if category == "conditions":
                 if "100 000" in task_text or "100000" in task_text or "100k" in task_text:
                     logging.info(f"⏭ Пропускаю задание 100k: '{task_text}'")
-                    # Ищем кнопку "Скрыть" или "Пропустить" чтобы перейти к следующему
                     skip_btn = find_button(msg, ["скрыть", "пропустить", "▶️"])
                     if skip_btn:
                         await click_btn(client, bot_username, skip_btn, timeout=5)
@@ -752,7 +748,6 @@ async def process_bot_tasks(client: TelegramClient, bot_username: str, msg, user
             if next_btn:
                 logging.info("⏭️ Нажимаю 'Следующий бот'...")
                 next_result = await click_btn(client, bot_username, next_btn, timeout=15)
-                # Игнорируем капчу после нажатия "Следующий бот"
                 if next_result and is_captcha_message(next_result):
                     logging.info("⏭ Пропускаю капчу после 'Следующий бот'")
             else:
@@ -832,7 +827,7 @@ def find_next_page(msg):
 
 
 # ============================================================
-# КАПЧА С КНОПКАМИ 1-9 (ПРАВИЛЬНАЯ ОБРАБОТКА)
+# КАПЧА С КНОПКАМИ 1-9
 # ============================================================
 
 async def send_captcha_to_user(msg, chat_id: int, client: TelegramClient) -> bool:
@@ -844,7 +839,6 @@ async def send_captcha_to_user(msg, chat_id: int, client: TelegramClient) -> boo
         except:
             bu = "gram_prbot"
 
-        # Сохраняем данные капчи для ответа
         captcha_storage[chat_id] = {
             'client': client,
             'bot_username': bu,
@@ -860,7 +854,6 @@ async def send_captcha_to_user(msg, chat_id: int, client: TelegramClient) -> boo
 
         await bot_instance.send_message(chat_id, text, parse_mode=ParseMode.HTML)
 
-        # Отправляем фото (если есть)
         if msg.photo:
             try:
                 file_data = await client.download_media(msg, file=bytes)
@@ -874,7 +867,6 @@ async def send_captcha_to_user(msg, chat_id: int, client: TelegramClient) -> boo
             except Exception as e:
                 logging.error(f"❌ Ошибка отправки фото: {e}")
 
-        # Кнопки 1-9
         buttons = []
         row = []
         for i in range(1, 10):
@@ -936,13 +928,11 @@ async def captcha_answer_callback(callback: types.CallbackQuery):
         if not client.is_connected():
             await client.connect()
 
-        # Получаем сообщение с капчей
         msg = await client.get_messages(bot_username, ids=msg_id)
         if not msg or not msg.buttons:
             await callback.message.edit_text("❌ Сообщение с капчей не найдено")
             return
 
-        # Ищем кнопку с нужным номером
         target_btn = None
         for row in msg.buttons:
             for btn in row:
@@ -956,14 +946,12 @@ async def captcha_answer_callback(callback: types.CallbackQuery):
             await callback.message.edit_text(f"❌ Кнопка {number} не найдена")
             return
 
-        # НАЖИМАЕМ КНОПКУ В GRAM БОТЕ
         logging.info(f"🖱 Нажимаю кнопку {number} в @{bot_username}")
         await target_btn.click()
         
         data['answered'] = True
         await callback.message.edit_text(f"✅ Нажата кнопка {number} в @{bot_username}")
 
-        # Проверяем результат
         await asyncio.sleep(2)
         new_msg = await client.get_messages(bot_username, limit=1)
 
@@ -1017,7 +1005,7 @@ async def captcha_stop_callback(callback: types.CallbackQuery):
 
 
 # ============================================================
-# ВЫБОР ТИПА ЗАДАНИЙ (БОТЫ -> СРАЗУ КАТЕГОРИЯ)
+# ВЫБОР ТИПА ЗАДАНИЙ
 # ============================================================
 
 @router.callback_query(lambda c: c.data and c.data.startswith("task_choose_"))
@@ -1034,10 +1022,8 @@ async def task_choose_callback(callback: types.CallbackQuery):
         if task_type in task_names:
             user_task_choice[user_id] = task_type
             
-            # Если выбраны "боты" — сразу открываем выбор категории
             if task_type == "bots":
                 await callback.answer(f"✅ {task_names[task_type]}")
-                # Открываем меню выбора категории ботов
                 await callback.message.edit_text(
                     "📋 <b>Выбор категории ботов</b>\n\n"
                     "Выберите категорию для заданий с ботами:\n\n"
@@ -1107,7 +1093,6 @@ async def bot_category_callback(callback: types.CallbackQuery):
         
         await callback.answer(f"✅ Выбрано: {cat_names.get(category, category)}")
         
-        # Возвращаемся в настройки с подтверждением
         await callback.message.edit_text(
             f"✅ <b>Выбрана категория ботов:</b>\n{cat_names.get(category, category)}\n\n"
             f"Категория будет использована при выполнении заданий с ботами.",
@@ -1133,7 +1118,7 @@ async def gram_bot_category_callback(callback: types.CallbackQuery):
             "Выберите категорию для заданий с ботами:\n\n"
             "🤖 Обычные боты — стандартные задания\n"
             "🌐 Боты с Web App — задания с веб-приложениями\n"
-            "📋 С доп. условиями — задания с условиями",
+            "📋 С доп. условиями — задания с условиями (100k GRAM пропускаются)",
             parse_mode=ParseMode.HTML,
             reply_markup=get_bot_category_keyboard(user_id)
         )
@@ -1281,7 +1266,6 @@ async def do_cycle(
 
     logging.info("✅ Меню типов заданий получено")
 
-    # Выбираем кнопку в зависимости от типа
     if task_type == "channels":
         kw = "подписаться на канал"
     elif task_type == "groups":
@@ -1306,7 +1290,6 @@ async def do_cycle(
         await send_captcha_to_user(task_msg, user_chat_id, client)
         return
 
-    # Обрабатываем задания в зависимости от типа
     if task_type == "channels" or task_type == "groups":
         pairs = get_task_pairs(task_msg)
         logging.info(f"📋 Найдено заданий: {len(pairs)}")
@@ -1323,13 +1306,11 @@ async def do_cycle(
 
     elif task_type == "bots":
         result = await process_bot_tasks(client, bot_username, task_msg, user_id)
-        # Для ботов — игнорируем капчу, не отправляем пользователю
         if result and is_captcha_message(result):
             logging.info("⏭ Капча в заданиях с ботами — игнорирую")
             return
 
     else:
-        # Просмотр постов
         wait_time = random.randint(8, 15)
         logging.info(f"👀 Читаю пост {wait_time} сек...")
         await asyncio.sleep(wait_time)
@@ -1678,4 +1659,4 @@ __all__ = [
     'set_user_chat_id', 'set_bot_instance', 'get_task_choice_keyboard',
     'get_bot_category_keyboard', 'get_bot_settings_keyboard',
     'active_clients', 'active_tasks'
-    ]
+            ]
