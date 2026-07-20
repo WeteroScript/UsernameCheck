@@ -94,7 +94,7 @@ def get_task_choice_keyboard(user_id: int, phone: str = None) -> InlineKeyboardM
 
 
 def get_bot_category_keyboard(user_id: int, phone: str = None) -> InlineKeyboardMarkup:
-    """Клавиатура выбора категории ботов"""
+    """Клавиатура выбора категории ботов (БЕЗ надписи про 100k)"""
     if phone:
         current = user_bot_category.get(user_id, "regular")
         callback_prefix = f"bot_cat_sess_"
@@ -123,7 +123,7 @@ def get_bot_category_keyboard(user_id: int, phone: str = None) -> InlineKeyboard
 
 
 def get_bot_settings_keyboard() -> InlineKeyboardMarkup:
-    """Настройки бота"""
+    """Настройки бота (ТОЛЬКО тип заданий и смена бота)"""
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📋 Тип заданий", callback_data="gram_choose_task")],
         [InlineKeyboardButton(text="🔄 Сменить бота", callback_data="gram_change_bot")],
@@ -1037,6 +1037,7 @@ async def task_choose_callback(callback: types.CallbackQuery):
             task_type = parts[2]
             phone = parts[3]
             user_id = callback.from_user.id
+            from bot import set_session_config
         else:
             # Глобальный вызов
             task_type = callback.data.replace("task_choose_", "")
@@ -1053,10 +1054,10 @@ async def task_choose_callback(callback: types.CallbackQuery):
         if task_type in task_names:
             if phone:
                 # Сохраняем для сессии
-                from bot import set_session_config
                 set_session_config(user_id, phone, "task_type", task_type)
                 await callback.answer(f"✅ {task_names[task_type]}")
                 
+                # ЕСЛИ ВЫБРАНЫ БОТЫ → ОТКРЫВАЕМ КАТЕГОРИИ
                 if task_type == "bots":
                     await callback.message.edit_text(
                         f"📋 <b>Выбор категории ботов для {phone}</b>\n\n"
@@ -1075,18 +1076,29 @@ async def task_choose_callback(callback: types.CallbackQuery):
                         ])
                     )
             else:
+                # Глобальный выбор
                 user_task_choice[user_id] = task_type
                 await callback.answer(f"✅ {task_names[task_type]}")
-                await callback.message.edit_text(
-                    f"✅ <b>Выбран тип заданий:</b>\n\n"
-                    f"{task_names[task_type]}\n\n"
-                    f"Тип будет использован при следующем запуске.",
-                    parse_mode=ParseMode.HTML,
-                    reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                        [InlineKeyboardButton(text="📋 Изменить тип", callback_data="gram_task_type")],
-                        [InlineKeyboardButton(text="⬅️ Назад", callback_data="bot_prgramm_settings")],
-                    ])
-                )
+                
+                # ЕСЛИ ВЫБРАНЫ БОТЫ → ОТКРЫВАЕМ КАТЕГОРИИ
+                if task_type == "bots":
+                    await callback.message.edit_text(
+                        f"📋 <b>Выбор категории ботов</b>\n\n"
+                        "Выбери категорию:",
+                        parse_mode=ParseMode.HTML,
+                        reply_markup=get_bot_category_keyboard(user_id)
+                    )
+                else:
+                    await callback.message.edit_text(
+                        f"✅ <b>Выбран тип заданий:</b>\n\n"
+                        f"{task_names[task_type]}\n\n"
+                        f"Тип будет использован при следующем запуске.",
+                        parse_mode=ParseMode.HTML,
+                        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                            [InlineKeyboardButton(text="📋 Изменить тип", callback_data="gram_task_type")],
+                            [InlineKeyboardButton(text="⬅️ Назад", callback_data="bot_prgramm_settings")],
+                        ])
+                    )
         else:
             await callback.answer("❌ Неизвестный тип")
     except Exception as e:
@@ -1698,4 +1710,4 @@ __all__ = [
     'set_user_chat_id', 'set_bot_instance', 'get_task_choice_keyboard',
     'get_bot_category_keyboard', 'get_bot_settings_keyboard',
     'active_clients', 'active_tasks'
-                             ]
+]
