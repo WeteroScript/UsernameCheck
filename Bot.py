@@ -4,7 +4,7 @@ import asyncio
 import json
 import re
 from datetime import datetime
-from typing import Dict, Optional, List
+from typing import Dict, Optional, List, Any
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
@@ -57,22 +57,20 @@ storage = MemoryStorage()
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=storage)
 
-# Храним активные сессии пользователей (максимум 5)
+# Храним сессии пользователей
 user_sessions: Dict[int, List[str]] = {}  # user_id -> [phone1, phone2, ...]
-user_active_session: Dict[int, int] = {}  # user_id -> индекс активной сессии
 user_bot_choice: Dict[int, str] = {}  # user_id -> bot_username
-user_work_sessions: Dict[int, List[str]] = {}  # user_id -> [phone1, phone2, ...] - сессии для работы
+user_session_config: Dict[int, Dict[str, Dict[str, Any]]] = {}  # user_id -> {phone: {"enabled": bool, "task_type": str, "bot_category": str}}
 
 # Файлы для сохранения
 SESSIONS_FILE = "user_sessions.json"
 BOT_CHOICE_FILE = "user_bot_choice.json"
-ACTIVE_SESSION_FILE = "user_active_session.json"
-WORK_SESSIONS_FILE = "user_work_sessions.json"
+SESSION_CONFIG_FILE = "user_session_config.json"
 
 MAX_SESSIONS = 5
 
 
-# ============ СОХРАНЕНИЕ ДАННЫХ ============
+# ============ СОХРАНЕНИЕ ============
 
 def load_sessions() -> Dict[int, List[str]]:
     if os.path.exists(SESSIONS_FILE):
@@ -92,24 +90,6 @@ def save_sessions():
     except Exception as e:
         logging.error(f"Ошибка сохранения сессий: {e}")
 
-def load_active_session() -> Dict[int, int]:
-    if os.path.exists(ACTIVE_SESSION_FILE):
-        try:
-            with open(ACTIVE_SESSION_FILE, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-                return {int(k): v for k, v in data.items()}
-        except Exception as e:
-            logging.error(f"Ошибка загрузки активной сессии: {e}")
-    return {}
-
-def save_active_session():
-    try:
-        with open(ACTIVE_SESSION_FILE, 'w', encoding='utf-8') as f:
-            json.dump(user_active_session, f, indent=2, ensure_ascii=False)
-        logging.info("✅ Активная сессия сохранена")
-    except Exception as e:
-        logging.error(f"Ошибка сохранения активной сессии: {e}")
-
 def load_bot_choices() -> Dict[int, str]:
     if os.path.exists(BOT_CHOICE_FILE):
         try:
@@ -128,45 +108,114 @@ def save_bot_choices():
     except Exception as e:
         logging.error(f"Ошибка сохранения выбора ботов: {e}")
 
-def load_work_sessions() -> Dict[int, List[str]]:
-    if os.path.exists(WORK_SESSIONS_FILE):
+def load_session_config() -> Dict[int, Dict[str, Dict[str, Any]]]:
+    if os.path.exists(SESSION_CONFIG_FILE):
         try:
-            with open(WORK_SESSIONS_FILE, 'r', encoding='utf-8') as f:
+            with open(SESSION_CONFIG_FILE, 'r', encoding='utf-8') as f:
                 data = json.load(f)
                 return {int(k): v for k, v in data.items()}
         except Exception as e:
-            logging.error(f"Ошибка загрузки рабочих сессий: {e}")
+            logging.error(f"Ошибка загрузки конфигурации сессий: {e}")
     return {}
 
-def save_work_sessions():
+def save_session_config():
     try:
-        with open(WORK_SESSIONS_FILE, 'w', encoding='utf-8') as f:
-            json.dump(user_work_sessions, f, indent=2, ensure_ascii=False)
-        logging.info("✅ Рабочие сессии сохранены")
+        with open(SESSION_CONFIG_FILE, 'w', encoding='utf-8') as f:
+            json.dump(user_session_config, f, indent=2, ensure_ascii=False)
+        logging.info("✅ Конфигурация сессий сохранена")
     except Exception as e:
-        logging.error(f"Ошибка сохранения рабочих сессий: {e}")
+        logging.error(f"Ошибка сохранения конфигурации сессий: {e}")
 
 
-def get_user_active_phone(user_id: int) -> Optional[str]:
-    """Получить активную сессию пользователя"""
-    if user_id in user_sessions and user_id in user_active_session:
-        idx = user_active_session[user_id]
-        if idx < len(user_sessions[user_id]):
-            return user_sessions[user_id][idx]
-    return None
+def get_session_config(user_id: int, phone: str) -> Dict[str, Any]:
+    if user_id not in user_session_config:
+        user_session_config[user_id] = {}
+    if phone not in user_session_config[user_id]:
+        user_session_config[user_id][phone] = {
+            "enabled": False,
+            "task_type": "channels",
+            "bot_category": "regular"
+        }
+        save_session_config()
+    return user_session_config[user_id][phone]
 
-def set_user_active_phone(user_id: int, phone: str):
-    """Установить активную сессию"""
-    if user_id in user_sessions:
-        if phone in user_sessions[user_id]:
-            idx = user_sessions[user_id].index(phone)
-            user_active_session[user_id] = idx
-            save_active_session()
-            return True
-    return False
+def set_session_config(user_id: int, phone: str, key: str, value: Any):
+    config = get_session_config(user_id, phone)
+    config[key] = value
+    save_session_config()
 
 
-# ============ КЛАВИАТУРЫ ============
+# ============ КЛАВИАТУРЫ ДЛЯ СЕССИЙ ============
+
+def get_sessions_keyboard(user_id: int) -> InlineKeyboardMarkup:
+    """Главное меню PR GRAMM со списком сессий"""
+    buttons = []
+    
+    if user_id in user_sessions and user_sessions[user_id]:
+        for phone in user_sessions[user_id]:
+            config = get_session_config(user_id, phone)
+            status = "🟢" if config.get("enabled", False) else "🔴"
+            buttons.append([InlineKeyboardButton(
+                text=f"{status} {phone}",
+                callback_data=f"sess_item_{phone}"
+            )])
+        
+        buttons.append([InlineKeyboardButton(text="🚀 Запустить все сессии", callback_data="sess_start_all")])
+        buttons.append([InlineKeyboardButton(text="⏹ Остановить все", callback_data="sess_stop_all")])
+        
+        if len(user_sessions[user_id]) < MAX_SESSIONS:
+            buttons.append([InlineKeyboardButton(text="➕ Добавить сессию", callback_data="sess_add")])
+    else:
+        buttons.append([InlineKeyboardButton(text="❌ Нет сессий", callback_data="no_action")])
+        buttons.append([InlineKeyboardButton(text="➕ Добавить сессию", callback_data="sess_add")])
+    
+    buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="bots")])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+def get_session_item_keyboard(user_id: int, phone: str) -> InlineKeyboardMarkup:
+    """Меню управления конкретной сессией (Включить/Выключить + Настройки)"""
+    config = get_session_config(user_id, phone)
+    is_enabled = config.get("enabled", False)
+    
+    toggle_text = "⏹ Выключить" if is_enabled else "▶️ Включить"
+    
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📱 " + phone, callback_data="no_action")],
+        [InlineKeyboardButton(text=toggle_text, callback_data=f"sess_toggle_{phone}")],
+        [InlineKeyboardButton(text="⚙️ Настройки", callback_data=f"sess_settings_{phone}")],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="bot_prgramm")],
+    ])
+
+
+def get_session_settings_keyboard(user_id: int, phone: str) -> InlineKeyboardMarkup:
+    """Настройки для конкретной сессии"""
+    config = get_session_config(user_id, phone)
+    task_type = config.get("task_type", "channels")
+    bot_category = config.get("bot_category", "regular")
+    
+    task_names = {
+        "channels": "📢 Подписка",
+        "groups": "👥 Группы",
+        "posts": "📱 Посты",
+        "bots": "🤖 Боты"
+    }
+    
+    cat_names = {
+        "regular": "Обычные",
+        "webapp": "Web App",
+        "conditions": "С условиями"
+    }
+    
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=f"📋 Тип: {task_names.get(task_type, task_type)}", callback_data=f"sess_task_{phone}")],
+        [InlineKeyboardButton(text=f"🤖 Категория: {cat_names.get(bot_category, bot_category)}", callback_data=f"sess_cat_{phone}")],
+        [InlineKeyboardButton(text="🔄 Сменить бота", callback_data=f"sess_bot_{phone}")],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data=f"sess_item_{phone}")],
+    ])
+
+
+# ============ ОБЩИЕ КЛАВИАТУРЫ ============
 
 def get_main_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
@@ -176,103 +225,9 @@ def get_main_keyboard() -> InlineKeyboardMarkup:
     ])
 
 def get_bots_list_keyboard() -> InlineKeyboardMarkup:
-    """Список доступных ботов для работы"""
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📢 PR GRAMM", callback_data="bot_prgramm")],
         [InlineKeyboardButton(text="⬅️ Назад", callback_data="main")],
-    ])
-
-def get_bot_detail_keyboard(has_session: bool = False, is_running: bool = False) -> InlineKeyboardMarkup:
-    """Меню конкретного бота: Включить / Настройки / Назад"""
-    buttons = []
-    
-    if has_session:
-        if is_running:
-            buttons.append([InlineKeyboardButton(text="⏹ Выключить", callback_data="bot_prgramm_stop")])
-        else:
-            buttons.append([InlineKeyboardButton(text="▶️ Включить", callback_data="bot_prgramm_start")])
-    else:
-        buttons.append([InlineKeyboardButton(text="❌ Нет активной сессии", callback_data="no_session")])
-    
-    buttons.append([InlineKeyboardButton(text="⚙️ Настройки", callback_data="bot_prgramm_settings")])
-    buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="bots")])
-    
-    return InlineKeyboardMarkup(inline_keyboard=buttons)
-
-def get_work_sessions_keyboard(user_id: int) -> InlineKeyboardMarkup:
-    buttons = []
-    
-    if user_id not in user_sessions or not user_sessions[user_id]:
-        buttons.append([InlineKeyboardButton(text="❌ Нет сессий", callback_data="no_action")])
-        buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="bot_prgramm_settings")])
-        return InlineKeyboardMarkup(inline_keyboard=buttons)
-    
-    work_sessions = user_work_sessions.get(user_id, [])
-    
-    for phone in user_sessions[user_id]:
-        is_selected = phone in work_sessions
-        is_online = phone in active_clients and active_clients[phone].is_connected()
-        
-        status = "✅" if is_selected else "⬜"
-        online = "🟢" if is_online else "🔴"
-        
-        text = f"{status} {online} {phone}"
-        buttons.append([InlineKeyboardButton(text=text, callback_data=f"work_toggle_{phone}")])
-    
-    buttons.append([InlineKeyboardButton(text="✅ Выбрать все", callback_data="work_select_all")])
-    buttons.append([InlineKeyboardButton(text="⬜ Снять все", callback_data="work_select_none")])
-    buttons.append([InlineKeyboardButton(text="🚀 Запустить задания", callback_data="work_start_all")])
-    buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="bot_prgramm_settings")])
-    
-    return InlineKeyboardMarkup(inline_keyboard=buttons)
-
-def get_bot_choice_keyboard(current_bot: str) -> InlineKeyboardMarkup:
-    bots = [
-        ("@gram_piarbot", "g_piar"),
-        ("@gram_prbot", "g_pr"),
-    ]
-    
-    buttons = []
-    for name, code in bots:
-        check = "✅ " if name == current_bot else ""
-        buttons.append([InlineKeyboardButton(
-            text=f"{check}{name}", 
-            callback_data=f"bot_choice_{code}"
-        )])
-    
-    buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="bot_prgramm_settings")])
-    return InlineKeyboardMarkup(inline_keyboard=buttons)
-
-def get_sessions_keyboard(user_id: int) -> InlineKeyboardMarkup:
-    buttons = []
-    
-    if user_id in user_sessions and user_sessions[user_id]:
-        phones = user_sessions[user_id]
-        active_idx = user_active_session.get(user_id, 0)
-        
-        for i, phone in enumerate(phones):
-            is_active = (i == active_idx)
-            text = f"{'✅ ' if is_active else ''}📱 {phone}"
-            buttons.append([InlineKeyboardButton(
-                text=text, 
-                callback_data=f"sess_switch_{i}"
-            )])
-        
-        if len(phones) < MAX_SESSIONS:
-            buttons.append([InlineKeyboardButton(text="➕ Добавить сессию", callback_data="sess_add")])
-        
-        buttons.append([InlineKeyboardButton(text="🗑 Удалить сессию", callback_data="sess_delete_choose")])
-    else:
-        buttons.append([InlineKeyboardButton(text="➕ Добавить сессию", callback_data="sess_add")])
-    
-    buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="main")])
-    return InlineKeyboardMarkup(inline_keyboard=buttons)
-
-def get_session_actions_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🚪 Выйти со всех каналов", callback_data="sess_leave_channels")],
-        [InlineKeyboardButton(text="🚪 Выйти со всех групп", callback_data="sess_leave_groups")],
-        [InlineKeyboardButton(text="⬅️ Назад", callback_data="sessions")],
     ])
 
 def get_username_keyboard() -> InlineKeyboardMarkup:
@@ -287,10 +242,10 @@ def get_username_keyboard() -> InlineKeyboardMarkup:
 def get_session_delete_keyboard(user_id: int) -> InlineKeyboardMarkup:
     buttons = []
     if user_id in user_sessions:
-        for i, phone in enumerate(user_sessions[user_id]):
+        for phone in user_sessions[user_id]:
             buttons.append([InlineKeyboardButton(
                 text=f"❌ {phone}", 
-                callback_data=f"sess_del_{i}"
+                callback_data=f"sess_del_{phone}"
             )])
     buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="sessions")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
@@ -309,16 +264,14 @@ class SessionStates(StatesGroup):
 async def start_command(message: types.Message):
     user_id = message.from_user.id
     
-    global user_sessions, user_bot_choice, user_active_session, user_work_sessions
+    global user_sessions, user_bot_choice, user_session_config
     
     if not user_sessions:
         user_sessions.update(load_sessions())
     if not user_bot_choice:
         user_bot_choice.update(load_bot_choices())
-    if not user_active_session:
-        user_active_session.update(load_active_session())
-    if not user_work_sessions:
-        user_work_sessions.update(load_work_sessions())
+    if not user_session_config:
+        user_session_config.update(load_session_config())
     
     if user_id not in user_bot_choice:
         user_bot_choice[user_id] = "@gram_prbot"
@@ -327,8 +280,8 @@ async def start_command(message: types.Message):
     if user_id not in user_sessions:
         user_sessions[user_id] = []
     
-    if user_id not in user_work_sessions:
-        user_work_sessions[user_id] = []
+    if user_id not in user_session_config:
+        user_session_config[user_id] = {}
     
     await message.answer(
         f"👋 Привет, {message.from_user.first_name or 'Пользователь'}!\n\n"
@@ -339,8 +292,6 @@ async def start_command(message: types.Message):
         reply_markup=get_main_keyboard()
     )
 
-
-# ============ CALLBACK: ГЛАВНОЕ МЕНЮ ============
 
 @dp.callback_query(lambda c: c.data == "main")
 async def main_menu(callback: types.CallbackQuery):
@@ -360,35 +311,28 @@ async def main_menu(callback: types.CallbackQuery):
         )
 
 
-# ============ CALLBACK: БОТЫ ============
-
 @dp.callback_query(lambda c: c.data == "bots")
 async def bots_menu(callback: types.CallbackQuery):
-    """Список доступных ботов для работы"""
     await callback.answer()
-    
-    text = "🤖 <b>Боты</b>\n\n"
-    text += "Доступные боты для работы:\n\n"
-    text += "Выбери бота, чтобы настроить его или запустить:"
-    
     try:
         await callback.message.edit_text(
-            text,
+            "🤖 <b>Боты</b>\n\nВыбери бота:",
             parse_mode=ParseMode.HTML,
             reply_markup=get_bots_list_keyboard()
         )
     except Exception as e:
         logging.error(f"Ошибка bots_menu: {e}")
         await callback.message.answer(
-            text,
+            "🤖 <b>Боты</b>\n\nВыбери бота:",
             parse_mode=ParseMode.HTML,
             reply_markup=get_bots_list_keyboard()
         )
 
 
+# ============ PR GRAMM ГЛАВНОЕ МЕНЮ ============
+
 @dp.callback_query(lambda c: c.data == "bot_prgramm")
 async def bot_prgramm_menu(callback: types.CallbackQuery):
-    """Меню бота PR GRAMM: Включить / Настройки / Назад"""
     await callback.answer()
     user_id = callback.from_user.id
     
@@ -396,181 +340,235 @@ async def bot_prgramm_menu(callback: types.CallbackQuery):
         user_bot_choice[user_id] = "@gram_prbot"
         save_bot_choices()
     
-    phone = get_user_active_phone(user_id)
-    has_session = phone is not None
-    bot_name = user_bot_choice.get(user_id, "@gram_prbot")
-    
-    is_running = False
-    if has_session and phone in active_tasks:
-        is_running = not active_tasks[phone].done()
-    
     text = "📢 <b>PR GRAMM</b>\n\n"
-    text += f"🤖 Рабочий бот: <b>{bot_name}</b>\n\n"
+    text += f"🤖 Выбранный бот: <b>{user_bot_choice.get(user_id, '@gram_prbot')}</b>\n\n"
     
-    if has_session:
-        text += f"✅ Активная сессия: <b>{phone}</b>\n"
-        text += f"📊 Статус: {'🟢 Запущен' if is_running else '🔴 Остановлен'}\n\n"
-        text += f"📋 Рабочих сессий: {len(user_work_sessions.get(user_id, []))}\n"
+    if user_id in user_sessions and user_sessions[user_id]:
+        text += f"📱 <b>Сессии:</b>\n"
+        for phone in user_sessions[user_id]:
+            config = get_session_config(user_id, phone)
+            status = "🟢" if config.get("enabled", False) else "🔴"
+            task_type = config.get("task_type", "channels")
+            task_names = {
+                "channels": "📢 Подписка",
+                "groups": "👥 Группы",
+                "posts": "📱 Посты",
+                "bots": "🤖 Боты"
+            }
+            text += f"  {status} {phone} — {task_names.get(task_type, task_type)}\n"
+        
+        text += f"\n📊 Сессий: {len(user_sessions[user_id])}/{MAX_SESSIONS}"
     else:
-        text += "❌ Нет активной сессии.\n\n"
-        text += "Сначала добавь сессию в разделе 'Мои сессии'."
+        text += "❌ Нет подключенных сессий\n\n"
+        text += "Добавь сессию в разделе 'Мои сессии'"
     
     try:
         await callback.message.edit_text(
             text,
             parse_mode=ParseMode.HTML,
-            reply_markup=get_bot_detail_keyboard(has_session, is_running)
+            reply_markup=get_sessions_keyboard(user_id)
         )
     except Exception as e:
         logging.error(f"Ошибка bot_prgramm_menu: {e}")
         await callback.message.answer(
             text,
             parse_mode=ParseMode.HTML,
-            reply_markup=get_bot_detail_keyboard(has_session, is_running)
+            reply_markup=get_sessions_keyboard(user_id)
         )
 
 
-@dp.callback_query(lambda c: c.data == "bot_prgramm_settings")
-async def bot_prgramm_settings(callback: types.CallbackQuery):
-    """Настройки бота"""
-    await callback.answer()
-    
-    text = "⚙️ <b>Настройки — PR GRAMM</b>\n\n"
-    text += "Выбери раздел настроек:"
-    
+# ============ УПРАВЛЕНИЕ СЕССИЕЙ ============
+
+@dp.callback_query(lambda c: c.data and c.data.startswith("sess_item_"))
+async def sess_item_callback(callback: types.CallbackQuery):
     try:
+        phone = callback.data.replace("sess_item_", "")
+        user_id = callback.from_user.id
+        await callback.answer()
+        
+        config = get_session_config(user_id, phone)
+        is_enabled = config.get("enabled", False)
+        task_type = config.get("task_type", "channels")
+        task_names = {
+            "channels": "📢 Подписка на каналы",
+            "groups": "👥 Вступление в группы",
+            "posts": "📱 Просмотр постов",
+            "bots": "🤖 Задания с ботами"
+        }
+        
+        text = f"📱 <b>{phone}</b>\n\n"
+        text += f"📊 Статус: {'🟢 Включена' if is_enabled else '🔴 Выключена'}\n"
+        text += f"📋 Задание: {task_names.get(task_type, task_type)}\n"
+        text += f"🤖 Бот: {user_bot_choice.get(user_id, '@gram_prbot')}\n\n"
+        text += "Выбери действие:"
+        
         await callback.message.edit_text(
             text,
             parse_mode=ParseMode.HTML,
-            reply_markup=get_bot_settings_keyboard()
+            reply_markup=get_session_item_keyboard(user_id, phone)
         )
     except Exception as e:
-        logging.error(f"Ошибка bot_prgramm_settings: {e}")
-        await callback.message.answer(
-            text,
-            parse_mode=ParseMode.HTML,
-            reply_markup=get_bot_settings_keyboard()
-        )
+        logging.error(f"❌ sess_item_callback: {e}")
+        await callback.answer("❌ Ошибка")
 
 
-# ============ СЕССИИ ДЛЯ РАБОТЫ ============
-
-@dp.callback_query(lambda c: c.data == "gram_sessions")
-async def gram_sessions(callback: types.CallbackQuery):
-    """Выбор сессий для работы"""
-    await callback.answer()
-    user_id = callback.from_user.id
-    
-    text = "📋 <b>Сессии для работы</b>\n\n"
-    text += "Выбери сессии, на которых будут выполняться задания:\n"
-    text += "✅ - выбрана для работы\n"
-    text += "🟢 - сессия онлайн\n"
-    text += "🔴 - сессия офлайн\n\n"
-    
-    if user_id in user_sessions and user_sessions[user_id]:
-        work_sessions = user_work_sessions.get(user_id, [])
-        text += f"📊 Выбрано: {len(work_sessions)}/{len(user_sessions[user_id])}\n"
-    else:
-        text += "❌ Нет сессий"
-    
+@dp.callback_query(lambda c: c.data and c.data.startswith("sess_toggle_"))
+async def sess_toggle_callback(callback: types.CallbackQuery):
     try:
-        await callback.message.edit_text(
-            text,
-            parse_mode=ParseMode.HTML,
-            reply_markup=get_work_sessions_keyboard(user_id)
-        )
-    except Exception as e:
-        logging.error(f"Ошибка gram_sessions: {e}")
-        await callback.message.answer(
-            text,
-            parse_mode=ParseMode.HTML,
-            reply_markup=get_work_sessions_keyboard(user_id)
-        )
-
-
-@dp.callback_query(lambda c: c.data and c.data.startswith("work_toggle_"))
-async def work_toggle_callback(callback: types.CallbackQuery):
-    """Переключение сессии для работы"""
-    try:
-        phone = callback.data.replace("work_toggle_", "")
+        phone = callback.data.replace("sess_toggle_", "")
         user_id = callback.from_user.id
         
-        if user_id not in user_work_sessions:
-            user_work_sessions[user_id] = []
+        config = get_session_config(user_id, phone)
+        current = config.get("enabled", False)
+        config["enabled"] = not current
+        save_session_config()
         
-        if phone in user_work_sessions[user_id]:
-            user_work_sessions[user_id].remove(phone)
+        if config["enabled"] is False and phone in active_tasks:
+            await stop_gram_bot(phone)
+        
+        if config["enabled"] is True and phone in active_clients:
+            bot_name = user_bot_choice.get(user_id, "@gram_prbot")
+            client = active_clients[phone]
+            if client.is_connected() and await client.is_user_authorized():
+                await start_gram_worker(client, bot_name, phone, user_id)
+        
+        await callback.answer(f"✅ {'Включена' if config['enabled'] else 'Выключена'}")
+        await bot_prgramm_menu(callback)
+    except Exception as e:
+        logging.error(f"❌ sess_toggle_callback: {e}")
+        await callback.answer("❌ Ошибка")
+
+
+@dp.callback_query(lambda c: c.data and c.data.startswith("sess_settings_"))
+async def sess_settings_callback(callback: types.CallbackQuery):
+    try:
+        phone = callback.data.replace("sess_settings_", "")
+        user_id = callback.from_user.id
+        await callback.answer()
+        
+        await callback.message.edit_text(
+            f"⚙️ <b>Настройки — {phone}</b>\n\n"
+            "Выбери настройку:",
+            parse_mode=ParseMode.HTML,
+            reply_markup=get_session_settings_keyboard(user_id, phone)
+        )
+    except Exception as e:
+        logging.error(f"❌ sess_settings_callback: {e}")
+        await callback.answer("❌ Ошибка")
+
+
+@dp.callback_query(lambda c: c.data and c.data.startswith("sess_task_"))
+async def sess_task_callback(callback: types.CallbackQuery):
+    try:
+        phone = callback.data.replace("sess_task_", "")
+        user_id = callback.from_user.id
+        await callback.answer()
+        
+        await callback.message.edit_text(
+            f"📋 <b>Выбор типа заданий для {phone}</b>\n\n"
+            "Выбери тип заданий:",
+            parse_mode=ParseMode.HTML,
+            reply_markup=get_task_choice_keyboard(user_id, phone)
+        )
+    except Exception as e:
+        logging.error(f"❌ sess_task_callback: {e}")
+        await callback.answer("❌ Ошибка")
+
+
+@dp.callback_query(lambda c: c.data and c.data.startswith("sess_cat_"))
+async def sess_cat_callback(callback: types.CallbackQuery):
+    try:
+        phone = callback.data.replace("sess_cat_", "")
+        user_id = callback.from_user.id
+        await callback.answer()
+        
+        await callback.message.edit_text(
+            f"📋 <b>Выбор категории ботов для {phone}</b>\n\n"
+            "Выбери категорию:",
+            parse_mode=ParseMode.HTML,
+            reply_markup=get_bot_category_keyboard(user_id, phone)
+        )
+    except Exception as e:
+        logging.error(f"❌ sess_cat_callback: {e}")
+        await callback.answer("❌ Ошибка")
+
+
+@dp.callback_query(lambda c: c.data and c.data.startswith("sess_bot_"))
+async def sess_bot_callback(callback: types.CallbackQuery):
+    try:
+        phone = callback.data.replace("sess_bot_", "")
+        user_id = callback.from_user.id
+        
+        current_bot = user_bot_choice.get(user_id, "@gram_prbot")
+        bots = [
+            ("@gram_piarbot", "g_piar"),
+            ("@gram_prbot", "g_pr"),
+        ]
+        
+        buttons = []
+        for name, code in bots:
+            check = "✅ " if name == current_bot else ""
+            buttons.append([InlineKeyboardButton(
+                text=f"{check}{name}",
+                callback_data=f"sess_bot_choice_{code}_{phone}"
+            )])
+        buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=f"sess_item_{phone}")])
+        
+        await callback.message.edit_text(
+            f"🔄 <b>Смена бота для {phone}</b>\n\n"
+            "Выбери бота:",
+            parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons)
+        )
+    except Exception as e:
+        logging.error(f"❌ sess_bot_callback: {e}")
+        await callback.answer("❌ Ошибка")
+
+
+@dp.callback_query(lambda c: c.data and c.data.startswith("sess_bot_choice_"))
+async def sess_bot_choice_callback(callback: types.CallbackQuery):
+    try:
+        parts = callback.data.split("_")
+        bot_code = parts[3]
+        phone = parts[4]
+        user_id = callback.from_user.id
+        
+        if bot_code == "g_piar":
+            bot_name = "@gram_piarbot"
         else:
-            user_work_sessions[user_id].append(phone)
+            bot_name = "@gram_prbot"
         
-        save_work_sessions()
-        await gram_sessions(callback)
+        user_bot_choice[user_id] = bot_name
+        save_bot_choices()
         
+        await callback.answer(f"✅ {bot_name}")
+        await sess_item_callback(callback)
     except Exception as e:
-        logging.error(f"Ошибка work_toggle: {e}")
-        await callback.answer(f"❌ Ошибка: {e}")
+        logging.error(f"❌ sess_bot_choice_callback: {e}")
+        await callback.answer("❌ Ошибка")
 
 
-@dp.callback_query(lambda c: c.data == "work_select_all")
-async def work_select_all(callback: types.CallbackQuery):
-    """Выбрать все сессии"""
+# ============ ЗАПУСК/ОСТАНОВКА ВСЕХ ============
+
+@dp.callback_query(lambda c: c.data == "sess_start_all")
+async def sess_start_all_callback(callback: types.CallbackQuery):
     try:
         user_id = callback.from_user.id
-        
-        if user_id in user_sessions:
-            user_work_sessions[user_id] = user_sessions[user_id].copy()
-            save_work_sessions()
-        
-        await gram_sessions(callback)
-        
-    except Exception as e:
-        logging.error(f"Ошибка work_select_all: {e}")
-        await callback.answer(f"❌ Ошибка: {e}")
-
-
-@dp.callback_query(lambda c: c.data == "work_select_none")
-async def work_select_none(callback: types.CallbackQuery):
-    """Снять все сессии"""
-    try:
-        user_id = callback.from_user.id
-        
-        if user_id in user_work_sessions:
-            user_work_sessions[user_id] = []
-            save_work_sessions()
-        
-        await gram_sessions(callback)
-        
-    except Exception as e:
-        logging.error(f"Ошибка work_select_none: {e}")
-        await callback.answer(f"❌ Ошибка: {e}")
-
-
-@dp.callback_query(lambda c: c.data == "work_start_all")
-async def work_start_all(callback: types.CallbackQuery):
-    """Запустить задания на всех выбранных сессиях ПАРАЛЛЕЛЬНО"""
-    try:
-        user_id = callback.from_user.id
-        work_sessions = user_work_sessions.get(user_id, [])
-        
-        if not work_sessions:
-            await callback.answer("❌ Нет выбранных сессий", show_alert=True)
-            return
-        
-        await callback.answer(f"🚀 Запускаю {len(work_sessions)} сессий параллельно...")
-        
-        bot_name = user_bot_choice.get(user_id, "@gram_prbot")
+        await callback.answer("🚀 Запускаю...")
         
         started = 0
         failed = 0
-        start_tasks = []
         
-        for phone in work_sessions:
+        for phone in user_sessions.get(user_id, []):
+            config = get_session_config(user_id, phone)
+            if not config.get("enabled", False):
+                continue
+            
             if phone not in active_clients:
                 failed += 1
                 continue
             
             client = active_clients[phone]
-            
             if not client.is_connected():
                 try:
                     await client.connect()
@@ -578,11 +576,7 @@ async def work_start_all(callback: types.CallbackQuery):
                     failed += 1
                     continue
             
-            try:
-                if not await client.is_user_authorized():
-                    failed += 1
-                    continue
-            except:
+            if not await client.is_user_authorized():
                 failed += 1
                 continue
             
@@ -590,304 +584,56 @@ async def work_start_all(callback: types.CallbackQuery):
                 started += 1
                 continue
             
-            # Создаем задачу для параллельного запуска
-            task = start_gram_worker(client, bot_name, phone, user_id)
-            start_tasks.append(task)
+            bot_name = user_bot_choice.get(user_id, "@gram_prbot")
+            await start_gram_worker(client, bot_name, phone, user_id)
             started += 1
-        
-        # Запускаем ВСЕ задачи параллельно (не ждём завершения)
-        if start_tasks:
-            for task in start_tasks:
-                asyncio.create_task(task)
-            await asyncio.sleep(0.5)  # Даём время на старт
+            await asyncio.sleep(0.5)
         
         await callback.message.edit_text(
             f"🚀 <b>Запуск завершен!</b>\n\n"
             f"✅ Запущено: {started}\n"
             f"❌ Ошибок: {failed}\n"
-            f"📋 Всего сессий: {len(work_sessions)}\n\n"
-            f"⚡ Все сессии работают ПАРАЛЛЕЛЬНО",
+            f"📋 Всего сессий: {len(user_sessions.get(user_id, []))}",
             parse_mode=ParseMode.HTML,
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="⬅️ Назад", callback_data="gram_sessions")],
+                [InlineKeyboardButton(text="⬅️ Назад", callback_data="bot_prgramm")],
                 [InlineKeyboardButton(text="🏠 Меню", callback_data="main")]
             ])
         )
-        
     except Exception as e:
-        logging.error(f"Ошибка work_start_all: {e}")
-        await callback.answer(f"❌ Ошибка: {e}")
+        logging.error(f"❌ sess_start_all_callback: {e}")
+        await callback.answer("❌ Ошибка")
 
 
-# ============ ВЫБОР ТИПА ЗАДАНИЙ ============
-
-@dp.callback_query(lambda c: c.data == "gram_choose_task")
-async def gram_choose_task(callback: types.CallbackQuery):
-    await callback.answer()
-    user_id = callback.from_user.id
-    
+@dp.callback_query(lambda c: c.data == "sess_stop_all")
+async def sess_stop_all_callback(callback: types.CallbackQuery):
     try:
-        await callback.message.edit_text(
-            "📋 <b>Выбор типа заданий</b>\n\n"
-            "Выбери тип заданий, которые будет выполнять бот:\n\n"
-            "✅ - текущий выбранный тип",
-            parse_mode=ParseMode.HTML,
-            reply_markup=get_task_choice_keyboard(user_id)
-        )
-    except Exception as e:
-        logging.error(f"Ошибка gram_choose_task: {e}")
-        await callback.message.answer(
-            "📋 <b>Выбор типа заданий</b>\n\n"
-            "Выбери тип заданий, которые будет выполнять бот:\n\n"
-            "✅ - текущий выбранный тип",
-            parse_mode=ParseMode.HTML,
-            reply_markup=get_task_choice_keyboard(user_id)
-        )
-
-
-# ============ СМЕНА БОТА ============
-
-@dp.callback_query(lambda c: c.data == "gram_change_bot")
-async def gram_change_bot(callback: types.CallbackQuery):
-    await callback.answer()
-    user_id = callback.from_user.id
-    current_bot = user_bot_choice.get(user_id, "@gram_prbot")
-    
-    try:
-        await callback.message.edit_text(
-            "🔄 <b>Выбор Gram бота</b>\n\n"
-            "Выбери бота для работы:",
-            parse_mode=ParseMode.HTML,
-            reply_markup=get_bot_choice_keyboard(current_bot)
-        )
-    except Exception as e:
-        logging.error(f"Ошибка gram_change_bot: {e}")
-        await callback.message.answer(
-            "🔄 <b>Выбор Gram бота</b>\n\n"
-            "Выбери бота для работы:",
-            parse_mode=ParseMode.HTML,
-            reply_markup=get_bot_choice_keyboard(current_bot)
-        )
-
-
-@dp.callback_query(lambda c: c.data.startswith("bot_choice_"))
-async def bot_choice(callback: types.CallbackQuery):
-    await callback.answer()
-    user_id = callback.from_user.id
-    bot_code = callback.data.replace("bot_choice_", "")
-    
-    if bot_code == "g_piar":
-        bot_name = "@gram_piarbot"
-    else:
-        bot_name = "@gram_prbot"
-    
-    user_bot_choice[user_id] = bot_name
-    save_bot_choices()
-    
-    work_sessions = user_work_sessions.get(user_id, [])
-    for phone in work_sessions:
-        if phone in active_tasks and not active_tasks[phone].done():
-            await stop_gram_bot(phone)
-            if phone in active_clients:
-                client = active_clients[phone]
-                if client.is_connected():
-                    await start_gram_worker(client, bot_name, phone)
-    
-    try:
-        await callback.message.edit_text(
-            f"✅ <b>Бот изменен!</b>\n\n"
-            f"🤖 Выбран: <b>{bot_name}</b>\n\n"
-            f"🔄 Обновлено для всех рабочих сессий",
-            parse_mode=ParseMode.HTML
-        )
-    except Exception as e:
-        logging.error(f"Ошибка bot_choice: {e}")
-        await callback.message.answer(
-            f"✅ <b>Бот изменен!</b>\n\n"
-            f"🤖 Выбран: <b>{bot_name}</b>",
-            parse_mode=ParseMode.HTML
-        )
-    
-    await bot_prgramm_menu(callback)
-
-
-# ============ ВКЛЮЧЕНИЕ/ВЫКЛЮЧЕНИЕ БОТА ============
-
-@dp.callback_query(lambda c: c.data == "bot_prgramm_start")
-async def gram_start(callback: types.CallbackQuery):
-    await callback.answer()
-    user_id = callback.from_user.id
-    
-    phone = get_user_active_phone(user_id)
-    if not phone:
-        await callback.answer("❌ Нет активной сессии")
-        return
-    
-    if phone not in active_clients:
-        await callback.answer("❌ Сессия не активна. Пересоздайте.")
-        return
-    
-    bot_name = user_bot_choice.get(user_id, "@gram_prbot")
-    
-    set_user_chat_id(user_id)
-    client = active_clients[phone]
-    
-    if not client.is_connected():
-        try:
-            await client.connect()
-        except Exception as e:
-            logging.error(f"❌ Ошибка подключения: {e}")
-            await callback.answer("❌ Ошибка подключения к сессии")
-            return
-    
-    try:
-        if not await client.is_user_authorized():
-            await callback.answer("❌ Сессия не авторизована. Пересоздайте.")
-            return
-    except Exception as e:
-        logging.error(f"❌ Ошибка проверки авторизации: {e}")
-        await callback.answer("❌ Ошибка сессии")
-        return
-    
-    await start_gram_worker(client, bot_name, phone, user_id)
-    
-    await bot_prgramm_menu(callback)
-
-
-@dp.callback_query(lambda c: c.data == "bot_prgramm_stop")
-async def gram_stop(callback: types.CallbackQuery):
-    await callback.answer()
-    user_id = callback.from_user.id
-    
-    phone = get_user_active_phone(user_id)
-    if not phone:
-        await callback.answer("❌ Нет активной сессии")
-        return
-    
-    result = await stop_gram_bot(phone)
-    
-    if result:
-        await callback.answer("✅ Остановлен")
-    else:
-        await callback.answer("❌ Ошибка остановки")
-    
-    await bot_prgramm_menu(callback)
-
-
-@dp.callback_query(lambda c: c.data == "no_session")
-async def no_session(callback: types.CallbackQuery):
-    await callback.answer("Сначала добавь сессию в разделе 'Мои сессии'", show_alert=True)
-
-
-@dp.callback_query(lambda c: c.data == "no_action")
-async def no_action(callback: types.CallbackQuery):
-    await callback.answer()
-
-
-@dp.message(Command("stop_gram"))
-async def stop_gram_command(message: types.Message):
-    user_id = message.from_user.id
-    
-    phone = get_user_active_phone(user_id)
-    if not phone:
-        await message.answer("❌ Нет активной сессии")
-        return
-    
-    result = await stop_gram_bot(phone)
-    
-    if result:
-        await message.answer(f"✅ Gram бот остановлен для {phone}\n\nДля возобновления нажмите 'Запустить' в меню Gram бота.")
-    else:
-        await message.answer("❌ Gram бот не был запущен")
-
-
-@dp.message(Command("continue_gram"))
-async def continue_gram_command(message: types.Message):
-    user_id = message.from_user.id
-    
-    phone = get_user_active_phone(user_id)
-    if not phone:
-        await message.answer("❌ Нет активной сессии")
-        return
-    
-    result = await continue_gram_bot(phone)
-    
-    if result:
-        await message.answer(
-            "✅ Gram бот продолжен!\n\n"
-            "Если капча еще активна, пройдите её вручную в Telegram и нажмите /continue_gram снова."
-        )
-    else:
-        await message.answer("❌ Ошибка продолжения. Попробуйте перезапустить бота.")
-
-
-# ============ CALLBACK: СЕССИИ ============
-
-@dp.callback_query(lambda c: c.data == "sessions")
-async def sessions_menu(callback: types.CallbackQuery):
-    await callback.answer()
-    user_id = callback.from_user.id
-    
-    text = "📱 <b>Мои сессии</b>\n\n"
-    
-    if user_id in user_sessions and user_sessions[user_id]:
-        phones = user_sessions[user_id]
-        active_idx = user_active_session.get(user_id, 0)
-        
-        text += f"📊 Сессий: {len(phones)}/{MAX_SESSIONS}\n\n"
-        
-        for i, phone in enumerate(phones):
-            is_active = (i == active_idx)
-            status = "🟢 активна" if is_active else "⚪"
-            text += f"{'✅ ' if is_active else '   '}📱 {phone} - {status}\n"
-        
-        text += "\n<i>Нажми на номер для переключения</i>"
-    else:
-        text += "❌ Нет активных сессий\n\n"
-        text += f"Максимум: {MAX_SESSIONS} сессий\n"
-        text += "Нажми 'Добавить сессию' для авторизации"
-    
-    try:
-        await callback.message.edit_text(
-            text,
-            parse_mode=ParseMode.HTML,
-            reply_markup=get_sessions_keyboard(user_id)
-        )
-    except Exception as e:
-        logging.error(f"Ошибка sessions_menu: {e}")
-        await callback.message.answer(
-            text,
-            parse_mode=ParseMode.HTML,
-            reply_markup=get_sessions_keyboard(user_id)
-        )
-
-
-@dp.callback_query(lambda c: c.data and c.data.startswith("sess_switch_"))
-async def session_switch(callback: types.CallbackQuery):
-    try:
-        idx = int(callback.data.replace("sess_switch_", ""))
         user_id = callback.from_user.id
+        await callback.answer("⏹ Останавливаю...")
         
-        if user_id not in user_sessions or idx >= len(user_sessions[user_id]):
-            await callback.answer("❌ Сессия не найдена")
-            return
+        stopped = 0
         
-        phone = user_sessions[user_id][idx]
+        for phone in user_sessions.get(user_id, []):
+            if phone in active_tasks and not active_tasks[phone].done():
+                await stop_gram_bot(phone)
+                stopped += 1
+                await asyncio.sleep(0.3)
         
-        current_phone = get_user_active_phone(user_id)
-        if current_phone and current_phone in active_tasks:
-            await stop_gram_bot(current_phone)
-        
-        user_active_session[user_id] = idx
-        save_active_session()
-        
-        await callback.answer(f"✅ Переключено на {phone}")
-        await sessions_menu(callback)
-        
+        await callback.message.edit_text(
+            f"⏹ <b>Остановка завершена!</b>\n\n"
+            f"✅ Остановлено: {stopped} сессий",
+            parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="⬅️ Назад", callback_data="bot_prgramm")],
+                [InlineKeyboardButton(text="🏠 Меню", callback_data="main")]
+            ])
+        )
     except Exception as e:
-        logging.error(f"Ошибка session_switch: {e}")
-        await callback.answer(f"❌ Ошибка: {e}")
+        logging.error(f"❌ sess_stop_all_callback: {e}")
+        await callback.answer("❌ Ошибка")
 
+
+# ============ ДОБАВЛЕНИЕ СЕССИЙ ============
 
 @dp.callback_query(lambda c: c.data == "sess_add")
 async def session_add(callback: types.CallbackQuery, state: FSMContext):
@@ -975,14 +721,7 @@ async def session_code(message: types.Message, state: FSMContext):
             user_sessions[user_id].append(phone)
             save_sessions()
             
-            user_active_session[user_id] = len(user_sessions[user_id]) - 1
-            save_active_session()
-            
-            if user_id not in user_work_sessions:
-                user_work_sessions[user_id] = []
-            if phone not in user_work_sessions[user_id]:
-                user_work_sessions[user_id].append(phone)
-                save_work_sessions()
+            get_session_config(user_id, phone)
         
         bot_name = user_bot_choice.get(user_id, "@gram_prbot")
         
@@ -991,7 +730,7 @@ async def session_code(message: types.Message, state: FSMContext):
             f"📱 {phone}\n"
             f"🤖 Выбранный бот: {bot_name}\n"
             f"📊 Всего сессий: {len(user_sessions[user_id])}/{MAX_SESSIONS}\n\n"
-            f"✅ Сессия добавлена в рабочие",
+            f"Теперь перейди в раздел 'Боты' → 'PR GRAMM' для настройки",
             parse_mode=ParseMode.HTML,
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="🤖 Перейти в Боты", callback_data="bot_prgramm")],
@@ -1006,27 +745,37 @@ async def session_code(message: types.Message, state: FSMContext):
         )
 
 
-@dp.callback_query(lambda c: c.data == "sess_delete_choose")
-async def session_delete_choose(callback: types.CallbackQuery):
+# ============ УДАЛЕНИЕ СЕССИЙ ============
+
+@dp.callback_query(lambda c: c.data == "sessions")
+async def sessions_menu(callback: types.CallbackQuery):
     await callback.answer()
     user_id = callback.from_user.id
     
-    if user_id not in user_sessions or not user_sessions[user_id]:
-        await callback.answer("❌ Нет сессий для удаления")
-        return
+    text = "📱 <b>Мои сессии</b>\n\n"
+    
+    if user_id in user_sessions and user_sessions[user_id]:
+        text += f"📊 Сессий: {len(user_sessions[user_id])}/{MAX_SESSIONS}\n\n"
+        for phone in user_sessions[user_id]:
+            config = get_session_config(user_id, phone)
+            status = "🟢 Вкл" if config.get("enabled", False) else "🔴 Выкл"
+            text += f"  {status} 📱 {phone}\n"
+        
+        text += "\n<i>Нажми на номер для удаления</i>"
+    else:
+        text += "❌ Нет активных сессий\n\n"
+        text += f"Максимум: {MAX_SESSIONS} сессий"
     
     try:
         await callback.message.edit_text(
-            "🗑 <b>Удаление сессии</b>\n\n"
-            "Выбери сессию для удаления:",
+            text,
             parse_mode=ParseMode.HTML,
             reply_markup=get_session_delete_keyboard(user_id)
         )
     except Exception as e:
-        logging.error(f"Ошибка session_delete_choose: {e}")
+        logging.error(f"Ошибка sessions_menu: {e}")
         await callback.message.answer(
-            "🗑 <b>Удаление сессии</b>\n\n"
-            "Выбери сессию для удаления:",
+            text,
             parse_mode=ParseMode.HTML,
             reply_markup=get_session_delete_keyboard(user_id)
         )
@@ -1035,14 +784,12 @@ async def session_delete_choose(callback: types.CallbackQuery):
 @dp.callback_query(lambda c: c.data and c.data.startswith("sess_del_"))
 async def session_delete_execute(callback: types.CallbackQuery):
     try:
-        idx = int(callback.data.replace("sess_del_", ""))
+        phone = callback.data.replace("sess_del_", "")
         user_id = callback.from_user.id
         
-        if user_id not in user_sessions or idx >= len(user_sessions[user_id]):
+        if user_id not in user_sessions or phone not in user_sessions[user_id]:
             await callback.answer("❌ Сессия не найдена")
             return
-        
-        phone = user_sessions[user_id][idx]
         
         if phone in active_tasks:
             await stop_gram_bot(phone)
@@ -1054,294 +801,21 @@ async def session_delete_execute(callback: types.CallbackQuery):
                 pass
             del active_clients[phone]
         
-        del user_sessions[user_id][idx]
+        user_sessions[user_id].remove(phone)
         save_sessions()
         
-        if user_id in user_work_sessions and phone in user_work_sessions[user_id]:
-            user_work_sessions[user_id].remove(phone)
-            save_work_sessions()
-        
-        if user_id in user_active_session:
-            if user_active_session[user_id] >= len(user_sessions[user_id]):
-                user_active_session[user_id] = max(0, len(user_sessions[user_id]) - 1)
-            save_active_session()
+        if user_id in user_session_config and phone in user_session_config[user_id]:
+            del user_session_config[user_id][phone]
+            save_session_config()
         
         await callback.answer(f"✅ Сессия {phone} удалена")
         await sessions_menu(callback)
-        
     except Exception as e:
-        logging.error(f"Ошибка session_delete_execute: {e}")
+        logging.error(f"❌ session_delete_execute: {e}")
         await callback.answer(f"❌ Ошибка: {e}")
 
 
-@dp.callback_query(lambda c: c.data == "sess_info")
-async def session_info(callback: types.CallbackQuery):
-    await callback.answer()
-    user_id = callback.from_user.id
-    
-    phone = get_user_active_phone(user_id)
-    if not phone:
-        await callback.answer("❌ Сессия не найдена")
-        return
-    
-    if phone not in active_clients:
-        await callback.answer("❌ Сессия не активна")
-        return
-    
-    client = active_clients[phone]
-    
-    try:
-        me = await client.get_me()
-        username = f"@{me.username}" if me.username else "Нет юзернейма"
-        user_id_telegram = me.id
-        first_name = me.first_name or ""
-        last_name = me.last_name or ""
-        name = f"{first_name} {last_name}".strip()
-        
-        is_active = phone in active_tasks and not active_tasks[phone].done()
-        
-        total_sessions = len(user_sessions.get(user_id, []))
-        work_sessions = len(user_work_sessions.get(user_id, []))
-        
-        text = f"📱 <b>Информация о сессии</b>\n\n"
-        text += f"👤 <b>{name or 'Без имени'}</b>\n"
-        text += f"📱 {phone}\n"
-        text += f"🆔 {user_id_telegram}\n"
-        text += f"👤 {username}\n"
-        text += f"📊 Статус: {'🟢 Активна' if is_active else '🟡 Остановлена'}\n"
-        text += f"📊 Всего сессий: {total_sessions}/{MAX_SESSIONS}\n"
-        text += f"📋 В работе: {work_sessions}\n"
-        
-    except Exception as e:
-        text = f"📱 <b>Информация о сессии</b>\n\n"
-        text += f"📱 {phone}\n"
-        text += f"❌ Ошибка получения данных: {e}\n"
-    
-    try:
-        await callback.message.edit_text(
-            text,
-            parse_mode=ParseMode.HTML,
-            reply_markup=get_session_actions_keyboard()
-        )
-    except Exception as e:
-        logging.error(f"Ошибка session_info: {e}")
-        await callback.message.answer(
-            text,
-            parse_mode=ParseMode.HTML,
-            reply_markup=get_session_actions_keyboard()
-        )
-
-
-# ============ ВЫХОД ИЗ КАНАЛОВ ============
-
-@dp.callback_query(lambda c: c.data == "sess_leave_channels")
-async def session_leave_channels(callback: types.CallbackQuery):
-    await callback.answer("⏳ Выхожу из каналов...")
-    user_id = callback.from_user.id
-    
-    phone = get_user_active_phone(user_id)
-    if not phone:
-        await callback.answer("❌ Нет активной сессии")
-        return
-    
-    if phone not in active_clients:
-        await callback.answer("❌ Сессия не активна")
-        return
-    
-    client = active_clients[phone]
-    
-    try:
-        from telethon.tl.functions.channels import LeaveChannelRequest
-        from telethon.tl.types import InputChannel
-        
-        left_count = 0
-        error_count = 0
-        skipped_count = 0
-        
-        await callback.message.edit_text(
-            f"⏳ <b>Выход из каналов...</b>\n\n"
-            f"📱 {phone}\n"
-            f"Это может занять некоторое время",
-            parse_mode=ParseMode.HTML
-        )
-        
-        async for dialog in client.iter_dialogs():
-            try:
-                if dialog.is_channel:
-                    if dialog.entity.username == "me":
-                        skipped_count += 1
-                        continue
-                    
-                    try:
-                        input_channel = InputChannel(
-                            channel_id=dialog.entity.id,
-                            access_hash=dialog.entity.access_hash
-                        )
-                        await client(LeaveChannelRequest(input_channel))
-                        left_count += 1
-                        logging.info(f"🚪 Вышел из канала: {dialog.name}")
-                        await asyncio.sleep(1.5)
-                    except Exception as e:
-                        error_msg = str(e).lower()
-                        if "not a member" in error_msg or "already left" in error_msg or "user not found" in error_msg:
-                            skipped_count += 1
-                        elif "admin" in error_msg or "creator" in error_msg:
-                            skipped_count += 1
-                        else:
-                            error_count += 1
-                            logging.error(f"❌ Ошибка выхода из {dialog.name}: {e}")
-                                
-            except Exception as e:
-                error_count += 1
-                continue
-        
-        result_text = (
-            f"✅ <b>Выход из каналов завершен!</b>\n\n"
-            f"📱 {phone}\n"
-            f"🚪 Вышел из: {left_count} каналов\n"
-            f"⏭ Пропущено: {skipped_count}\n"
-            f"❌ Ошибок: {error_count}\n\n"
-            f"<i>Личные чаты не были затронуты</i>"
-        )
-        
-        try:
-            await callback.message.edit_text(
-                result_text,
-                parse_mode=ParseMode.HTML,
-                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                    [InlineKeyboardButton(text="⬅️ Назад к сессии", callback_data="sess_info")],
-                    [InlineKeyboardButton(text="🏠 Меню", callback_data="main")]
-                ])
-            )
-        except Exception as e:
-            logging.error(f"Ошибка session_leave_channels: {e}")
-            await callback.message.answer(
-                result_text,
-                parse_mode=ParseMode.HTML,
-                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                    [InlineKeyboardButton(text="⬅️ Назад к сессии", callback_data="sess_info")],
-                    [InlineKeyboardButton(text="🏠 Меню", callback_data="main")]
-                ])
-            )
-        
-    except Exception as e:
-        await callback.message.edit_text(
-            f"❌ Критическая ошибка: {e}",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="⬅️ Назад", callback_data="sessions")]
-            ])
-        )
-
-
-# ============ ВЫХОД ИЗ ГРУПП ============
-
-@dp.callback_query(lambda c: c.data == "sess_leave_groups")
-async def session_leave_groups(callback: types.CallbackQuery):
-    await callback.answer("⏳ Выхожу из групп...")
-    user_id = callback.from_user.id
-    
-    phone = get_user_active_phone(user_id)
-    if not phone:
-        await callback.answer("❌ Нет активной сессии")
-        return
-    
-    if phone not in active_clients:
-        await callback.answer("❌ Сессия не активна")
-        return
-    
-    client = active_clients[phone]
-    
-    try:
-        from telethon.tl.functions.channels import LeaveChannelRequest
-        from telethon.tl.types import InputChannel
-        
-        left_count = 0
-        error_count = 0
-        skipped_count = 0
-        
-        await callback.message.edit_text(
-            f"⏳ <b>Выход из групп...</b>\n\n"
-            f"📱 {phone}\n"
-            f"Это может занять некоторое время",
-            parse_mode=ParseMode.HTML
-        )
-        
-        async for dialog in client.iter_dialogs():
-            try:
-                if dialog.is_group:
-                    try:
-                        if hasattr(dialog.entity, 'access_hash') and dialog.entity.access_hash:
-                            input_channel = InputChannel(
-                                channel_id=dialog.entity.id,
-                                access_hash=dialog.entity.access_hash
-                            )
-                            await client(LeaveChannelRequest(input_channel))
-                            left_count += 1
-                            logging.info(f"🚪 Вышел из группы: {dialog.name}")
-                        else:
-                            from telethon.tl.functions.messages import DeleteChatUserRequest
-                            from telethon.tl.types import InputUserSelf
-                            await client(DeleteChatUserRequest(
-                                chat_id=dialog.id,
-                                user_id=InputUserSelf()
-                            ))
-                            left_count += 1
-                            logging.info(f"🚪 Вышел из группы (обычная): {dialog.name}")
-                        
-                        await asyncio.sleep(1.5)
-                    except Exception as e:
-                        error_msg = str(e).lower()
-                        if "not a member" in error_msg or "already left" in error_msg or "user not found" in error_msg:
-                            skipped_count += 1
-                        elif "admin" in error_msg or "creator" in error_msg:
-                            skipped_count += 1
-                        else:
-                            error_count += 1
-                            logging.error(f"❌ Ошибка выхода из группы {dialog.name}: {e}")
-                                
-            except Exception as e:
-                error_count += 1
-                continue
-        
-        result_text = (
-            f"✅ <b>Выход из групп завершен!</b>\n\n"
-            f"📱 {phone}\n"
-            f"🚪 Вышел из: {left_count} групп\n"
-            f"⏭ Пропущено: {skipped_count}\n"
-            f"❌ Ошибок: {error_count}\n\n"
-            f"<i>Личные чаты не были затронуты</i>"
-        )
-        
-        try:
-            await callback.message.edit_text(
-                result_text,
-                parse_mode=ParseMode.HTML,
-                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                    [InlineKeyboardButton(text="⬅️ Назад к сессии", callback_data="sess_info")],
-                    [InlineKeyboardButton(text="🏠 Меню", callback_data="main")]
-                ])
-            )
-        except Exception as e:
-            logging.error(f"Ошибка session_leave_groups: {e}")
-            await callback.message.answer(
-                result_text,
-                parse_mode=ParseMode.HTML,
-                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                    [InlineKeyboardButton(text="⬅️ Назад к сессии", callback_data="sess_info")],
-                    [InlineKeyboardButton(text="🏠 Меню", callback_data="main")]
-                ])
-            )
-        
-    except Exception as e:
-        await callback.message.edit_text(
-            f"❌ Критическая ошибка: {e}",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="⬅️ Назад", callback_data="sessions")]
-            ])
-        )
-
-
-# ============ CALLBACK: ЮЗЕРНЕЙМЫ ============
+# ============ ЮЗЕРНЕЙМЫ ============
 
 @dp.callback_query(lambda c: c.data == "users")
 async def username_menu(callback: types.CallbackQuery):
@@ -1374,7 +848,7 @@ async def cancel_command(message: types.Message, state: FSMContext):
     )
 
 
-# ============ CALLBACK: ОТВЕТЫ НА КАПЧУ ============
+# ============ КАПЧА ============
 
 @dp.callback_query(lambda c: c.data and c.data.startswith("captcha_answer_"))
 async def captcha_answer_callback(callback: types.CallbackQuery):
@@ -1429,33 +903,115 @@ async def captcha_stop_callback(callback: types.CallbackQuery):
         await callback.answer(f"❌ Ошибка: {e}")
 
 
+# ============ ОБРАБОТЧИКИ ДЛЯ КНОПОК ИЗ gram_bot.py ============
+
+@dp.callback_query(lambda c: c.data == "gram_choose_task")
+async def gram_choose_task(callback: types.CallbackQuery):
+    await callback.answer()
+    user_id = callback.from_user.id
+    
+    try:
+        await callback.message.edit_text(
+            "📋 <b>Выбор типа заданий</b>\n\n"
+            "Выбери тип заданий:",
+            parse_mode=ParseMode.HTML,
+            reply_markup=get_task_choice_keyboard(user_id)
+        )
+    except Exception as e:
+        logging.error(f"Ошибка gram_choose_task: {e}")
+        await callback.message.answer(
+            "📋 <b>Выбор типа заданий</b>\n\n"
+            "Выбери тип заданий:",
+            parse_mode=ParseMode.HTML,
+            reply_markup=get_task_choice_keyboard(user_id)
+        )
+
+
+@dp.callback_query(lambda c: c.data == "gram_change_bot")
+async def gram_change_bot(callback: types.CallbackQuery):
+    await callback.answer()
+    user_id = callback.from_user.id
+    current_bot = user_bot_choice.get(user_id, "@gram_prbot")
+    
+    bots = [
+        ("@gram_piarbot", "g_piar"),
+        ("@gram_prbot", "g_pr"),
+    ]
+    
+    buttons = []
+    for name, code in bots:
+        check = "✅ " if name == current_bot else ""
+        buttons.append([InlineKeyboardButton(
+            text=f"{check}{name}", 
+            callback_data=f"bot_choice_{code}"
+        )])
+    buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="bot_prgramm")])
+    
+    try:
+        await callback.message.edit_text(
+            "🔄 <b>Выбор Gram бота</b>\n\n"
+            "Выбери бота для работы:",
+            parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons)
+        )
+    except Exception as e:
+        logging.error(f"Ошибка gram_change_bot: {e}")
+        await callback.message.answer(
+            "🔄 <b>Выбор Gram бота</b>\n\n"
+            "Выбери бота для работы:",
+            parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons)
+        )
+
+
+@dp.callback_query(lambda c: c.data.startswith("bot_choice_"))
+async def bot_choice_callback(callback: types.CallbackQuery):
+    await callback.answer()
+    user_id = callback.from_user.id
+    bot_code = callback.data.replace("bot_choice_", "")
+    
+    if bot_code == "g_piar":
+        bot_name = "@gram_piarbot"
+    else:
+        bot_name = "@gram_prbot"
+    
+    user_bot_choice[user_id] = bot_name
+    save_bot_choices()
+    
+    await callback.message.edit_text(
+        f"✅ <b>Бот изменен!</b>\n\n"
+        f"🤖 Выбран: <b>{bot_name}</b>",
+        parse_mode=ParseMode.HTML,
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data="bot_prgramm")]
+        ])
+    )
+    
+    await bot_prgramm_menu(callback)
+
+
 # ============ ИНИЦИАЛИЗАЦИЯ ============
 
 async def main():
-    global user_sessions, user_bot_choice, user_active_session, user_work_sessions
+    global user_sessions, user_bot_choice, user_session_config
     
     user_sessions.update(load_sessions())
     user_bot_choice.update(load_bot_choices())
-    user_active_session.update(load_active_session())
-    user_work_sessions.update(load_work_sessions())
+    user_session_config.update(load_session_config())
     
-    # Устанавливаем экземпляры ботов
     set_gram_bot_instance(bot)
     set_captcha_bot(bot)
     set_captcha_clients(active_clients)
     set_captcha_continue_callback(continue_gram_bot)
     set_auto_click_timeout(30)
-    set_ai_solver(True)  # Включаем авто-решение капчи через AI
+    set_ai_solver(True)
     
     logging.info("✅ Экземпляр бота передан в gram_bot и captcha_solver")
-    logging.info("✅ Работает")
     logging.info(f"📱 Максимум сессий: {MAX_SESSIONS}")
     
-    # Инициализируем модули
     init_username_bot(dp)
     init_gram_bot(dp)
     
-    # Запускаем бота
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
