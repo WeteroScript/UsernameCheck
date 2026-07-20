@@ -123,8 +123,9 @@ def get_bot_category_keyboard(user_id: int, phone: str = None) -> InlineKeyboard
 
 
 def get_bot_settings_keyboard() -> InlineKeyboardMarkup:
-    """Настройки бота (без лишней кнопки категории)"""
+    """Настройки бота"""
     return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📋 Тип заданий", callback_data="gram_choose_task")],
         [InlineKeyboardButton(text="🔄 Сменить бота", callback_data="gram_change_bot")],
         [InlineKeyboardButton(text="⬅️ Назад", callback_data="bot_prgramm")],
     ])
@@ -1697,4 +1698,4 @@ __all__ = [
     'set_user_chat_id', 'set_bot_instance', 'get_task_choice_keyboard',
     'get_bot_category_keyboard', 'get_bot_settings_keyboard',
     'active_clients', 'active_tasks'
-]
+                             ]
