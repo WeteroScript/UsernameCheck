@@ -874,6 +874,9 @@ async def main():
     logging.info("✅ Экземпляр бота передан в gram_bot и captcha_solver")
     logging.info(f"📱 Максимум сессий: {MAX_SESSIONS}")
     
+    dp.include_router(username_router)
+    dp.include_router(gram_router)
+
     init_username_bot(dp)
     init_gram_bot(dp)
     
