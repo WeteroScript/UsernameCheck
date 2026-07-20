@@ -69,7 +69,6 @@ def set_user_chat_id(chat_id: int):
 
 
 def set_session_config(user_id: int, phone: str, key: str, value: Any):
-    """Сохраняет настройки сессии в локальное хранилище"""
     if user_id not in session_config_store:
         session_config_store[user_id] = {}
     if phone not in session_config_store[user_id]:
@@ -82,7 +81,6 @@ def set_session_config(user_id: int, phone: str, key: str, value: Any):
 
 
 def get_session_config(user_id: int, phone: str) -> Dict[str, Any]:
-    """Получает настройки сессии из локального хранилища"""
     if user_id not in session_config_store:
         session_config_store[user_id] = {}
     if phone not in session_config_store[user_id]:
@@ -95,7 +93,6 @@ def get_session_config(user_id: int, phone: str) -> Dict[str, Any]:
 
 
 def get_task_choice_keyboard(user_id: int, phone: str = None) -> InlineKeyboardMarkup:
-    """Клавиатура выбора типа заданий (для сессии или глобально)"""
     task_types = {
         "channels": "📢 Подписка на каналы",
         "groups": "👥 Вступление в группы",
@@ -121,7 +118,6 @@ def get_task_choice_keyboard(user_id: int, phone: str = None) -> InlineKeyboardM
 
 
 def get_bot_category_keyboard(user_id: int, phone: str = None) -> InlineKeyboardMarkup:
-    """Клавиатура выбора категории ботов"""
     if phone:
         config = get_session_config(user_id, phone)
         current = config.get("bot_category", "regular")
@@ -151,7 +147,6 @@ def get_bot_category_keyboard(user_id: int, phone: str = None) -> InlineKeyboard
 
 
 def get_bot_settings_keyboard() -> InlineKeyboardMarkup:
-    """Настройки бота (ТОЛЬКО тип заданий и смена бота)"""
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📋 Тип заданий", callback_data="gram_choose_task")],
         [InlineKeyboardButton(text="🔄 Сменить бота", callback_data="gram_change_bot")],
@@ -160,7 +155,7 @@ def get_bot_settings_keyboard() -> InlineKeyboardMarkup:
 
 
 # ============================================================
-# ШРИФТЫ (УЛУЧШЕННАЯ ВЕРСИЯ С ПОДДЕРЖКОЙ КИРИЛЛИЦЫ)
+# ШРИФТЫ
 # ============================================================
 
 _font_cache: Dict[int, ImageFont.ImageFont] = {}
@@ -168,7 +163,6 @@ _font_path: Optional[str] = None
 _font_loaded = False
 
 def download_font_from_google(font_name: str = None) -> Optional[str]:
-    """Скачивает шрифт с Google Fonts"""
     if font_name is None:
         font_name = FONT_CHOICE
     
@@ -185,6 +179,7 @@ def download_font_from_google(font_name: str = None) -> Optional[str]:
     try:
         logging.info(f"⬇️ Скачиваю шрифт {font_name}...")
         urllib.request.urlretrieve(url, font_path)
+        logging.info(f"✅ Шрифт скачан: {font_path}")
         return font_path
     except Exception as e:
         logging.error(f"❌ Ошибка скачивания шрифта: {e}")
@@ -192,20 +187,22 @@ def download_font_from_google(font_name: str = None) -> Optional[str]:
     return None
 
 def get_font_path() -> Optional[str]:
-    """Возвращает путь к шрифту с поддержкой кириллицы"""
     global _font_path, _font_loaded
     
     if _font_loaded:
         return _font_path
     
-    # 1. Скачиваем с Google
     google_font = download_font_from_google()
     if google_font:
-        _font_path = google_font
-        _font_loaded = True
-        return _font_path
+        try:
+            ImageFont.truetype(google_font, 30)
+            _font_path = google_font
+            _font_loaded = True
+            logging.info(f"✅ Шрифт загружен: {google_font}")
+            return _font_path
+        except Exception as e:
+            logging.warning(f"⚠️ Не удалось загрузить скачанный шрифт: {e}")
     
-    # 2. Локальные файлы
     local_fonts = [
         os.path.join("fonts", f"{FONT_CHOICE}.ttf"),
         os.path.join("fonts", "inter.ttf"),
@@ -218,27 +215,21 @@ def get_font_path() -> Optional[str]:
                 ImageFont.truetype(path, 30)
                 _font_path = path
                 _font_loaded = True
+                logging.info(f"✅ Найден локальный шрифт: {path}")
                 return path
-            except:
+            except Exception as e:
                 continue
     
-    # 3. Системные пути с кириллицей
     system_fonts = [
         '/System/Library/Fonts/Supplemental/Arial Bold.ttf',
         '/System/Library/Fonts/Supplemental/Helvetica Bold.ttf',
-        '/System/Library/Fonts/SFProDisplay-Bold.ttf',
         '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf',
         '/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf',
         '/usr/share/fonts/truetype/noto/NotoSans-Bold.ttf',
-        '/usr/share/fonts/truetype/noto/NotoSansCJK-Bold.ttc',
-        '/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc',
         'C:\\Windows\\Fonts\\arialbd.ttf',
         'C:\\Windows\\Fonts\\segoeuib.ttf',
-        'C:\\Windows\\Fonts\\timesbd.ttf',
-        '/data/data/com.termux/files/usr/share/fonts/TTF/DejaVuSans-Bold.ttf',
         '/system/fonts/Roboto-Bold.ttf',
         '/system/fonts/NotoSans-Bold.ttf',
-        '/system/fonts/DroidSans-Bold.ttf',
     ]
     
     for path in system_fonts:
@@ -247,15 +238,16 @@ def get_font_path() -> Optional[str]:
                 ImageFont.truetype(path, 30)
                 _font_path = path
                 _font_loaded = True
+                logging.info(f"✅ Найден системный шрифт: {path}")
                 return path
-            except:
+            except Exception as e:
                 continue
     
     _font_loaded = True
+    logging.warning("⚠️ Шрифт не найден, будет использован стандартный")
     return None
 
 def load_font(size: int) -> ImageFont.ImageFont:
-    """Загружает шрифт нужного размера с кэшированием"""
     if size in _font_cache:
         return _font_cache[size]
     
@@ -268,52 +260,48 @@ def load_font(size: int) -> ImageFont.ImageFont:
         except Exception as e:
             logging.error(f"❌ Ошибка загрузки шрифта: {e}")
     
-    # Fallback - используем стандартный
     font = ImageFont.load_default()
     _font_cache[size] = font
     return font
 
 
 # ============================================================
-# ГЕНЕРАЦИЯ ФОТО (УЛУЧШЕННАЯ)
+# ГЕНЕРАЦИЯ ФОТО
 # ============================================================
 
 def random_bg_color() -> Tuple[int, int, int]:
-    """Случайный фон"""
     modes = [
-        (0, 0, 0),  # черный
-        (10, 10, 20),  # темно-синий
-        (20, 10, 10),  # темно-красный
-        (5, 20, 5),  # темно-зеленый
-        (15, 10, 25),  # фиолетовый
+        (0, 0, 0),
+        (10, 10, 20),
+        (20, 10, 10),
+        (5, 20, 5),
+        (15, 10, 25),
+        (25, 20, 10),
     ]
     return random.choice(modes)
 
 def random_text_color(bg: Tuple[int, int, int]) -> Tuple[int, int, int]:
-    """Яркий цвет для текста, контрастный с фоном"""
     colors = [
-        (255, 255, 255),  # белый
-        (255, 200, 50),   # желтый
-        (50, 200, 255),   # голубой
-        (255, 100, 100),  # красный
-        (100, 255, 100),  # зеленый
-        (255, 150, 255),  # розовый
-        (200, 200, 255),  # светло-синий
-        (255, 200, 150),  # оранжевый
+        (255, 255, 255),
+        (255, 200, 50),
+        (50, 200, 255),
+        (255, 100, 100),
+        (100, 255, 100),
+        (255, 150, 255),
+        (200, 200, 255),
+        (255, 200, 150),
+        (150, 255, 200),
     ]
     return random.choice(colors)
 
 def generate_bot_image() -> bytes:
-    """Генерирует картинку 1080x1080 с надписью (поддержка кириллицы)"""
     size = 1080
     text = PHOTO_TEXT
     
-    # Создаем фон
     bg = random_bg_color()
     image = Image.new('RGB', (size, size), bg)
     draw = ImageDraw.Draw(image)
     
-    # Подбираем размер шрифта
     max_width = int(size * 0.85)
     max_height = int(size * 0.4)
     
@@ -336,7 +324,6 @@ def generate_bot_image() -> bytes:
     font = load_font(best_size)
     text_color = random_text_color(bg)
     
-    # Добавляем обводку для читаемости
     bbox = draw.textbbox((0, 0), text, font=font)
     tw = bbox[2] - bbox[0]
     th = bbox[3] - bbox[1]
@@ -344,7 +331,6 @@ def generate_bot_image() -> bytes:
     x = (size - tw) // 2 + random.randint(-30, 30)
     y = (size - th) // 2 + random.randint(-30, 30)
     
-    # Рисуем тень
     shadow_color = (0, 0, 0)
     shadow_offset = max(3, best_size // 30)
     for dx in range(-shadow_offset, shadow_offset + 1, shadow_offset):
@@ -353,10 +339,15 @@ def generate_bot_image() -> bytes:
                 continue
             draw.text((x + dx, y + dy), text, font=font, fill=shadow_color)
     
-    # Рисуем основной текст
     draw.text((x, y), text, font=font, fill=text_color)
     
-    # Конвертируем в bytes
+    border_size = max(5, size // 200)
+    draw.rectangle(
+        [border_size, border_size, size - border_size, size - border_size],
+        outline=(255, 255, 255),
+        width=border_size
+    )
+    
     img_bytes = io.BytesIO()
     image.save(img_bytes, format='PNG')
     img_bytes.seek(0)
@@ -572,7 +563,6 @@ async def process_bot_tasks(client: TelegramClient, bot_username: str, msg, user
         if not msg or not msg.buttons:
             return msg
 
-        # Получаем категорию из конфига сессии или глобальную
         if user_id:
             config = get_session_config(user_id, "")
             category = config.get("bot_category", "regular")
@@ -703,7 +693,7 @@ def find_next_page(msg):
 
 
 # ============================================================
-# КАПЧА С КНОПКАМИ 1-9
+# КАПЧА
 # ============================================================
 
 async def send_captcha_to_user(msg, chat_id: int, client: TelegramClient) -> bool:
@@ -1121,7 +1111,6 @@ async def do_cycle(
     user_id: int,
     phone: str
 ):
-    # Получаем тип задания из конфига сессии
     config = get_session_config(user_id, phone)
     task_type = config.get("task_type", "channels")
     
@@ -1500,4 +1489,4 @@ __all__ = [
     'get_bot_category_keyboard', 'get_bot_settings_keyboard',
     'active_clients', 'active_tasks',
     'set_session_config', 'get_session_config'
-    ]
+                     ]
