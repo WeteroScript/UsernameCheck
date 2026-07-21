@@ -126,16 +126,18 @@ def save_session_config():
 
 
 def get_session_config(user_id: int, phone: str) -> Dict[str, Any]:
+    # Единый источник правды — словарь gram_bot.py. Раньше здесь читался
+    # отдельный локальный словарь user_session_config, который не обновлялся,
+    # когда пользователь менял тип заданий через кнопки (это меняло только
+    # словарь в gram_bot.py) — из-за этого меню показывало старое значение
+    # ("Подписки"), хотя реально был выбран другой тип ("Боты").
+    config = get_gram_session_config(user_id, phone)
     if user_id not in user_session_config:
         user_session_config[user_id] = {}
-    if phone not in user_session_config[user_id]:
-        user_session_config[user_id][phone] = {
-            "enabled": False,
-            "task_type": "channels",
-            "bot_category": "regular"
-        }
-        save_session_config()
-    return user_session_config[user_id][phone]
+    # Держим одну и ту же ссылку на dict в обоих модулях, чтобы дальнейшие
+    # изменения из любого места сразу были видны везде.
+    user_session_config[user_id][phone] = config
+    return config
 
 def set_session_config(user_id: int, phone: str, key: str, value: Any):
     config = get_session_config(user_id, phone)
