@@ -46,6 +46,8 @@ BOT_TASK_DELAY = 30
 PHOTO_TEXT = "Смотри @Bot_Farmers"
 FONT_CHOICE = "inter"
 
+BUNDLED_FONT_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fonts", "DejaVuSans-Bold.ttf")
+
 GOOGLE_FONTS = {
     "inter": "https://github.com/google/fonts/raw/main/ofl/inter/Inter-Bold.ttf",
     "roboto": "https://github.com/google/fonts/raw/main/apache/roboto/Roboto-Bold.ttf",
@@ -215,6 +217,19 @@ def get_font_path() -> Optional[str]:
     global _font_path, _font_loaded
     if _font_loaded:
         return _font_path
+    # Шрифт, который лежит прямо в репозитории — не зависит ни от сети,
+    # ни от того, установлены ли шрифты в системе/Docker-образе.
+    # Проверяем его первым, чтобы генерация фото ВСЕГДА имела рабочий
+    # масштабируемый шрифт.
+    if os.path.exists(BUNDLED_FONT_PATH):
+        try:
+            ImageFont.truetype(BUNDLED_FONT_PATH, 30)
+            _font_path = BUNDLED_FONT_PATH
+            _font_loaded = True
+            logging.info(f"✅ Используется встроенный шрифт: {BUNDLED_FONT_PATH}")
+            return _font_path
+        except Exception as e:
+            logging.warning(f"⚠️ Не удалось загрузить встроенный шрифт: {e}")
     google_font = download_font_from_google()
     if google_font:
         try:
@@ -278,7 +293,13 @@ def load_font(size: int) -> ImageFont.ImageFont:
             return font
         except Exception as e:
             logging.error(f"❌ Ошибка загрузки шрифта: {e}")
-    font = ImageFont.load_default()
+    # Pillow>=10.1 умеет масштабировать встроенный шрифт по умолчанию —
+    # используем это, чтобы даже в худшем случае (ни встроенный, ни системный
+    # шрифт не найден) текст не оставался микроскопическим на любом размере.
+    try:
+        font = ImageFont.load_default(size=size)
+    except TypeError:
+        font = ImageFont.load_default()
     _font_cache[size] = font
     return font
 
@@ -1591,4 +1612,4 @@ __all__ = [
     'get_bot_category_keyboard', 'get_bot_settings_keyboard',
     'active_clients', 'active_tasks',
     'set_session_config', 'get_session_config'
-            ]
+]
