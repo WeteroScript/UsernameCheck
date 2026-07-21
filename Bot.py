@@ -238,7 +238,7 @@ def get_session_delete_keyboard(user_id: int) -> InlineKeyboardMarkup:
                 text=f"❌ {phone}",
                 callback_data=f"sess_del_{phone}"
             )])
-    buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="sessions")])
+    buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="main")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
@@ -264,7 +264,7 @@ async def start_command(message: types.Message):
         user_session_config.update(load_session_config())
     
     if user_id not in user_bot_choice:
-        user_bot_choice[user_id] = "@gram_prbot"
+        user_bot_choice[user_id] = "@gram_piarbot"
         save_bot_choices()
     if user_id not in user_sessions:
         user_sessions[user_id] = []
@@ -309,7 +309,7 @@ async def bot_prgramm_menu(callback: types.CallbackQuery):
     user_id = callback.from_user.id
     
     if user_id not in user_bot_choice:
-        user_bot_choice[user_id] = "@gram_prbot"
+        user_bot_choice[user_id] = "@gram_piarbot"
         save_bot_choices()
     
     text = "📢 <b>PR GRAMM</b>\n\n"
@@ -385,7 +385,7 @@ async def sess_toggle_callback(callback: types.CallbackQuery):
             await stop_gram_bot(phone)
         
         if config["enabled"] is True and phone in active_clients:
-            bot_name = user_bot_choice.get(user_id, "@gram_prbot")
+            bot_name = user_bot_choice.get(user_id, "@gram_piarbot")
             client = active_clients[phone]
             if client.is_connected() and await client.is_user_authorized():
                 await start_gram_worker(client, bot_name, phone, user_id)
@@ -454,13 +454,13 @@ async def sess_cat_callback(callback: types.CallbackQuery):
         await callback.answer("❌ Ошибка")
 
 
-@dp.callback_query(lambda c: c.data and c.data.startswith("sess_bot_"))
+@dp.callback_query(lambda c: c.data and c.data.startswith("sess_bot_") and not c.data.startswith("sess_bot_choice_"))
 async def sess_bot_callback(callback: types.CallbackQuery):
     try:
         phone = callback.data.replace("sess_bot_", "")
         user_id = callback.from_user.id
         
-        current_bot = user_bot_choice.get(user_id, "@gram_prbot")
+        current_bot = user_bot_choice.get(user_id, "@gram_piarbot")
         bots = [("@gram_piarbot", "g_piar"), ("@gram_prbot", "g_pr")]
         buttons = []
         for name, code in bots:
@@ -531,7 +531,7 @@ async def sess_start_all_callback(callback: types.CallbackQuery):
             if phone in active_tasks and not active_tasks[phone].done():
                 started += 1
                 continue
-            bot_name = user_bot_choice.get(user_id, "@gram_prbot")
+            bot_name = user_bot_choice.get(user_id, "@gram_piarbot")
             await start_gram_worker(client, bot_name, phone, user_id)
             started += 1
             await asyncio.sleep(0.5)
@@ -650,7 +650,7 @@ async def session_code(message: types.Message, state: FSMContext):
             user_sessions[user_id].append(phone)
             save_sessions()
             get_session_config(user_id, phone)
-        bot_name = user_bot_choice.get(user_id, "@gram_prbot")
+        bot_name = user_bot_choice.get(user_id, "@gram_piarbot")
         await message.answer(
             f"✅ <b>Сессия добавлена!</b>\n\n"
             f"📱 {phone}\n"
@@ -812,7 +812,7 @@ async def gram_choose_task(callback: types.CallbackQuery):
 async def gram_change_bot(callback: types.CallbackQuery):
     await callback.answer()
     user_id = callback.from_user.id
-    current_bot = user_bot_choice.get(user_id, "@gram_prbot")
+    current_bot = user_bot_choice.get(user_id, "@gram_piarbot")
     bots = [("@gram_piarbot", "g_piar"), ("@gram_prbot", "g_pr")]
     buttons = []
     for name, code in bots:
