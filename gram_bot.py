@@ -979,7 +979,7 @@ async def sess_item_callback(callback: types.CallbackQuery):
         text = f"📱 <b>{phone}</b>\n\n"
         text += f"📊 Статус: {'🟢 Включена' if is_enabled else '🔴 Выключена'}\n"
         text += f"📋 Задание: {task_names.get(task_type, task_type)}\n"
-        text += f"🤖 Бот: {user_bot_choice.get(user_id, '@gram_prbot')}\n\n"
+        text += f"🤖 Бот: {user_bot_choice.get(user_id, '@gram_piarbot')}\n\n"
         text += "Выбери действие:"
         await callback.message.edit_text(
             text,
@@ -1072,7 +1072,7 @@ async def sess_bot_callback(callback: types.CallbackQuery):
         user_id = callback.from_user.id
         await callback.answer()
         current_bot = user_bot_choice.get(user_id, "@gram_piarbot")
-        bots = [("@gram_piarbot", "g_piar"), ("@gram_prbot", "g_pr")]
+        bots = [("@gram_piarbot", "gpiar"), ("@gram_prbot", "gpr")]
         buttons = []
         for name, code in bots:
             check = "✅ " if name == current_bot else ""
@@ -1095,13 +1095,13 @@ async def sess_bot_callback(callback: types.CallbackQuery):
 @router.callback_query(lambda c: c.data and c.data.startswith("sess_bot_choice_"))
 async def sess_bot_choice_callback(callback: types.CallbackQuery):
     try:
-        parts = callback.data.split("_")
-        bot_code = parts[3]
-        phone = parts[4]
+        remainder = callback.data[len("sess_bot_choice_"):]
+        bot_code, _, phone = remainder.partition("_")
         user_id = callback.from_user.id
-        bot_name = "@gram_piarbot" if bot_code == "g_piar" else "@gram_prbot"
+        bot_name = "@gram_piarbot" if bot_code == "gpiar" else "@gram_prbot"
         user_bot_choice[user_id] = bot_name
         await callback.answer(f"✅ {bot_name}")
+        callback.data = f"sess_item_{phone}"
         await sess_item_callback(callback)
     except Exception as e:
         logging.error(f"❌ sess_bot_choice_callback: {e}")
@@ -1693,4 +1693,4 @@ __all__ = [
     'get_bot_category_keyboard', 'get_bot_settings_keyboard',
     'active_clients', 'active_tasks',
     'set_session_config', 'get_session_config'
-]
+    ]
