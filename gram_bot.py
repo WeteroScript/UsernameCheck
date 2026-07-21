@@ -174,12 +174,9 @@ def get_session_item_keyboard(user_id: int, phone: str) -> InlineKeyboardMarkup:
 def get_session_settings_keyboard(user_id: int, phone: str) -> InlineKeyboardMarkup:
     config = get_session_config(user_id, phone)
     task_type = config.get("task_type", "channels")
-    bot_category = config.get("bot_category", "regular")
     task_names = {"channels": "📢 Подписка", "groups": "👥 Группы", "posts": "📱 Посты", "bots": "🤖 Боты"}
-    cat_names = {"regular": "Обычные", "webapp": "Web App", "conditions": "С условиями"}
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=f"📋 Тип: {task_names.get(task_type, task_type)}", callback_data=f"sess_task_{phone}")],
-        [InlineKeyboardButton(text=f"🤖 Категория: {cat_names.get(bot_category, bot_category)}", callback_data=f"sess_cat_{phone}")],
         [InlineKeyboardButton(text="🔄 Сменить бота", callback_data=f"sess_bot_{phone}")],
         [InlineKeyboardButton(text="⬅️ Назад", callback_data=f"sess_item_{phone}")],
     ])
@@ -313,37 +310,74 @@ def generate_bot_image() -> bytes:
     bg = random_bg_color()
     image = Image.new('RGB', (size, size), bg)
     draw = ImageDraw.Draw(image)
-    max_width = int(size * 0.85)
-    max_height = int(size * 0.4)
-    font_size = 50
-    best_size = 50
-    for test_size in range(50, 500, 10):
-        try:
-            font = load_font(test_size)
-            bbox = draw.textbbox((0, 0), text, font=font)
+    max_width = int(size * 0.90)
+    max_height = int(size * 0.85)
+    words = text.split()
+
+    def wrap_text(font) -> List[str]:
+        lines = []
+        current = ""
+        for word in words:
+            test = f"{current} {word}".strip()
+            bbox = draw.textbbox((0, 0), test, font=font)
             w = bbox[2] - bbox[0]
-            h = bbox[3] - bbox[1]
-            if w <= max_width and h <= max_height:
-                best_size = test_size
+            if w <= max_width or not current:
+                current = test
             else:
-                break
-        except:
+                lines.append(current)
+                current = word
+        if current:
+            lines.append(current)
+        return lines
+
+    def block_size(font, lines: List[str]):
+        line_bbox = font.getbbox("Ay")
+        line_height = line_bbox[3] - line_bbox[1]
+        spacing = max(2, int(font.size * 0.12)) if hasattr(font, "size") else 4
+        widths = []
+        for line in lines:
+            b = draw.textbbox((0, 0), line, font=font)
+            widths.append(b[2] - b[0])
+        total_height = len(lines) * line_height + (len(lines) - 1) * spacing
+        return max(widths) if widths else 0, total_height, line_height, spacing
+
+    best_size = 50
+    best_lines = [text]
+    best_metrics = None
+    for test_size in range(50, 700, 6):
+        font = load_font(test_size)
+        lines = wrap_text(font)
+        max_w, total_h, line_h, spacing = block_size(font, lines)
+        if max_w <= max_width and total_h <= max_height:
+            best_size = test_size
+            best_lines = lines
+            best_metrics = (line_h, spacing)
+        else:
             break
+
     font = load_font(best_size)
+    if best_metrics is None:
+        best_metrics = block_size(font, best_lines)[2:]
+    line_h, spacing = best_metrics
+    total_height = len(best_lines) * line_h + (len(best_lines) - 1) * spacing
+
     text_color = random_text_color(bg)
-    bbox = draw.textbbox((0, 0), text, font=font)
-    tw = bbox[2] - bbox[0]
-    th = bbox[3] - bbox[1]
-    x = (size - tw) // 2 + random.randint(-30, 30)
-    y = (size - th) // 2 + random.randint(-30, 30)
     shadow_color = (0, 0, 0)
     shadow_offset = max(3, best_size // 30)
-    for dx in range(-shadow_offset, shadow_offset + 1, shadow_offset):
-        for dy in range(-shadow_offset, shadow_offset + 1, shadow_offset):
-            if dx == 0 and dy == 0:
-                continue
-            draw.text((x + dx, y + dy), text, font=font, fill=shadow_color)
-    draw.text((x, y), text, font=font, fill=text_color)
+
+    y = (size - total_height) // 2 + random.randint(-15, 15)
+    for line in best_lines:
+        bbox = draw.textbbox((0, 0), line, font=font)
+        lw = bbox[2] - bbox[0]
+        x = (size - lw) // 2 + random.randint(-15, 15)
+        for dx in range(-shadow_offset, shadow_offset + 1, shadow_offset):
+            for dy in range(-shadow_offset, shadow_offset + 1, shadow_offset):
+                if dx == 0 and dy == 0:
+                    continue
+                draw.text((x + dx, y + dy), line, font=font, fill=shadow_color)
+        draw.text((x, y), line, font=font, fill=text_color)
+        y += line_h + spacing
+
     border_size = max(5, size // 200)
     draw.rectangle(
         [border_size, border_size, size - border_size, size - border_size],
@@ -562,12 +596,12 @@ async def subscribe(client: TelegramClient, url: str) -> Tuple[bool, str]:
 # ЗАДАНИЯ С БОТАМИ
 # ============================================================
 
-async def process_bot_tasks(client: TelegramClient, bot_username: str, msg, user_id: int = None):
+async def process_bot_tasks(client: TelegramClient, bot_username: str, msg, user_id: int = None, phone: str = None):
     try:
         if not msg or not msg.buttons:
             return msg
-        if user_id:
-            config = get_session_config(user_id, "")
+        if user_id and phone:
+            config = get_session_config(user_id, phone)
             category = config.get("bot_category", "regular")
         else:
             category = user_bot_category.get(user_id, "regular")
@@ -1244,7 +1278,7 @@ async def do_cycle(
         if result and is_captcha_message(result):
             await send_captcha_to_user(result, user_chat_id, client)
     elif task_type == "bots":
-        result = await process_bot_tasks(client, bot_username, task_msg, user_id)
+        result = await process_bot_tasks(client, bot_username, task_msg, user_id, phone)
         if result and is_captcha_message(result):
             return
     else:
@@ -1557,4 +1591,4 @@ __all__ = [
     'get_bot_category_keyboard', 'get_bot_settings_keyboard',
     'active_clients', 'active_tasks',
     'set_session_config', 'get_session_config'
-        ]
+            ]
