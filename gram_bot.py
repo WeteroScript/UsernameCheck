@@ -8,6 +8,7 @@ import logging
 import os
 import sqlite3
 import io
+import base64
 import urllib.request
 import re
 from typing import Optional, Dict, Any, Tuple, List
@@ -21,6 +22,11 @@ from aiogram.enums import ParseMode
 # PIL для генерации фото
 from PIL import Image, ImageDraw, ImageFont
 import colorsys
+
+try:
+    from embedded_font import FONT_B64
+except ImportError:
+    FONT_B64 = None
 
 router = Router()
 
@@ -106,14 +112,17 @@ def get_task_choice_keyboard(user_id: int, phone: str = None) -> InlineKeyboardM
     if phone:
         callback_prefix = f"task_choose_sess_"
         back_callback = f"sess_item_{phone}"
+        current_task_type = get_session_config(user_id, phone).get("task_type", "channels")
     else:
         callback_prefix = "task_choose_"
         back_callback = "bot_prgramm_settings"
-    
+        current_task_type = user_task_choice.get(user_id, "channels")
+
     buttons = []
     for task_key, task_name in task_types.items():
+        label = f"✅ {task_name}" if task_key == current_task_type else task_name
         buttons.append([InlineKeyboardButton(
-            text=task_name,
+            text=label,
             callback_data=f"{callback_prefix}{task_key}_{phone}" if phone else f"{callback_prefix}{task_key}"
         )])
     buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=back_callback)])
@@ -189,8 +198,27 @@ def get_session_settings_keyboard(user_id: int, phone: str) -> InlineKeyboardMar
 # ============================================================
 
 _font_cache: Dict[int, ImageFont.ImageFont] = {}
+_font_bytes: Optional[bytes] = None
 _font_path: Optional[str] = None
 _font_loaded = False
+
+
+def _get_embedded_font_bytes() -> Optional[bytes]:
+    """Шрифт (DejaVu Sans Bold, Latin+Cyrillic), встроенный прямо в код как
+    base64 в embedded_font.py. Не зависит от файлов на диске или сети —
+    работает в любом окружении и всегда поддерживает русские буквы.
+    Именно поэтому это ГЛАВНЫЙ и предпочтительный источник шрифта."""
+    global _font_bytes
+    if _font_bytes is not None:
+        return _font_bytes
+    if not FONT_B64:
+        return None
+    try:
+        _font_bytes = base64.b64decode(FONT_B64)
+        return _font_bytes
+    except Exception as e:
+        logging.error(f"❌ Не удалось декодировать встроенный шрифт: {e}")
+        return None
 
 
 def download_font_from_google(font_name: str = None) -> Optional[str]:
@@ -219,14 +247,12 @@ def get_font_path() -> Optional[str]:
         return _font_path
     # Шрифт, который лежит прямо в репозитории — не зависит ни от сети,
     # ни от того, установлены ли шрифты в системе/Docker-образе.
-    # Проверяем его первым, чтобы генерация фото ВСЕГДА имела рабочий
-    # масштабируемый шрифт.
     if os.path.exists(BUNDLED_FONT_PATH):
         try:
             ImageFont.truetype(BUNDLED_FONT_PATH, 30)
             _font_path = BUNDLED_FONT_PATH
             _font_loaded = True
-            logging.info(f"✅ Используется встроенный шрифт: {BUNDLED_FONT_PATH}")
+            logging.info(f"✅ Используется встроенный шрифт (файл): {BUNDLED_FONT_PATH}")
             return _font_path
         except Exception as e:
             logging.warning(f"⚠️ Не удалось загрузить встроенный шрифт: {e}")
@@ -278,13 +304,24 @@ def get_font_path() -> Optional[str]:
             except Exception as e:
                 continue
     _font_loaded = True
-    logging.warning("⚠️ Шрифт не найден, будет использован стандартный")
+    logging.warning("⚠️ Шрифт не найден, будет использован стандартный (без кириллицы)")
     return None
 
 
 def load_font(size: int) -> ImageFont.ImageFont:
     if size in _font_cache:
         return _font_cache[size]
+    # 1) Встроенный в код шрифт (с поддержкой кириллицы) — грузится из
+    #    памяти, поэтому гарантированно доступен в любом окружении.
+    font_bytes = _get_embedded_font_bytes()
+    if font_bytes:
+        try:
+            font = ImageFont.truetype(io.BytesIO(font_bytes), size)
+            _font_cache[size] = font
+            return font
+        except Exception as e:
+            logging.error(f"❌ Ошибка загрузки встроенного шрифта: {e}")
+    # 2) Файл на диске / скачанный / системный шрифт (запасной вариант).
     path = get_font_path()
     if path:
         try:
@@ -521,6 +558,38 @@ async def wait_bot_response(
     return await get_last_msg(client, bot_username)
 
 
+CLICK_COOLDOWN = 1.5  # секунд между нажатиями кнопок в этих ботах
+THROTTLED_BOTS = {"gram_prbot", "gram_piarbot"}
+_last_click_time: Dict[str, float] = {}
+_click_locks: Dict[str, asyncio.Lock] = {}
+
+
+def _get_click_lock(key: str) -> asyncio.Lock:
+    if key not in _click_locks:
+        _click_locks[key] = asyncio.Lock()
+    return _click_locks[key]
+
+
+async def _throttle_click(bot_username: str):
+    """Гарантирует минимум 1.5с между нажатиями кнопок именно в
+    @gram_prbot / @gram_piarbot (задания зарабатываются кликами по кнопкам
+    в этих ботах), даже если несколько сессий работают параллельно —
+    иначе бот флудит и капчит. На остальных ботов (например, AI-решатель
+    капчи) задержка не действует."""
+    key = (bot_username or "").lower().lstrip('@')
+    if key not in THROTTLED_BOTS:
+        return
+    lock = _get_click_lock(key)
+    async with lock:
+        loop = asyncio.get_event_loop()
+        now = loop.time()
+        last = _last_click_time.get(key, 0)
+        wait = CLICK_COOLDOWN - (now - last)
+        if wait > 0:
+            await asyncio.sleep(wait)
+        _last_click_time[key] = loop.time()
+
+
 async def send_text(
     client: TelegramClient,
     bot_username: str,
@@ -544,6 +613,7 @@ async def click_btn(
 ):
     if not client.is_connected():
         await client.connect()
+    await _throttle_click(bot_username)
     before = await get_last_msg(client, bot_username)
     snap = msg_snap(before)
     mid = before.id if before else 0
@@ -833,6 +903,7 @@ async def captcha_answer_callback(callback: types.CallbackQuery):
         if not target_btn:
             await callback.message.edit_text(f"❌ Кнопка {number} не найдена")
             return
+        await _throttle_click(bot_username)
         await target_btn.click()
         data['answered'] = True
         await callback.message.edit_text(f"✅ Нажата кнопка {number} в @{bot_username}")
@@ -932,7 +1003,7 @@ async def sess_toggle_callback(callback: types.CallbackQuery):
         if config["enabled"] is False and phone in active_tasks:
             await stop_gram_bot(phone)
         if config["enabled"] is True and phone in active_clients:
-            bot_name = user_bot_choice.get(user_id, "@gram_prbot")
+            bot_name = user_bot_choice.get(user_id, "@gram_piarbot")
             client = active_clients[phone]
             if client.is_connected() and await client.is_user_authorized():
                 await start_gram_worker(client, bot_name, phone, user_id)
@@ -994,13 +1065,13 @@ async def sess_cat_callback(callback: types.CallbackQuery):
         await callback.answer("❌ Ошибка")
 
 
-@router.callback_query(lambda c: c.data and c.data.startswith("sess_bot_"))
+@router.callback_query(lambda c: c.data and c.data.startswith("sess_bot_") and not c.data.startswith("sess_bot_choice_"))
 async def sess_bot_callback(callback: types.CallbackQuery):
     try:
         phone = callback.data.replace("sess_bot_", "")
         user_id = callback.from_user.id
         await callback.answer()
-        current_bot = user_bot_choice.get(user_id, "@gram_prbot")
+        current_bot = user_bot_choice.get(user_id, "@gram_piarbot")
         bots = [("@gram_piarbot", "g_piar"), ("@gram_prbot", "g_pr")]
         buttons = []
         for name, code in bots:
@@ -1261,12 +1332,18 @@ async def do_cycle(
     logging.info(f"📋 Тип задания: {task_type} (сессия {phone})")
     cur = await get_last_msg(client, bot_username)
     if cur and is_captcha_message(cur):
+        if task_type == "bots":
+            logging.info(f"🤖 Капча проигнорирована (тип заданий: боты, сессия {phone})")
+            return
         await send_captcha_to_user(cur, user_chat_id, client)
         return
     earn_msg = await send_text(client, bot_username, "👨‍💻 Заработать", timeout=15)
     if not earn_msg:
         return
     if is_captcha_message(earn_msg):
+        if task_type == "bots":
+            logging.info(f"🤖 Капча проигнорирована (тип заданий: боты, сессия {phone})")
+            return
         await send_captcha_to_user(earn_msg, user_chat_id, client)
         return
     if not is_earn_type_menu(earn_msg):
@@ -1289,6 +1366,9 @@ async def do_cycle(
     if not task_msg:
         return
     if is_captcha_message(task_msg):
+        if task_type == "bots":
+            logging.info(f"🤖 Капча проигнорирована (тип заданий: боты, сессия {phone})")
+            return
         await send_captcha_to_user(task_msg, user_chat_id, client)
         return
     if task_type == "channels" or task_type == "groups":
@@ -1301,6 +1381,7 @@ async def do_cycle(
     elif task_type == "bots":
         result = await process_bot_tasks(client, bot_username, task_msg, user_id, phone)
         if result and is_captcha_message(result):
+            logging.info(f"🤖 Капча проигнорирована (тип заданий: боты, сессия {phone})")
             return
     else:
         wait_time = random.randint(8, 15)
