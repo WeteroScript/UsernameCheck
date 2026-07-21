@@ -16,6 +16,12 @@ from aiogram.enums import ParseMode
 
 logger = logging.getLogger(__name__)
 
+try:
+    from gram_bot import _throttle_click
+except ImportError:
+    async def _throttle_click(bot_username: str):
+        pass
+
 CAPTCHA_SOLVER_BOT = "@ChatGPT_Gemini_DeepSeek_Bot"
 
 
@@ -122,6 +128,7 @@ class CaptchaSolver:
             for row in msg.buttons:
                 for btn in row:
                     if self._get_button_text(btn) == number:
+                        await _throttle_click(bot_username)
                         await btn.click()
                         logger.info(f"🖱 Нажата кнопка {number} в @{bot_username}")
                         return True
