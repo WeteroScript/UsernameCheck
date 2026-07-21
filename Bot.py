@@ -195,12 +195,9 @@ def get_session_item_keyboard(user_id: int, phone: str) -> InlineKeyboardMarkup:
 def get_session_settings_keyboard(user_id: int, phone: str) -> InlineKeyboardMarkup:
     config = get_session_config(user_id, phone)
     task_type = config.get("task_type", "channels")
-    bot_category = config.get("bot_category", "regular")
     task_names = {"channels": "📢 Подписка", "groups": "👥 Группы", "posts": "📱 Посты", "bots": "🤖 Боты"}
-    cat_names = {"regular": "Обычные", "webapp": "Web App", "conditions": "С условиями"}
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=f"📋 Тип: {task_names.get(task_type, task_type)}", callback_data=f"sess_task_{phone}")],
-        [InlineKeyboardButton(text=f"🤖 Категория: {cat_names.get(bot_category, bot_category)}", callback_data=f"sess_cat_{phone}")],
         [InlineKeyboardButton(text="🔄 Сменить бота", callback_data=f"sess_bot_{phone}")],
         [InlineKeyboardButton(text="⬅️ Назад", callback_data=f"sess_item_{phone}")],
     ])
