@@ -223,7 +223,6 @@ def get_bots_list_keyboard() -> InlineKeyboardMarkup:
 def get_username_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✨ Генерировать", callback_data="gen")],
-        [InlineKeyboardButton(text="🔍 Проверить все", callback_data="check")],
         [InlineKeyboardButton(text="⚙️ Настройки", callback_data="settings")],
         [InlineKeyboardButton(text="📊 Статистика", callback_data="stats")],
         [InlineKeyboardButton(text="⬅️ Назад", callback_data="main")],
@@ -313,7 +312,7 @@ async def bot_prgramm_menu(callback: types.CallbackQuery):
         save_bot_choices()
     
     text = "📢 <b>PR GRAMM</b>\n\n"
-    text += f"🤖 Выбранный бот: <b>{user_bot_choice.get(user_id, '@gram_prbot')}</b>\n\n"
+    text += f"🤖 Выбранный бот: <b>{user_bot_choice.get(user_id, '@gram_piarbot')}</b>\n\n"
     
     if user_id in user_sessions and user_sessions[user_id]:
         text += f"📱 <b>Сессии:</b>\n"
@@ -356,7 +355,7 @@ async def sess_item_callback(callback: types.CallbackQuery):
         text = f"📱 <b>{phone}</b>\n\n"
         text += f"📊 Статус: {'🟢 Включена' if is_enabled else '🔴 Выключена'}\n"
         text += f"📋 Задание: {task_names.get(task_type, task_type)}\n"
-        text += f"🤖 Бот: {user_bot_choice.get(user_id, '@gram_prbot')}\n\n"
+        text += f"🤖 Бот: {user_bot_choice.get(user_id, '@gram_piarbot')}\n\n"
         text += "Выбери действие:"
         
         await safe_edit_message(
@@ -461,7 +460,7 @@ async def sess_bot_callback(callback: types.CallbackQuery):
         user_id = callback.from_user.id
         
         current_bot = user_bot_choice.get(user_id, "@gram_piarbot")
-        bots = [("@gram_piarbot", "g_piar"), ("@gram_prbot", "g_pr")]
+        bots = [("@gram_piarbot", "gpiar"), ("@gram_prbot", "gpr")]
         buttons = []
         for name, code in bots:
             check = "✅ " if name == current_bot else ""
@@ -486,16 +485,21 @@ async def sess_bot_callback(callback: types.CallbackQuery):
 @dp.callback_query(lambda c: c.data and c.data.startswith("sess_bot_choice_"))
 async def sess_bot_choice_callback(callback: types.CallbackQuery):
     try:
-        parts = callback.data.split("_")
-        bot_code = parts[3]
-        phone = parts[4]
+        # code больше не содержит "_" (gpiar/gpr), поэтому remainder всегда
+        # делится ровно на "код_телефон" одним split(maxsplit=1) — раньше
+        # использовался callback.data.split("_") целиком, и старые коды
+        # "g_piar"/"g_pr" (сами содержащие "_") ломали индексы, из-за чего
+        # телефон и код бота съезжали и превращались в мусор.
+        remainder = callback.data[len("sess_bot_choice_"):]
+        bot_code, _, phone = remainder.partition("_")
         user_id = callback.from_user.id
         
-        bot_name = "@gram_piarbot" if bot_code == "g_piar" else "@gram_prbot"
+        bot_name = "@gram_piarbot" if bot_code == "gpiar" else "@gram_prbot"
         user_bot_choice[user_id] = bot_name
         save_bot_choices()
         
         await callback.answer(f"✅ {bot_name}")
+        callback.data = f"sess_item_{phone}"
         await sess_item_callback(callback)
     except Exception as e:
         logging.error(f"❌ sess_bot_choice_callback: {e}")
