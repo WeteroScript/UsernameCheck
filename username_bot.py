@@ -11,10 +11,12 @@ import os
 import json
 import asyncio
 from aiogram import Router, types
-from aiogram.filters import Command
+from aiogram.filters import Command, StateFilter
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.enums import ParseMode
 from aiogram.exceptions import TelegramRetryAfter, TelegramAPIError
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
 from datetime import datetime
 import itertools
 from asyncio import Semaphore
@@ -26,12 +28,16 @@ load_dotenv()
 
 router = Router()
 
+
+class UsernameSettingsStates(StatesGroup):
+    waiting_length = State()
+
 # ============ КОНФИГ ============
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
 RATE_LIMITER = Semaphore(10)
-CHECK_DELAY = 0.3
+CHECK_DELAY = 0.8
 BATCH_SIZE = 8
 CONNECTION_LIMIT = 50
 MAX_RETRIES = 3
@@ -141,70 +147,89 @@ def log_debug(username: str, method: str, status: str, details=""):
 
 # ============ НАСТРОЙКИ ПОЛЬЗОВАТЕЛЯ ============
 
+VOWELS = "aeiou"
+CONSONANTS = "bcdfghjklmnpqrstvwxyz"
+
+STYLE_NAMES = {
+    "random": "🔤 Обычный (буква подряд)",
+    "beautiful": "✨ Красивые (согл+глас+...)",
+}
+
+MIN_USERNAME_LENGTH = 5
+MAX_USERNAME_LENGTH = 32
+
+
 def get_user_settings(user_id: int) -> Dict:
     if user_id not in user_settings:
         user_settings[user_id] = {
             "letter": "s",
             "repeat_count": 2,
-            "use_full_alphabet": True
+            "max_length": 5,
+            "style": "random",
         }
-    return user_settings[user_id]
+    s = user_settings[user_id]
+    # На случай, если структура настроек была создана более старой версией
+    # бота — аккуратно донасыщаем недостающими новыми полями, не трогая то,
+    # что пользователь уже настроил.
+    s.setdefault("max_length", 5)
+    s.setdefault("style", "random")
+    s.pop("use_full_alphabet", None)
+    return s
+
+
+def get_max_repeat_count(max_length: int) -> int:
+    """Чем больше максимальная длина юзернейма, тем больше одинаковых
+    букв подряд можно настроить — ограничение растёт вместе с длиной,
+    но не превышает саму длину минус хотя бы одна "разбавляющая" буква."""
+    return max(2, max_length - 1)
+
 
 def generate_username(settings: Dict) -> str:
-    letters = string.ascii_lowercase if settings["use_full_alphabet"] else 'abcdefghijkmnopqrstuvwxyz'
+    style = settings.get("style", "random")
+    if style == "beautiful":
+        return _generate_beautiful_username(settings)
+    return _generate_random_username(settings)
+
+
+def _generate_random_username(settings: Dict) -> str:
+    letters = string.ascii_lowercase
+    length = settings.get("max_length", 5)
     main_letter = settings["letter"]
-    repeat_count = settings["repeat_count"]
-    
+    max_repeat = get_max_repeat_count(length)
+    repeat_count = min(settings["repeat_count"], max_repeat)
+
     if main_letter not in letters:
         main_letter = random.choice(letters)
-    
+
     other_letters = [c for c in letters if c != main_letter]
-    remaining_count = max(1, min(5 - repeat_count, 5))
-    
+    remaining_count = max(0, length - repeat_count)
+
     chosen_others = (
         [random.choice(other_letters) for _ in range(remaining_count)]
         if len(other_letters) < remaining_count
-        else random.sample(other_letters, remaining_count)
+        else random.sample(other_letters, remaining_count) if remaining_count else []
     )
-    
+
     pos = random.randint(0, remaining_count)
     result = chosen_others[:pos] + [main_letter] * repeat_count + chosen_others[pos:]
+    return ''.join(result)[:length]
+
+
+def _generate_beautiful_username(settings: Dict) -> str:
+    """Категория 'Красивые': чередование согласная/гласная
+    (согласная+гласная+согласная+гласная+...), что обычно легче
+    читается и произносится."""
+    length = settings.get("max_length", 5)
+    start_with_consonant = random.choice([True, False])
+    result = []
+    for i in range(length):
+        want_consonant = (i % 2 == 0) if start_with_consonant else (i % 2 == 1)
+        result.append(random.choice(CONSONANTS if want_consonant else VOWELS))
     return ''.join(result)
+
 
 def generate_examples(settings: Dict, count=4) -> List[str]:
     return [generate_username(settings) for _ in range(count)]
-
-def get_all_possible_usernames(settings: Dict) -> List[str]:
-    letters = string.ascii_lowercase if settings["use_full_alphabet"] else 'abcdefghijkmnopqrstuvwxyz'
-    main_letter = settings["letter"]
-    repeat_count = settings["repeat_count"]
-    
-    if main_letter not in letters:
-        return []
-    
-    other_letters = [c for c in letters if c != main_letter]
-    remaining_count = 5 - repeat_count
-    
-    if remaining_count <= 0:
-        return []
-    
-    all_usernames = set()
-    max_combinations = 15000
-    
-    combinator = (
-        itertools.product(other_letters, repeat=remaining_count)
-        if len(other_letters) < remaining_count
-        else itertools.permutations(other_letters, remaining_count)
-    )
-    
-    for others in combinator:
-        for pos in range(remaining_count + 1):
-            result = list(others[:pos]) + [main_letter] * repeat_count + list(others[pos:])
-            all_usernames.add(''.join(result))
-            if len(all_usernames) >= max_combinations:
-                return list(all_usernames)
-    
-    return list(all_usernames)
 
 
 # ============ HTTP СЕССИЯ ============
@@ -543,9 +568,10 @@ async def check_usernames_batch(usernames: List[str], user_id=None) -> Dict[str,
 def get_settings_keyboard(user_id: int) -> InlineKeyboardMarkup:
     s = get_user_settings(user_id)
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=f"{'✅' if s['use_full_alphabet'] else '❌'} Все буквы", callback_data="toggle_alphabet")],
         [InlineKeyboardButton(text=f"🔤 Буква: {s['letter'].upper()}", callback_data="change_letter")],
         [InlineKeyboardButton(text=f"🔢 Повторений: {s['repeat_count']}", callback_data="change_count")],
+        [InlineKeyboardButton(text=f"📏 Длина юзернейма: {s['max_length']}", callback_data="change_length")],
+        [InlineKeyboardButton(text=f"🎨 Стиль: {STYLE_NAMES.get(s['style'], s['style'])}", callback_data="change_style")],
         [InlineKeyboardButton(text="🔄 Сбросить", callback_data="reset_settings")],
         [InlineKeyboardButton(text="⬅️ Назад", callback_data="users")],
     ])
@@ -562,11 +588,29 @@ def get_letter_keyboard() -> InlineKeyboardMarkup:
     rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="settings")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
-def get_count_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="2", callback_data="set_count_2"), InlineKeyboardButton(text="3", callback_data="set_count_3"), InlineKeyboardButton(text="4", callback_data="set_count_4")],
-        [InlineKeyboardButton(text="⬅️ Назад", callback_data="settings")],
-    ])
+def get_count_keyboard(max_length: int = 5) -> InlineKeyboardMarkup:
+    max_repeat = get_max_repeat_count(max_length)
+    options = [n for n in range(2, max_repeat + 1)]
+    rows = []
+    row = []
+    for n in options:
+        row.append(InlineKeyboardButton(text=str(n), callback_data=f"set_count_{n}"))
+        if len(row) == 5:
+            rows.append(row)
+            row = []
+    if row:
+        rows.append(row)
+    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="settings")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def get_style_keyboard() -> InlineKeyboardMarkup:
+    rows = [
+        [InlineKeyboardButton(text=name, callback_data=f"set_style_{key}")]
+        for key, name in STYLE_NAMES.items()
+    ]
+    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="settings")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 # ============ CALLBACK ============
@@ -627,116 +671,6 @@ async def generate_username_callback(callback: types.CallbackQuery):
             ])
         )
 
-@router.callback_query(lambda c: c.data == "check")
-async def check_all_callback(callback: types.CallbackQuery):
-    await callback.answer()
-    user_id = callback.from_user.id
-    settings = get_user_settings(user_id)
-    all_usernames = get_all_possible_usernames(settings)
-    total = len(all_usernames)
-    
-    if total == 0:
-        await callback.message.answer("❌ Нет комбинаций")
-        return
-    
-    estimated_minutes = max(1, int((total * CHECK_DELAY / BATCH_SIZE) / 60))
-    
-    await callback.message.edit_text(
-        f"⚡️ <b>МАССОВАЯ ПРОВЕРКА</b>\n\n"
-        f"Комбинаций: {total}\n"
-        f"Примерное время: ~{estimated_minutes} мин\n\n"
-        f"✨ Оптимистичный режим\n"
-        f"🚀 Быстрая проверка (0.3 сек)\n\n"
-        f"Продолжить?",
-        parse_mode=ParseMode.HTML,
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="✅ Начать", callback_data="confirm_check_all"), InlineKeyboardButton(text="❌ Отмена", callback_data="users")],
-        ])
-    )
-
-@router.callback_query(lambda c: c.data == "confirm_check_all")
-async def confirm_check_all_callback(callback: types.CallbackQuery):
-    await callback.answer()
-    user_id = callback.from_user.id
-    settings = get_user_settings(user_id)
-    all_usernames = get_all_possible_usernames(settings)
-    await perform_mass_check(callback.message, user_id, all_usernames)
-
-async def perform_mass_check(message: types.Message, user_id: int, all_usernames: List[str]):
-    total = len(all_usernames)
-    await message.edit_text(f"⚡️ <b>СТАРТ!</b>\n\nВсего: {total}", parse_mode=ParseMode.HTML)
-    
-    checked = 0
-    found_free: List[str] = []
-    last_update = datetime.now()
-    start_time = datetime.now()
-    
-    for i in range(0, total, BATCH_SIZE):
-        batch = all_usernames[i:i + BATCH_SIZE]
-        to_check = []
-        
-        for username in batch:
-            if is_in_taken_db(username):
-                checked += 1
-                continue
-            if is_in_free_db(username):
-                found_free.append(username)
-                checked += 1
-                continue
-            to_check.append(username)
-        
-        if to_check:
-            results = await check_usernames_batch(to_check, user_id)
-            for username, is_free in results.items():
-                if is_free:
-                    found_free.append(username)
-                    try:
-                        await message.bot.send_message(
-                            user_id,
-                            f"🎉 <b>#{len(found_free)}!</b>\n\n✅ <code>@{username}</code>",
-                            parse_mode=ParseMode.HTML,
-                            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                                [InlineKeyboardButton(text="✅ Забрать", url=f"https://t.me/{username}")],
-                                [InlineKeyboardButton(text="🔎 Fragment", url=f"https://fragment.com/username/{username}")],
-                            ])
-                        )
-                    except Exception as e:
-                        logging.error(f"Ошибка отправки уведомления: {e}")
-                checked += 1
-        
-        if (datetime.now() - last_update).total_seconds() >= 20:
-            await message.edit_text(
-                f"⚡️ {checked}/{total} ({checked/total*100:.1f}%)\n"
-                f"✅ Найдено: {len(found_free)}",
-                parse_mode=ParseMode.HTML
-            )
-            last_update = datetime.now()
-    
-    elapsed = int((datetime.now() - start_time).total_seconds() / 60)
-    
-    if found_free:
-        samples = "\n".join(f"• <code>@{u}</code>" for u in found_free[:25])
-        if len(found_free) > 25:
-            samples += f"\n... +{len(found_free) - 25}"
-        text = (
-            f"✅ <b>ГОТОВО!</b>\n\n"
-            f"Проверено: {checked}\n"
-            f"Найдено: {len(found_free)}\n"
-            f"Время: {elapsed} мин\n\n"
-            f"{samples}"
-        )
-    else:
-        text = f"😔 Не найдено\n\nПроверено: {checked}\nВремя: {elapsed} мин"
-    
-    await message.edit_text(
-        text,
-        parse_mode=ParseMode.HTML,
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="📥 Скачать БД", callback_data="get_db")],
-            [InlineKeyboardButton(text="⬅️ Назад", callback_data="users")]
-        ])
-    )
-
 @router.callback_query(lambda c: c.data == "settings")
 async def open_settings_callback(callback: types.CallbackQuery):
     await callback.answer()
@@ -747,7 +681,9 @@ async def open_settings_callback(callback: types.CallbackQuery):
     await callback.message.edit_text(
         f"⚙️ <b>Настройки</b>\n\n"
         f"📌 Буква: <b>{settings['letter'].upper()}</b>\n"
-        f"📌 Повторений: <b>{settings['repeat_count']}</b>\n\n"
+        f"📌 Повторений: <b>{settings['repeat_count']}</b>\n"
+        f"📌 Длина юзернейма: <b>{settings['max_length']}</b>\n"
+        f"📌 Стиль: <b>{STYLE_NAMES.get(settings['style'], settings['style'])}</b>\n\n"
         f"📝 Примеры:\n{examples}",
         parse_mode=ParseMode.HTML,
         reply_markup=get_settings_keyboard(user_id)
@@ -785,13 +721,6 @@ async def get_db_callback(callback: types.CallbackQuery):
     await callback.answer()
     await get_db_command(callback.message)
 
-@router.callback_query(lambda c: c.data == "toggle_alphabet")
-async def toggle_alphabet(callback: types.CallbackQuery):
-    s = get_user_settings(callback.from_user.id)
-    s["use_full_alphabet"] = not s["use_full_alphabet"]
-    await callback.answer("✅ Изменено")
-    await open_settings_callback(callback)
-
 @router.callback_query(lambda c: c.data == "change_letter")
 async def change_letter(callback: types.CallbackQuery):
     await callback.answer()
@@ -807,19 +736,85 @@ async def set_letter(callback: types.CallbackQuery):
 @router.callback_query(lambda c: c.data == "change_count")
 async def change_count(callback: types.CallbackQuery):
     await callback.answer()
-    await callback.message.edit_text("🔢 Количество:", reply_markup=get_count_keyboard())
+    s = get_user_settings(callback.from_user.id)
+    await callback.message.edit_text(
+        "🔢 Количество одинаковых букв подряд:\n\n"
+        f"<i>Доступно больше вариантов при большей длине юзернейма (сейчас: {s['max_length']})</i>",
+        parse_mode=ParseMode.HTML,
+        reply_markup=get_count_keyboard(s["max_length"])
+    )
 
 @router.callback_query(lambda c: c.data.startswith("set_count_"))
 async def set_count(callback: types.CallbackQuery):
     count = int(callback.data.replace("set_count_", ""))
-    get_user_settings(callback.from_user.id)["repeat_count"] = count
+    s = get_user_settings(callback.from_user.id)
+    max_repeat = get_max_repeat_count(s["max_length"])
+    count = min(count, max_repeat)
+    s["repeat_count"] = count
     await callback.answer(f"✅ Повторений: {count}")
+    await open_settings_callback(callback)
+
+@router.callback_query(lambda c: c.data == "change_length")
+async def change_length(callback: types.CallbackQuery, state: FSMContext):
+    await callback.answer()
+    await state.set_state(UsernameSettingsStates.waiting_length)
+    await callback.message.edit_text(
+        f"📏 <b>Длина юзернейма</b>\n\n"
+        f"Введи число от {MIN_USERNAME_LENGTH} до {MAX_USERNAME_LENGTH} — "
+        f"это максимальная длина для создаваемого юзернейма.\n\n"
+        f"<i>Чем больше длина, тем больше одинаковых букв подряд можно "
+        f"будет настроить.</i>\n\n"
+        f"/cancel — отменить",
+        parse_mode=ParseMode.HTML
+    )
+
+@router.message(UsernameSettingsStates.waiting_length)
+async def set_length_input(message: types.Message, state: FSMContext):
+    text = (message.text or "").strip()
+    if text.lower() in ("/cancel", "отмена"):
+        await state.clear()
+        await message.answer("❌ Отменено", reply_markup=get_settings_keyboard(message.from_user.id))
+        return
+    if not text.isdigit():
+        await message.answer(
+            f"❌ Введи именно число от {MIN_USERNAME_LENGTH} до {MAX_USERNAME_LENGTH}."
+        )
+        return
+    length = int(text)
+    if not (MIN_USERNAME_LENGTH <= length <= MAX_USERNAME_LENGTH):
+        await message.answer(
+            f"❌ Число должно быть от {MIN_USERNAME_LENGTH} до {MAX_USERNAME_LENGTH}. Попробуй снова."
+        )
+        return
+    s = get_user_settings(message.from_user.id)
+    s["max_length"] = length
+    s["repeat_count"] = min(s["repeat_count"], get_max_repeat_count(length))
+    await state.clear()
+    examples = "\n".join(f"• <code>{e}</code>" for e in generate_examples(s, 4))
+    await message.answer(
+        f"✅ Длина юзернейма: <b>{length}</b>\n\n📝 Примеры:\n{examples}",
+        parse_mode=ParseMode.HTML,
+        reply_markup=get_settings_keyboard(message.from_user.id)
+    )
+
+@router.callback_query(lambda c: c.data == "change_style")
+async def change_style(callback: types.CallbackQuery):
+    await callback.answer()
+    await callback.message.edit_text("🎨 Выбери стиль генерации:", reply_markup=get_style_keyboard())
+
+@router.callback_query(lambda c: c.data.startswith("set_style_"))
+async def set_style(callback: types.CallbackQuery):
+    style = callback.data.replace("set_style_", "")
+    if style not in STYLE_NAMES:
+        style = "random"
+    get_user_settings(callback.from_user.id)["style"] = style
+    await callback.answer(f"✅ Стиль: {STYLE_NAMES[style]}")
     await open_settings_callback(callback)
 
 @router.callback_query(lambda c: c.data == "reset_settings")
 async def reset_settings(callback: types.CallbackQuery):
     user_settings[callback.from_user.id] = {
-        "letter": "s", "repeat_count": 2, "use_full_alphabet": True
+        "letter": "s", "repeat_count": 2, "max_length": 5, "style": "random"
     }
     await callback.answer("✅ Сброшено")
     await open_settings_callback(callback)
@@ -879,7 +874,6 @@ __all__ = [
     'get_user_settings',
     'generate_username',
     'generate_examples',
-    'get_all_possible_usernames',
     'load_db',
     'save_db',
     'add_to_free_db',
@@ -891,4 +885,4 @@ __all__ = [
     'TAKEN_DB_FILE',
     'FREE_DB_FILE',
     'BANNED_DB_FILE'
-]
+    ]
