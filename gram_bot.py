@@ -28,10 +28,32 @@ try:
 except ImportError:
     FONT_B64 = None
 
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
 router = Router()
 
-API_ID = 2040
-API_HASH = "b18441a1ff607e10a989891a5462e627"
+# ВАЖНО: раньше здесь были захардкожены официальные тестовые данные
+# Telegram Desktop (api_id=2040). Это ПУБЛИЧНО ОПУБЛИКОВАННЫЕ (утёкшие)
+# креды — Telegram считает их "скомпрометированными" (ошибка
+# API_ID_PUBLISHED_FLOOD) и жёстко ограничивает/флагует авторизации через
+# них, особенно для номеров не из РФ — из-за этого и не подключались
+# номера кроме +7. Теперь значения берутся из .env — получи СВОИ
+# api_id/api_hash на https://my.telegram.org/apps (это бесплатно) и
+# пропиши их в .env, тогда любые страны будут подключаться нормально.
+API_ID = int(os.getenv("API_ID", "2040"))
+API_HASH = os.getenv("API_HASH", "b18441a1ff607e10a989891a5462e627")
+
+if API_ID == 2040:
+    logging.warning(
+        "⚠️ Используются публичные (утёкшие) API_ID/API_HASH Telegram Desktop! "
+        "Это ограничивает авторизацию номеров других стран, кроме +7. "
+        "Получи свои на https://my.telegram.org/apps и укажи в .env "
+        "(API_ID=... и API_HASH=...)."
+    )
 
 active_clients: Dict[str, TelegramClient] = {}
 active_tasks: Dict[str, asyncio.Task] = {}
@@ -49,7 +71,7 @@ user_bot_choice: Dict[int, str] = {}
 SUBSCRIBE_DELAY = 60
 BOT_TASK_DELAY = 30
 
-PHOTO_TEXT = "Смотри @Bot_Farmers"
+PHOTO_TEXT = "."
 FONT_CHOICE = "inter"
 
 BUNDLED_FONT_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fonts", "DejaVuSans-Bold.ttf")
@@ -1660,8 +1682,17 @@ async def run_gram_worker(client: TelegramClient, bot_username: str, phone: str)
                 import traceback
                 traceback.print_exc()
                 await asyncio.sleep(5)
-            p = random.randint(5, 10)
-            logging.info(f"⏸️ Пауза {p} сек...")
+            p_config = get_session_config(user_chat_id, phone)
+            if p_config.get("task_type") == "bots":
+                # Для заданий с ботами — интервал 5-10 МИНУТ между заданиями
+                # (а не секунд), т.к. боты-задания обычно требуют больше
+                # времени на выполнение и слишком частые повторы могут
+                # выглядеть подозрительно / вызывать капчу.
+                p = random.randint(5 * 60, 10 * 60)
+                logging.info(f"⏸️ Пауза {p} сек (~{p//60} мин) — тип заданий: боты...")
+            else:
+                p = random.randint(5, 10)
+                logging.info(f"⏸️ Пауза {p} сек...")
             await asyncio.sleep(p)
     except asyncio.CancelledError:
         logging.info(f"⏹ Остановлен: {bot_username}")
@@ -1693,4 +1724,4 @@ __all__ = [
     'get_bot_category_keyboard', 'get_bot_settings_keyboard',
     'active_clients', 'active_tasks',
     'set_session_config', 'get_session_config'
-    ]
+            ]
