@@ -36,24 +36,10 @@ except ImportError:
 
 router = Router()
 
-# ВАЖНО: раньше здесь были захардкожены официальные тестовые данные
-# Telegram Desktop (api_id=2040). Это ПУБЛИЧНО ОПУБЛИКОВАННЫЕ (утёкшие)
-# креды — Telegram считает их "скомпрометированными" (ошибка
-# API_ID_PUBLISHED_FLOOD) и жёстко ограничивает/флагует авторизации через
-# них, особенно для номеров не из РФ — из-за этого и не подключались
-# номера кроме +7. Теперь значения берутся из .env — получи СВОИ
-# api_id/api_hash на https://my.telegram.org/apps (это бесплатно) и
-# пропиши их в .env, тогда любые страны будут подключаться нормально.
+# По умолчанию используются данные Telegram Desktop, если свои не заданы
+# в .env — при необходимости можно переопределить через API_ID/API_HASH.
 API_ID = int(os.getenv("API_ID", "2040"))
 API_HASH = os.getenv("API_HASH", "b18441a1ff607e10a989891a5462e627")
-
-if API_ID == 2040:
-    logging.warning(
-        "⚠️ Используются публичные (утёкшие) API_ID/API_HASH Telegram Desktop! "
-        "Это ограничивает авторизацию номеров других стран, кроме +7. "
-        "Получи свои на https://my.telegram.org/apps и укажи в .env "
-        "(API_ID=... и API_HASH=...)."
-    )
 
 active_clients: Dict[str, TelegramClient] = {}
 active_tasks: Dict[str, asyncio.Task] = {}
@@ -1724,4 +1710,4 @@ __all__ = [
     'get_bot_category_keyboard', 'get_bot_settings_keyboard',
     'active_clients', 'active_tasks',
     'set_session_config', 'get_session_config'
-            ]
+    ]
