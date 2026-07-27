@@ -1,0 +1,1259 @@
+"""
+Модуль для поиска свободных юзернеймов
+Полная версия с Bot.py
+"""
+
+import logging
+import random
+import string
+import aiohttp
+import os
+import json
+import asyncio
+from aiogram import Router, types
+from aiogram.filters import Command, StateFilter
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.enums import ParseMode
+from aiogram.exceptions import TelegramRetryAfter, TelegramAPIError
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
+from datetime import datetime
+import itertools
+from asyncio import Semaphore
+import re
+from typing import Optional, Dict, List
+from dotenv import load_dotenv
+
+from access_control import is_premium, PREMIUM_ICON
+
+load_dotenv()
+
+router = Router()
+
+
+class UsernameSettingsStates(StatesGroup):
+    waiting_length = State()
+    waiting_watch_username = State()
+
+# ============ КОНФИГ ============
+
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+
+RATE_LIMITER = Semaphore(10)
+CHECK_DELAY = 0.3
+BATCH_SIZE = 8
+CONNECTION_LIMIT = 50
+MAX_RETRIES = 3
+
+TAKEN_DB_FILE = "taken_usernames.json"
+FREE_DB_FILE = "free_usernames.json"
+BANNED_DB_FILE = "banned_usernames.json"
+DEBUG_LOG_FILE = "debug_checks.log"
+
+BANNED_INDICATORS = [
+    "deactivated",
+    "user is deactivated",
+    "account deleted",
+    "this account was banned",
+    "account was terminated",
+    "this account is banned",
+    "user deactivated",
+]
+
+user_settings: Dict[int, Dict] = {}
+http_session: Optional[aiohttp.ClientSession] = None
+username_router_initialized = False
+
+WATCHED_FILE = "watched_usernames.json"
+MAX_WATCHED_PER_USER = 10
+WATCH_INTERVAL_SECONDS = 10 * 60  # 10 минут
+
+watched_usernames: Dict[int, List[Dict]] = {}
+_username_bot_instance = None
+_watcher_task: Optional[asyncio.Task] = None
+
+
+def load_watched() -> Dict[int, List[Dict]]:
+    if os.path.exists(WATCHED_FILE):
+        try:
+            with open(WATCHED_FILE, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                return {int(k): v for k, v in data.items()}
+        except Exception as e:
+            logging.error(f"Ошибка загрузки {WATCHED_FILE}: {e}")
+    return {}
+
+
+def save_watched():
+    try:
+        with open(WATCHED_FILE, 'w', encoding='utf-8') as f:
+            json.dump(watched_usernames, f, indent=2, ensure_ascii=False)
+    except Exception as e:
+        logging.error(f"Ошибка сохранения {WATCHED_FILE}: {e}")
+
+
+def set_username_bot(bot):
+    global _username_bot_instance
+    _username_bot_instance = bot
+
+
+# ============ БАЗА ДАННЫХ ============
+
+def load_db(file_path: str) -> Dict:
+    if os.path.exists(file_path):
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except Exception as e:
+            logging.error(f"Ошибка загрузки БД {file_path}: {e}")
+            return {}
+    return {}
+
+def save_db(file_path: str, data: Dict):
+    try:
+        with open(file_path, 'w', encoding='utf-8') as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+    except Exception as e:
+        logging.error(f"Ошибка сохранения БД {file_path}: {e}")
+
+def add_to_taken_db(username: str, user_id=None, method="unknown", reason=""):
+    db = load_db(TAKEN_DB_FILE)
+    if username not in db:
+        db[username] = {
+            "checked_at": datetime.now().isoformat(),
+            "checked_by": str(user_id) if user_id else "unknown",
+            "method": method,
+            "reason": reason
+        }
+        save_db(TAKEN_DB_FILE, db)
+        return True
+    return False
+
+def add_to_banned_db(username: str, user_id=None, method="unknown", reason=""):
+    db = load_db(BANNED_DB_FILE)
+    if username not in db:
+        db[username] = {
+            "checked_at": datetime.now().isoformat(),
+            "checked_by": str(user_id) if user_id else "unknown",
+            "method": method,
+            "reason": reason
+        }
+        save_db(BANNED_DB_FILE, db)
+        add_to_taken_db(username, user_id, method, f"BANNED: {reason}")
+        return True
+    return False
+
+def add_to_free_db(username: str, user_id=None, method="unknown"):
+    db = load_db(FREE_DB_FILE)
+    if username not in db:
+        db[username] = {
+            "found_at": datetime.now().isoformat(),
+            "found_by": str(user_id) if user_id else "unknown",
+            "method": method,
+            "verified": True
+        }
+        save_db(FREE_DB_FILE, db)
+        return True
+    return False
+
+def is_in_taken_db(username: str) -> bool:
+    return username in load_db(TAKEN_DB_FILE)
+
+def is_in_banned_db(username: str) -> bool:
+    return username in load_db(BANNED_DB_FILE)
+
+def is_in_free_db(username: str) -> bool:
+    return username in load_db(FREE_DB_FILE)
+
+def log_debug(username: str, method: str, status: str, details=""):
+    try:
+        with open(DEBUG_LOG_FILE, 'a', encoding='utf-8') as f:
+            f.write(f"\n{'='*80}\n")
+            f.write(f"Time: {datetime.now().isoformat()}\n")
+            f.write(f"Username: @{username}\n")
+            f.write(f"Method: {method}\n")
+            f.write(f"Status: {status}\n")
+            if details:
+                f.write(f"Details:\n{details[:1500]}\n")
+            f.write(f"{'='*80}\n")
+    except Exception:
+        pass
+
+
+# ============ НАСТРОЙКИ ПОЛЬЗОВАТЕЛЯ ============
+
+VOWELS = "aeiou"
+CONSONANTS = "bcdfghjklmnpqrstvwxyz"
+
+STYLE_NAMES = {
+    "random": "🔤 Обычный (буква подряд)",
+    "beautiful": "✨ Красивые (согл+глас+...)",
+}
+
+MIN_USERNAME_LENGTH = 5
+MAX_USERNAME_LENGTH = 32
+
+
+def get_user_settings(user_id: int) -> Dict:
+    if user_id not in user_settings:
+        user_settings[user_id] = {
+            "letter": "s",
+            "repeat_count": 2,
+            "max_length": 5,
+            "style": "random",
+            "digit": None,
+            "digit_repeat_count": 0,
+            "allow_underscore": False,
+        }
+    s = user_settings[user_id]
+    # На случай, если структура настроек была создана более старой версией
+    # бота — аккуратно донасыщаем недостающими новыми полями, не трогая то,
+    # что пользователь уже настроил.
+    s.setdefault("max_length", 5)
+    s.setdefault("style", "random")
+    s.setdefault("digit", None)
+    s.setdefault("digit_repeat_count", 0)
+    s.setdefault("allow_underscore", False)
+    s.pop("use_full_alphabet", None)
+    return s
+
+
+def get_max_repeat_count(max_length: int) -> int:
+    """Чем больше максимальная длина юзернейма, тем больше одинаковых
+    букв/цифр подряд можно настроить — ограничение растёт вместе с длиной,
+    но не превышает саму длину минус хотя бы одна "разбавляющая" буква."""
+    return max(2, max_length - 1)
+
+
+def generate_username(settings: Dict, user_id: Optional[int] = None) -> str:
+    style = settings.get("style", "random")
+    premium = is_premium(user_id) if user_id is not None else False
+    if style == "beautiful":
+        return _generate_beautiful_username(settings)
+    return _generate_random_username(settings, premium)
+
+
+def _generate_random_username(settings: Dict, premium: bool = False) -> str:
+    """Стиль 'Обычный'. Учитывает основную букву-повтор (доступно всем),
+    и, для премиум-пользователей — повтор цифры и вставку '_'.
+    Результат всегда соответствует правилам юзернеймов Telegram:
+    начинается с буквы, без двойных '_' и без '_' на конце."""
+    letters = string.ascii_lowercase
+    length = settings.get("max_length", 5)
+    main_letter = settings["letter"]
+    max_repeat = get_max_repeat_count(length)
+    repeat_count = min(settings["repeat_count"], max_repeat)
+    if main_letter not in letters:
+        main_letter = random.choice(letters)
+
+    digit = settings.get("digit") if premium else None
+    digit_repeat_count = settings.get("digit_repeat_count", 0) if premium else 0
+    if not digit or not str(digit).isdigit():
+        digit_repeat_count = 0
+    digit_repeat_count = min(digit_repeat_count, max_repeat)
+
+    use_underscore = bool(settings.get("allow_underscore")) if premium else False
+    # На '_' нужен как минимум 1 отдельный слот, и не меньше 3 символов
+    # всего, иначе его некуда вставить, не нарушив правила Telegram.
+    use_underscore = use_underscore and length >= 3
+
+    budget = length - (1 if use_underscore else 0)
+
+    letter_tokens = [main_letter] * repeat_count
+    digit_tokens = [str(digit)] * digit_repeat_count if digit_repeat_count else []
+
+    required = len(letter_tokens) + len(digit_tokens)
+    while required > budget and digit_tokens:
+        digit_tokens.pop()
+        required -= 1
+    while required > budget and len(letter_tokens) > 1:
+        letter_tokens.pop()
+        required -= 1
+
+    other_letters = [c for c in letters if c != main_letter]
+    fill_count = max(0, budget - required)
+    fill_letters = (
+        [random.choice(other_letters) for _ in range(fill_count)]
+        if len(other_letters) < fill_count
+        else random.sample(other_letters, fill_count) if fill_count else []
+    )
+
+    base_tokens = letter_tokens + digit_tokens + fill_letters
+    random.shuffle(base_tokens)
+
+    # Юзернейм не может начинаться с цифры — если после перемешивания
+    # первый символ цифра, меняем его местами с первой попавшейся буквой.
+    if base_tokens and base_tokens[0].isdigit():
+        for i, t in enumerate(base_tokens):
+            if not t.isdigit():
+                base_tokens[0], base_tokens[i] = base_tokens[i], base_tokens[0]
+                break
+        else:
+            base_tokens[0] = main_letter  # на крайний случай (все токены — цифры)
+
+    base = ''.join(base_tokens)[:budget]
+
+    if use_underscore and len(base) >= 2:
+        insert_pos = random.randint(1, len(base) - 1)
+        base = base[:insert_pos] + "_" + base[insert_pos:]
+
+    return base[:length]
+
+
+def _generate_beautiful_username(settings: Dict) -> str:
+    """Категория 'Красивые': чередование согласная/гласная
+    (согласная+гласная+согласная+гласная+...), что обычно легче
+    читается и произносится. Стиль 'Красивые' игнорирует все
+    остальные настройки генерации, кроме длины."""
+    length = settings.get("max_length", 5)
+    start_with_consonant = random.choice([True, False])
+    result = []
+    for i in range(length):
+        want_consonant = (i % 2 == 0) if start_with_consonant else (i % 2 == 1)
+        result.append(random.choice(CONSONANTS if want_consonant else VOWELS))
+    return ''.join(result)
+
+
+def generate_examples(settings: Dict, count=4, user_id: Optional[int] = None) -> List[str]:
+    return [generate_username(settings, user_id) for _ in range(count)]
+
+
+# ============ HTTP СЕССИЯ ============
+
+async def get_http_session() -> aiohttp.ClientSession:
+    global http_session
+    if http_session is None or http_session.closed:
+        connector = aiohttp.TCPConnector(
+            limit=CONNECTION_LIMIT,
+            limit_per_host=30,
+            ttl_dns_cache=300,
+            enable_cleanup_closed=True
+        )
+        http_session = aiohttp.ClientSession(
+            connector=connector,
+            timeout=aiohttp.ClientTimeout(total=15, connect=5)
+        )
+    return http_session
+
+
+# ============ БЕЗОПАСНЫЕ ЗАПРОСЫ ============
+
+async def safe_request_with_retry(func, *args, **kwargs):
+    for attempt in range(MAX_RETRIES):
+        try:
+            return await func(*args, **kwargs)
+        except TelegramRetryAfter as e:
+            wait_time = e.retry_after + 1
+            logging.warning(f"⏱ Rate limit! Жду {wait_time} сек...")
+            await asyncio.sleep(wait_time)
+        except TelegramAPIError as e:
+            logging.error(f"❌ Telegram API error: {e}")
+            if attempt < MAX_RETRIES - 1:
+                await asyncio.sleep(1)
+            else:
+                return None
+        except aiohttp.ClientResponseError as e:
+            if e.status == 429:
+                wait_time = int(e.headers.get('Retry-After', 20))
+                logging.warning(f"⏱ HTTP 429! Жду {wait_time} сек...")
+                await asyncio.sleep(wait_time)
+            elif e.status >= 500:
+                if attempt < MAX_RETRIES - 1:
+                    await asyncio.sleep(2)
+                else:
+                    return None
+            else:
+                return None
+        except asyncio.TimeoutError:
+            if attempt < MAX_RETRIES - 1:
+                await asyncio.sleep(1)
+            else:
+                return None
+        except Exception as e:
+            logging.error(f"❌ Unexpected error: {e}")
+            if attempt < MAX_RETRIES - 1:
+                await asyncio.sleep(1)
+            else:
+                return None
+    return None
+
+
+# ============ ПРОВЕРКА НА БАН ============
+
+async def is_username_banned(username: str) -> bool:
+    if is_in_banned_db(username):
+        return True
+    
+    session = await get_http_session()
+    try:
+        async with session.get(
+            f"https://t.me/{username}",
+            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"},
+            allow_redirects=True,
+            timeout=aiohttp.ClientTimeout(total=10)
+        ) as resp:
+            if resp.status == 200:
+                html = (await resp.text()).lower()
+                for indicator in BANNED_INDICATORS:
+                    if indicator in html:
+                        logging.warning(f"🚫 @{username} — ЗАБАНЕН")
+                        return True
+    except Exception as e:
+        logging.error(f"Ban check error для @{username}: {e}")
+    
+    return False
+
+
+# ============ BOT API ПРОВЕРКА ============
+
+async def check_username_bot_api_fast(username: str) -> Optional[bool]:
+    async def _check():
+        session = await get_http_session()
+        url = f"https://api.telegram.org/bot{BOT_TOKEN}/getChat"
+        params = {"chat_id": f"@{username}"}
+        
+        async with session.get(url, params=params) as response:
+            data = await response.json()
+            log_debug(username, "bot_api", f"Response: {data}")
+            
+            if data.get("ok") is True:
+                logging.info(f"❌ Bot API: @{username} → ЗАНЯТ")
+                return False
+            
+            error_code = data.get("error_code")
+            error_desc = data.get("description", "").lower()
+            
+            if error_code == 400:
+                if "chat not found" in error_desc or "username is not occupied" in error_desc or "username not occupied" in error_desc:
+                    logging.info(f"✅ Bot API: @{username} → СВОБОДЕН")
+                    return True
+                if "username is occupied" in error_desc or "already occupied" in error_desc:
+                    logging.info(f"❌ Bot API: @{username} → ЗАНЯТ")
+                    return False
+                if "deactivated" in error_desc or "deleted" in error_desc:
+                    logging.info(f"🚫 Bot API: @{username} → ЗАБАНЕН")
+                    return False
+                if error_desc == "bad request" or len(error_desc) < 15:
+                    logging.info(f"✅ Bot API: @{username} → СВОБОДЕН (generic)")
+                    return True
+                logging.warning(f"⚠️ Bot API: @{username} → НЕИЗВЕСТНО")
+                return None
+            elif error_code == 403:
+                logging.info(f"❌ Bot API: @{username} → ЗАНЯТ (403)")
+                return False
+            elif error_code == 404:
+                logging.info(f"✅ Bot API: @{username} → СВОБОДЕН (404)")
+                return True
+            else:
+                logging.warning(f"⚠️ Bot API: @{username} → НЕИЗВЕСТНО ({error_code})")
+                return None
+    
+    return await safe_request_with_retry(_check)
+
+
+# ============ FRAGMENT ПРОВЕРКА ============
+
+async def check_username_fragment_fast(username: str) -> Optional[bool]:
+    async def _check():
+        session = await get_http_session()
+        url = f"https://fragment.com/username/{username}"
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+            "Accept": "text/html,application/xhtml+xml",
+        }
+        
+        async with session.get(url, headers=headers, allow_redirects=True) as response:
+            status = response.status
+            
+            if status == 404:
+                logging.info(f"✅ Fragment: @{username} → СВОБОДЕН (404)")
+                return True
+            
+            if status == 200:
+                html = await response.text()
+                html_lower = html.lower()
+                log_debug(username, "fragment", f"Status {status}", html[:2500])
+                
+                sale_indicators = [
+                    (r'<(?:button|a)[^>]*(?:place.*bid|buy.*now|make.*offer)', "кнопка покупки"),
+                    (r'tm-section-bid-button', "кнопка ставки"),
+                    (r'tm-section-countdown', "таймер аукциона"),
+                    (r'data-bid-ts', "данные аукциона"),
+                    (r'table-cell-value[^>]*>\s*(?:TON|USD|\$|₽)\s*[\d,]+', "цена"),
+                    (r'(?:highest|current|minimum|starting)\s+(?:bid|price)', "информация о ставках"),
+                    (r'<div[^>]*tm-status[^>]*>.*(?:auction|for sale|on sale)', "статус продажи"),
+                    (r'(?:sold for|purchase history|bought)', "история продаж"),
+                    (r'owned\s+by', "владелец указан"),
+                ]
+                
+                for pattern, desc in sale_indicators:
+                    if re.search(pattern, html_lower):
+                        logging.info(f"🛒 Fragment: @{username} → НА ПРОДАЖЕ/ЗАНЯТ ({desc})")
+                        return False
+                
+                if len(html) < 3000:
+                    logging.info(f"✅ Fragment: @{username} → СВОБОДЕН (мало контента)")
+                    return True
+                
+                if not any(m in html_lower for m in ['auction', 'bid', 'price', 'sold', 'owner', 'ton', 'usd', '$', 'tm-username', 'username-link', 'table-cell']):
+                    logging.info(f"✅ Fragment: @{username} → СВОБОДЕН (нет маркеров)")
+                    return True
+                
+                logging.warning(f"⚠️ Fragment: @{username} → НЕОПРЕДЕЛЁННО")
+                return None
+            
+            return None
+    
+    return await safe_request_with_retry(_check)
+
+
+# ============ T.ME ПРОВЕРКА ============
+
+async def check_username_web_fast(username: str) -> Optional[bool]:
+    async def _check():
+        session = await get_http_session()
+        url = f"https://t.me/{username}"
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+            "Accept": "text/html",
+        }
+        
+        async with session.get(url, headers=headers, allow_redirects=True) as response:
+            status = response.status
+            
+            if status == 404:
+                logging.info(f"✅ t.me: @{username} → СВОБОДЕН (404)")
+                return True
+            
+            if status == 200:
+                html = await response.text()
+                html_lower = html.lower()
+                log_debug(username, "t.me", f"Status {status}", html[:3000])
+                
+                occupied_markers = ['tgme_page_photo', 'tgme_page_title', 'tgme_page_description', 'tgme_page_extra', 'tgme_page_action']
+                
+                if any(marker in html for marker in occupied_markers):
+                    logging.info(f"❌ t.me: @{username} → ЗАНЯТ")
+                    return False
+                
+                if any(ind in html_lower for ind in BANNED_INDICATORS):
+                    logging.info(f"🚫 t.me: @{username} → ЗАБАНЕН")
+                    return False
+                
+                free_indicators = ["if you have telegram, you can contact", "view and join", "preview channel"]
+                
+                if any(ind in html_lower for ind in free_indicators) and 'tgme_page_photo' not in html:
+                    logging.info(f"✅ t.me: @{username} → СВОБОДЕН")
+                    return True
+                
+                if len(html) < 2000:
+                    logging.info(f"✅ t.me: @{username} → СВОБОДЕН (короткая)")
+                    return True
+                
+                logging.warning(f"⚠️ t.me: @{username} → НЕОПРЕДЕЛЁННО")
+                return None
+            
+            return None
+    
+    return await safe_request_with_retry(_check)
+
+
+# ============ ГЛАВНАЯ ЛОГИКА ПРОВЕРКИ ============
+
+async def check_username_parallel(username: str, user_id=None, use_cache: bool = True) -> bool:
+    if use_cache:
+        if is_in_free_db(username):
+            return True
+        if is_in_taken_db(username) or is_in_banned_db(username):
+            return False
+    
+    async with RATE_LIMITER:
+        await asyncio.sleep(CHECK_DELAY)
+        
+        logging.info(f"\n{'='*60}\n🔍 ПРОВЕРЯЮ: @{username}\n{'='*60}")
+        
+        if await is_username_banned(username):
+            add_to_banned_db(username, user_id, "t.me_ban_check", "Обнаружены признаки бана")
+            return False
+        
+        raw_results = await asyncio.gather(
+            check_username_bot_api_fast(username),
+            check_username_fragment_fast(username),
+            check_username_web_fast(username),
+            return_exceptions=True
+        )
+        
+        bot_api_result, fragment_result, web_result = [
+            None if isinstance(r, Exception) else r for r in raw_results
+        ]
+        
+        logging.info(
+            f"📊 РЕЗУЛЬТАТЫ @{username}:\n"
+            f"   Bot API  = {bot_api_result}\n"
+            f"   Fragment = {fragment_result}\n"
+            f"   t.me     = {web_result}"
+        )
+        
+        results_list = [bot_api_result, fragment_result, web_result]
+        free_votes = sum(1 for v in results_list if v is True)
+        taken_votes = sum(1 for v in results_list if v is False)
+        
+        # ОПТИМИСТИЧНАЯ ЛОГИКА
+        
+        if fragment_result is False and bot_api_result is False:
+            add_to_taken_db(username, user_id, "fragment_and_botapi", "Оба подтверждают занятость")
+            return False
+        
+        if taken_votes >= 2:
+            add_to_taken_db(username, user_id, "majority_taken", f"{taken_votes} методов подтвердили")
+            return False
+        
+        if bot_api_result is True or web_result is True:
+            method = "bot_api" if bot_api_result is True else "web"
+            add_to_free_db(username, user_id, f"{method}_confirmed")
+            return True
+        
+        if fragment_result is True and bot_api_result is None and web_result is None:
+            add_to_free_db(username, user_id, "fragment_optimistic")
+            return True
+        
+        if fragment_result is False and bot_api_result is None and web_result is None:
+            add_to_free_db(username, user_id, "ignore_fragment_false")
+            return True
+        
+        if all(v is None for v in results_list):
+            retry_result = await check_username_bot_api_fast(username)
+            if retry_result is True:
+                add_to_free_db(username, user_id, "bot_api_retry")
+                return True
+            elif retry_result is False:
+                add_to_taken_db(username, user_id, "bot_api_retry", "Повторная проверка подтвердила")
+                return False
+            else:
+                add_to_free_db(username, user_id, "all_unknown_optimistic")
+                return True
+        
+        add_to_free_db(username, user_id, "fallback_optimistic")
+        return True
+
+
+# ============ БАТЧ-ПРОВЕРКА ============
+
+async def check_usernames_batch(usernames: List[str], user_id=None) -> Dict[str, bool]:
+    results = await asyncio.gather(
+        *[check_username_parallel(u, user_id) for u in usernames],
+        return_exceptions=True
+    )
+    return {
+        u: (False if isinstance(r, Exception) else r)
+        for u, r in zip(usernames, results)
+    }
+
+
+# ============ КЛАВИАТУРЫ ============
+
+def get_settings_keyboard(user_id: int) -> InlineKeyboardMarkup:
+    s = get_user_settings(user_id)
+    premium = is_premium(user_id)
+    beautiful = s["style"] == "beautiful"
+    lock = "🔒 " if beautiful else ""
+
+    underscore_label = f"{'✅' if s.get('allow_underscore') else '❌'} '_' в юзернейме"
+    if not premium:
+        underscore_label = f"{PREMIUM_ICON} " + underscore_label
+
+    check_label = f"{PREMIUM_ICON} 🔍 Проверка юзернейма"
+
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=f"{lock}🔁 Повторения", callback_data="settings_repeats")],
+        [InlineKeyboardButton(text=f"{lock}{underscore_label}", callback_data="toggle_underscore")],
+        [InlineKeyboardButton(text=f"🎨 Стиль: {STYLE_NAMES.get(s['style'], s['style'])}", callback_data="change_style")],
+        [InlineKeyboardButton(text=f"📏 Длина юзернейма: {s['max_length']}", callback_data="change_length")],
+        [InlineKeyboardButton(text=check_label, callback_data="check_availability_menu")],
+        [InlineKeyboardButton(text="🔄 Сбросить настройки", callback_data="reset_settings")],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="users")],
+    ])
+
+
+def get_repeats_keyboard(user_id: int) -> InlineKeyboardMarkup:
+    s = get_user_settings(user_id)
+    premium = is_premium(user_id)
+    digit_label = f"Цифра для повтора: {s['digit'] if s.get('digit') is not None else '—'}"
+    digit_count_label = f"Кол-во повторений цифры: {s.get('digit_repeat_count', 0)}"
+    if not premium:
+        digit_label = f"{PREMIUM_ICON} " + digit_label
+        digit_count_label = f"{PREMIUM_ICON} " + digit_count_label
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=f"🔤 Буква для повтора: {s['letter'].upper()}", callback_data="change_letter")],
+        [InlineKeyboardButton(text=f"🔢 Кол-во повторений буквы: {s['repeat_count']}", callback_data="change_count")],
+        [InlineKeyboardButton(text=f"🔢 {digit_label}", callback_data="change_digit")],
+        [InlineKeyboardButton(text=f"🔢 {digit_count_label}", callback_data="change_digit_count")],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="settings")],
+    ])
+
+
+def get_letter_keyboard() -> InlineKeyboardMarkup:
+    rows, row = [], []
+    for letter in string.ascii_lowercase:
+        row.append(InlineKeyboardButton(text=letter.upper(), callback_data=f"set_letter_{letter}"))
+        if len(row) == 7:
+            rows.append(row)
+            row = []
+    if row:
+        rows.append(row)
+    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="settings_repeats")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+def get_count_keyboard(max_length: int = 5) -> InlineKeyboardMarkup:
+    max_repeat = get_max_repeat_count(max_length)
+    options = [n for n in range(2, max_repeat + 1)]
+    rows = []
+    row = []
+    for n in options:
+        row.append(InlineKeyboardButton(text=str(n), callback_data=f"set_count_{n}"))
+        if len(row) == 5:
+            rows.append(row)
+            row = []
+    if row:
+        rows.append(row)
+    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="settings_repeats")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def get_digit_keyboard() -> InlineKeyboardMarkup:
+    rows = []
+    row = []
+    for d in range(10):
+        row.append(InlineKeyboardButton(text=str(d), callback_data=f"set_digit_{d}"))
+        if len(row) == 5:
+            rows.append(row)
+            row = []
+    if row:
+        rows.append(row)
+    rows.append([InlineKeyboardButton(text="❌ Убрать цифру", callback_data="clear_digit")])
+    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="settings_repeats")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def get_digit_count_keyboard(max_length: int = 5) -> InlineKeyboardMarkup:
+    max_repeat = get_max_repeat_count(max_length)
+    options = [n for n in range(0, max_repeat + 1)]
+    rows = []
+    row = []
+    for n in options:
+        row.append(InlineKeyboardButton(text=str(n), callback_data=f"set_digit_count_{n}"))
+        if len(row) == 5:
+            rows.append(row)
+            row = []
+    if row:
+        rows.append(row)
+    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="settings_repeats")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def get_style_keyboard() -> InlineKeyboardMarkup:
+    rows = [
+        [InlineKeyboardButton(text=name, callback_data=f"set_style_{key}")]
+        for key, name in STYLE_NAMES.items()
+    ]
+    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="settings")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def get_check_menu_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✏️ Ввести юзернейм", callback_data="watch_add")],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="settings")],
+    ])
+
+
+
+
+# ============ CALLBACK ============
+
+async def _run_username_search(callback: types.CallbackQuery, send_new: bool):
+    user_id = callback.from_user.id
+    settings = get_user_settings(user_id)
+
+    progress_text = "✨ <b>Оптимистичный поиск...</b>\n\n<i>Игнорирую ложные срабатывания</i>"
+    if send_new:
+        # "Ещё" — продолжаем поиск НОВЫМ сообщением, не трогая предыдущий
+        # найденный результат.
+        msg = await callback.message.answer(progress_text, parse_mode=ParseMode.HTML)
+    else:
+        msg = await callback.message.edit_text(progress_text, parse_mode=ParseMode.HTML)
+
+    max_attempts = 40
+    found = False
+
+    for i in range(0, max_attempts, BATCH_SIZE):
+        batch = []
+        for _ in range(min(BATCH_SIZE, max_attempts - i)):
+            u = generate_username(settings, user_id)
+            if not is_in_taken_db(u) and not is_in_free_db(u):
+                batch.append(u)
+        
+        if not batch:
+            continue
+        
+        if i > 0 and i % 16 == 0:
+            await msg.edit_text(f"✨ Проверяю... {i}/{max_attempts}", parse_mode=ParseMode.HTML)
+        
+        results = await check_usernames_batch(batch, user_id)
+        
+        for username, is_free in results.items():
+            if is_free:
+                await msg.edit_text(
+                    f"🎉 <b>НАЙДЕН!</b>\n\n✅ <code>@{username}</code>\n\n<i>Оптимистичная проверка</i>",
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                        [InlineKeyboardButton(text="✅ Забрать", url=f"https://t.me/{username}")],
+                        [InlineKeyboardButton(text="🔎 Fragment", url=f"https://fragment.com/username/{username}")],
+                        [InlineKeyboardButton(text="🔄 Ещё", callback_data="gen_more"), InlineKeyboardButton(text="⬅️ Назад", callback_data="users")],
+                    ])
+                )
+                found = True
+                break
+        if found:
+            break
+    
+    if not found:
+        await msg.edit_text(
+            f"😔 Не найдено за {max_attempts} попыток\n\n<i>Попробуй изменить настройки</i>",
+            parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🔄 Снова", callback_data="gen_more" if send_new else "gen")],
+                [InlineKeyboardButton(text="⚙️ Настройки", callback_data="settings")],
+                [InlineKeyboardButton(text="⬅️ Назад", callback_data="users")],
+            ])
+        )
+
+
+@router.callback_query(lambda c: c.data == "gen")
+async def generate_username_callback(callback: types.CallbackQuery):
+    await callback.answer()
+    await _run_username_search(callback, send_new=False)
+
+
+@router.callback_query(lambda c: c.data == "gen_more")
+async def generate_username_more_callback(callback: types.CallbackQuery):
+    await callback.answer()
+    await _run_username_search(callback, send_new=True)
+
+@router.callback_query(lambda c: c.data == "settings")
+async def open_settings_callback(callback: types.CallbackQuery):
+    await callback.answer()
+    user_id = callback.from_user.id
+    settings = get_user_settings(user_id)
+    examples = "\n".join(f"• <code>{e}</code>" for e in generate_examples(settings, 4, user_id))
+    
+    lines = [
+        f"⚙️ <b>Настройки</b>\n",
+        f"📌 Стиль: <b>{STYLE_NAMES.get(settings['style'], settings['style'])}</b>",
+        f"📌 Длина юзернейма: <b>{settings['max_length']}</b>",
+    ]
+    if settings["style"] != "beautiful":
+        lines.append(f"📌 Буква: <b>{settings['letter'].upper()}</b> ×{settings['repeat_count']}")
+        if is_premium(user_id) and settings.get("digit") is not None and settings.get("digit_repeat_count", 0) > 0:
+            lines.append(f"📌 Цифра: <b>{settings['digit']}</b> ×{settings['digit_repeat_count']}")
+        if is_premium(user_id) and settings.get("allow_underscore"):
+            lines.append("📌 '_' в юзернейме: <b>включено</b>")
+    else:
+        lines.append("<i>При стиле «Красивые» остальные настройки генерации недоступны.</i>")
+    
+    await callback.message.edit_text(
+        "\n".join(lines) + f"\n\n📝 Примеры:\n{examples}",
+        parse_mode=ParseMode.HTML,
+        reply_markup=get_settings_keyboard(user_id)
+    )
+
+
+@router.callback_query(lambda c: c.data == "settings_repeats")
+async def settings_repeats_menu(callback: types.CallbackQuery):
+    user_id = callback.from_user.id
+    s = get_user_settings(user_id)
+    if s["style"] == "beautiful":
+        await callback.answer("🔒 Недоступно при стиле «Красивые»", show_alert=True)
+        return
+    await callback.answer()
+    await callback.message.edit_text(
+        "🔁 <b>Повторения</b>\n\nНастрой повтор буквы (всем) и цифры (💎 премиум):",
+        parse_mode=ParseMode.HTML,
+        reply_markup=get_repeats_keyboard(user_id)
+    )
+
+
+@router.callback_query(lambda c: c.data == "change_letter")
+async def change_letter(callback: types.CallbackQuery):
+    await callback.answer()
+    await callback.message.edit_text("🔤 Выбери букву:", reply_markup=get_letter_keyboard())
+
+@router.callback_query(lambda c: c.data.startswith("set_letter_"))
+async def set_letter(callback: types.CallbackQuery):
+    letter = callback.data.replace("set_letter_", "")
+    get_user_settings(callback.from_user.id)["letter"] = letter
+    await callback.answer(f"✅ Буква: {letter.upper()}")
+    await settings_repeats_menu(callback)
+
+@router.callback_query(lambda c: c.data == "change_count")
+async def change_count(callback: types.CallbackQuery):
+    await callback.answer()
+    s = get_user_settings(callback.from_user.id)
+    await callback.message.edit_text(
+        "🔢 Количество одинаковых букв подряд:\n\n"
+        f"<i>Доступно больше вариантов при большей длине юзернейма (сейчас: {s['max_length']})</i>",
+        parse_mode=ParseMode.HTML,
+        reply_markup=get_count_keyboard(s["max_length"])
+    )
+
+@router.callback_query(lambda c: c.data.startswith("set_count_"))
+async def set_count(callback: types.CallbackQuery):
+    count = int(callback.data.replace("set_count_", ""))
+    s = get_user_settings(callback.from_user.id)
+    max_repeat = get_max_repeat_count(s["max_length"])
+    count = min(count, max_repeat)
+    s["repeat_count"] = count
+    await callback.answer(f"✅ Повторений: {count}")
+    await settings_repeats_menu(callback)
+
+
+@router.callback_query(lambda c: c.data == "change_digit")
+async def change_digit(callback: types.CallbackQuery):
+    user_id = callback.from_user.id
+    if not is_premium(user_id):
+        await callback.answer(f"{PREMIUM_ICON} Доступно только с премиум-подпиской", show_alert=True)
+        return
+    await callback.answer()
+    await callback.message.edit_text("🔢 Выбери цифру для повтора:", reply_markup=get_digit_keyboard())
+
+@router.callback_query(lambda c: c.data.startswith("set_digit_") and not c.data.startswith("set_digit_count_"))
+async def set_digit(callback: types.CallbackQuery):
+    user_id = callback.from_user.id
+    if not is_premium(user_id):
+        await callback.answer(f"{PREMIUM_ICON} Доступно только с премиум-подпиской", show_alert=True)
+        return
+    digit = callback.data.replace("set_digit_", "")
+    get_user_settings(user_id)["digit"] = digit
+    await callback.answer(f"✅ Цифра: {digit}")
+    await settings_repeats_menu(callback)
+
+@router.callback_query(lambda c: c.data == "clear_digit")
+async def clear_digit(callback: types.CallbackQuery):
+    user_id = callback.from_user.id
+    s = get_user_settings(user_id)
+    s["digit"] = None
+    s["digit_repeat_count"] = 0
+    await callback.answer("✅ Цифра убрана")
+    await settings_repeats_menu(callback)
+
+@router.callback_query(lambda c: c.data == "change_digit_count")
+async def change_digit_count(callback: types.CallbackQuery):
+    user_id = callback.from_user.id
+    if not is_premium(user_id):
+        await callback.answer(f"{PREMIUM_ICON} Доступно только с премиум-подпиской", show_alert=True)
+        return
+    await callback.answer()
+    s = get_user_settings(user_id)
+    await callback.message.edit_text(
+        "🔢 Количество одинаковых цифр подряд:",
+        reply_markup=get_digit_count_keyboard(s["max_length"])
+    )
+
+@router.callback_query(lambda c: c.data.startswith("set_digit_count_"))
+async def set_digit_count(callback: types.CallbackQuery):
+    user_id = callback.from_user.id
+    if not is_premium(user_id):
+        await callback.answer(f"{PREMIUM_ICON} Доступно только с премиум-подпиской", show_alert=True)
+        return
+    count = int(callback.data.replace("set_digit_count_", ""))
+    s = get_user_settings(user_id)
+    max_repeat = get_max_repeat_count(s["max_length"])
+    count = min(count, max_repeat)
+    s["digit_repeat_count"] = count
+    await callback.answer(f"✅ Повторений цифры: {count}")
+    await settings_repeats_menu(callback)
+
+
+@router.callback_query(lambda c: c.data == "toggle_underscore")
+async def toggle_underscore(callback: types.CallbackQuery):
+    user_id = callback.from_user.id
+    s = get_user_settings(user_id)
+    if s["style"] == "beautiful":
+        await callback.answer("🔒 Недоступно при стиле «Красивые»", show_alert=True)
+        return
+    if not is_premium(user_id):
+        await callback.answer(f"{PREMIUM_ICON} Доступно только с премиум-подпиской", show_alert=True)
+        return
+    s["allow_underscore"] = not s.get("allow_underscore", False)
+    await callback.answer(f"✅ '_' в юзернейме: {'включено' if s['allow_underscore'] else 'выключено'}")
+    await open_settings_callback(callback)
+
+
+@router.callback_query(lambda c: c.data == "change_length")
+async def change_length(callback: types.CallbackQuery, state: FSMContext):
+    await callback.answer()
+    await state.set_state(UsernameSettingsStates.waiting_length)
+    await callback.message.edit_text(
+        f"📏 <b>Длина юзернейма</b>\n\n"
+        f"Введи число от {MIN_USERNAME_LENGTH} до {MAX_USERNAME_LENGTH} — "
+        f"это максимальная длина для создаваемого юзернейма.\n\n"
+        f"<i>Чем больше длина, тем больше одинаковых букв/цифр подряд можно "
+        f"будет настроить.</i>\n\n"
+        f"/cancel — отменить",
+        parse_mode=ParseMode.HTML
+    )
+
+@router.message(UsernameSettingsStates.waiting_length)
+async def set_length_input(message: types.Message, state: FSMContext):
+    text = (message.text or "").strip()
+    if text.lower() in ("/cancel", "отмена"):
+        await state.clear()
+        await message.answer("❌ Отменено", reply_markup=get_settings_keyboard(message.from_user.id))
+        return
+    if not text.isdigit():
+        await message.answer(
+            f"❌ Введи именно число от {MIN_USERNAME_LENGTH} до {MAX_USERNAME_LENGTH}."
+        )
+        return
+    length = int(text)
+    if not (MIN_USERNAME_LENGTH <= length <= MAX_USERNAME_LENGTH):
+        await message.answer(
+            f"❌ Число должно быть от {MIN_USERNAME_LENGTH} до {MAX_USERNAME_LENGTH}. Попробуй снова."
+        )
+        return
+    s = get_user_settings(message.from_user.id)
+    s["max_length"] = length
+    s["repeat_count"] = min(s["repeat_count"], get_max_repeat_count(length))
+    s["digit_repeat_count"] = min(s.get("digit_repeat_count", 0), get_max_repeat_count(length))
+    await state.clear()
+    examples = "\n".join(f"• <code>{e}</code>" for e in generate_examples(s, 4, message.from_user.id))
+    await message.answer(
+        f"✅ Длина юзернейма: <b>{length}</b>\n\n📝 Примеры:\n{examples}",
+        parse_mode=ParseMode.HTML,
+        reply_markup=get_settings_keyboard(message.from_user.id)
+    )
+
+@router.callback_query(lambda c: c.data == "change_style")
+async def change_style(callback: types.CallbackQuery):
+    await callback.answer()
+    await callback.message.edit_text(
+        f"🎨 Выбери стиль генерации:\n\n<i>«Красивые» — {PREMIUM_ICON} премиум-функция</i>",
+        parse_mode=ParseMode.HTML,
+        reply_markup=get_style_keyboard()
+    )
+
+@router.callback_query(lambda c: c.data.startswith("set_style_"))
+async def set_style(callback: types.CallbackQuery):
+    user_id = callback.from_user.id
+    style = callback.data.replace("set_style_", "")
+    if style not in STYLE_NAMES:
+        style = "random"
+    if style == "beautiful" and not is_premium(user_id):
+        await callback.answer(f"{PREMIUM_ICON} Стиль «Красивые» доступен только с премиум-подпиской", show_alert=True)
+        return
+    get_user_settings(user_id)["style"] = style
+    await callback.answer(f"✅ Стиль: {STYLE_NAMES[style]}")
+    await open_settings_callback(callback)
+
+@router.callback_query(lambda c: c.data == "reset_settings")
+async def reset_settings(callback: types.CallbackQuery):
+    user_settings[callback.from_user.id] = {
+        "letter": "s", "repeat_count": 2, "max_length": 5, "style": "random",
+        "digit": None, "digit_repeat_count": 0, "allow_underscore": False,
+    }
+    await callback.answer("✅ Сброшено")
+    await open_settings_callback(callback)
+
+
+# ============ ПРОВЕРКА ДОСТУПНОСТИ ЮЗЕРНЕЙМА (💎 премиум) ============
+
+@router.callback_query(lambda c: c.data == "check_availability_menu")
+async def check_availability_menu(callback: types.CallbackQuery):
+    user_id = callback.from_user.id
+    if not is_premium(user_id):
+        await callback.answer(f"{PREMIUM_ICON} Доступно только с премиум-подпиской", show_alert=True)
+        return
+    await callback.answer()
+    items = watched_usernames.get(user_id, [])
+    text = f"🔍 <b>Проверка юзернейма</b>\n\n"
+    if items:
+        text += "Отслеживаю:\n" + "\n".join(f"• @{it['username']}" for it in items) + "\n\n"
+    text += (
+        f"Бот проверяет доступность раз в 10 минут (Telegram API + Fragment) "
+        f"и уведомит, когда юзернейм освободится.\n\n"
+        f"Слотов: {len(items)}/{MAX_WATCHED_PER_USER}"
+    )
+    await callback.message.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=get_check_menu_keyboard())
+
+
+@router.callback_query(lambda c: c.data == "watch_add")
+async def watch_add(callback: types.CallbackQuery, state: FSMContext):
+    user_id = callback.from_user.id
+    if not is_premium(user_id):
+        await callback.answer(f"{PREMIUM_ICON} Доступно только с премиум-подпиской", show_alert=True)
+        return
+    if len(watched_usernames.get(user_id, [])) >= MAX_WATCHED_PER_USER:
+        await callback.answer(f"❌ Максимум {MAX_WATCHED_PER_USER} юзернеймов в отслеживании", show_alert=True)
+        return
+    await callback.answer()
+    await state.set_state(UsernameSettingsStates.waiting_watch_username)
+    await callback.message.edit_text(
+        "✏️ Введи юзернейм для отслеживания (без @):\n\n/cancel — отменить",
+        parse_mode=ParseMode.HTML
+    )
+
+
+@router.message(UsernameSettingsStates.waiting_watch_username)
+async def watch_add_input(message: types.Message, state: FSMContext):
+    text = (message.text or "").strip().lstrip('@')
+    user_id = message.from_user.id
+    if text.lower() in ("/cancel", "отмена"):
+        await state.clear()
+        await message.answer("❌ Отменено", reply_markup=get_check_menu_keyboard())
+        return
+    if not re.match(r'^[a-zA-Z][a-zA-Z0-9_]{4,31}$', text):
+        await message.answer("❌ Неверный формат юзернейма. Попробуй снова, или /cancel.")
+        return
+    await state.clear()
+    watched_usernames.setdefault(user_id, [])
+    if any(it["username"].lower() == text.lower() for it in watched_usernames[user_id]):
+        await message.answer(
+            f"ℹ️ @{text} уже отслеживается.",
+            reply_markup=get_check_menu_keyboard()
+        )
+        return
+    watched_usernames[user_id].append({
+        "username": text,
+        "added_at": datetime.now().isoformat(),
+    })
+    save_watched()
+    await message.answer(
+        f"✅ @{text} добавлен в отслеживание.\n\n"
+        f"Проверяю каждые 10 минут — уведомлю, как только он освободится.",
+        reply_markup=get_check_menu_keyboard()
+    )
+
+
+
+
+# ============ КОМАНДЫ ============
+
+@router.message(Command("getdb"))
+async def get_db_command(message: types.Message):
+    taken_db = load_db(TAKEN_DB_FILE)
+    free_db = load_db(FREE_DB_FILE)
+    banned_db = load_db(BANNED_DB_FILE)
+    ts = datetime.now().strftime('%Y%m%d_%H%M%S')
+    taken_file = f"taken_{message.from_user.id}_{ts}.json"
+    free_file = f"free_{message.from_user.id}_{ts}.json"
+    banned_file = f"banned_{message.from_user.id}_{ts}.json"
+    
+    try:
+        for path, data in ((taken_file, taken_db), (free_file, free_db), (banned_file, banned_db)):
+            with open(path, 'w', encoding='utf-8') as f:
+                json.dump(data, f, indent=2, ensure_ascii=False)
+        
+        await message.answer(
+            f"📊 Занятых: {len(taken_db)}, Свободных: {len(free_db)}, Забаненных: {len(banned_db)}"
+        )
+        await message.answer_document(types.FSInputFile(taken_file), caption=f"📁 Занятые ({len(taken_db)})")
+        await message.answer_document(types.FSInputFile(free_file), caption=f"✅ Свободные ({len(free_db)})")
+        await message.answer_document(types.FSInputFile(banned_file), caption=f"🚫 Забаненные ({len(banned_db)})")
+        
+        if os.path.exists(DEBUG_LOG_FILE):
+            await message.answer_document(types.FSInputFile(DEBUG_LOG_FILE), caption="🔍 Debug log")
+    except Exception as e:
+        await message.answer(f"❌ Ошибка: {e}")
+    finally:
+        for p in (taken_file, free_file, banned_file):
+            if os.path.exists(p):
+                os.remove(p)
+
+
+# ============ ФОНОВЫЙ ВОРКЕР ОТСЛЕЖИВАНИЯ ЮЗЕРНЕЙМОВ (💎 премиум) ============
+
+async def username_watcher_loop():
+    """Раз в 10 минут проверяет все отслеживаемые юзернеймы (живой запрос,
+    без кэша БД — иначе занятый юзернейм навсегда останется 'занятым' в
+    кэше и его освобождение никогда не будет замечено). Если юзернейм
+    занят — ничего не делает (не пытается его занять). Если стал свободен —
+    уведомляет пользователя и убирает из отслеживания."""
+    while True:
+        try:
+            await asyncio.sleep(WATCH_INTERVAL_SECONDS)
+            if not _username_bot_instance:
+                continue
+            for user_id, items in list(watched_usernames.items()):
+                if not is_premium(user_id) or not items:
+                    continue
+                for entry in list(items):
+                    username = entry["username"]
+                    try:
+                        is_free = await check_username_parallel(username, user_id, use_cache=False)
+                    except Exception as e:
+                        logging.error(f"❌ username_watcher: ошибка проверки @{username}: {e}")
+                        continue
+                    if is_free:
+                        try:
+                            await _username_bot_instance.send_message(
+                                user_id,
+                                f"🎉 <b>Юзернейм @{username} освободился!</b>\n\n"
+                                f"Успей забрать, пока не заняли снова.",
+                                parse_mode=ParseMode.HTML,
+                                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                                    [InlineKeyboardButton(text="✅ Забрать", url=f"https://t.me/{username}")],
+                                ])
+                            )
+                        except Exception as e:
+                            logging.error(f"❌ username_watcher: не удалось уведомить {user_id}: {e}")
+                        watched_usernames[user_id] = [
+                            it for it in watched_usernames[user_id]
+                            if it["username"].lower() != username.lower()
+                        ]
+                        save_watched()
+        except Exception as e:
+            logging.error(f"❌ username_watcher_loop: {e}")
+
+
+def start_username_watcher():
+    global _watcher_task
+    if _watcher_task is None or _watcher_task.done():
+        _watcher_task = asyncio.create_task(username_watcher_loop())
+        logging.info("✅ Фоновый воркер отслеживания юзернеймов запущен")
+
+
+# ============ ИНИЦИАЛИЗАЦИЯ ============
+
+def init_username_bot(dp):
+    global username_router_initialized, watched_usernames
+    if not username_router_initialized:
+        watched_usernames.update(load_watched())
+        dp.include_router(router)
+        username_router_initialized = True
+        logging.info("✅ Модуль юзернеймов инициализирован")
+
+
+# ============ ЭКСПОРТ ============
+
+__all__ = [
+    'router',
+    'init_username_bot',
+    'set_username_bot',
+    'start_username_watcher',
+    'check_username_parallel',
+    'check_usernames_batch',
+    'get_user_settings',
+    'generate_username',
+    'generate_examples',
+    'load_db',
+    'save_db',
+    'add_to_free_db',
+    'add_to_taken_db',
+    'add_to_banned_db',
+    'is_in_free_db',
+    'is_in_taken_db',
+    'is_in_banned_db',
+    'TAKEN_DB_FILE',
+    'FREE_DB_FILE',
+    'BANNED_DB_FILE'
+]
