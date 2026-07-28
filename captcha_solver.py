@@ -246,6 +246,7 @@ class CaptchaSolver:
                         await self._click_captcha_button(client, bot_username, msg.id, answer)
                         await asyncio.sleep(2)
                         new_msg = await client.get_messages(bot_username, limit=1)
+                        new_msg = new_msg[0] if new_msg else None
                         if new_msg and not self.is_captcha_message(new_msg):
                             del self.captcha_storage[chat_id]
                             if self.continue_callback:
@@ -333,6 +334,7 @@ class CaptchaSolver:
             await asyncio.sleep(2)
             
             new_msg = await client.get_messages(bot_username, limit=1)
+            new_msg = new_msg[0] if new_msg else None
             
             if new_msg and not self.is_captcha_message(new_msg):
                 del self.captcha_storage[chat_id]
