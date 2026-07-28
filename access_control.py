@@ -97,10 +97,24 @@ def is_admin(user_id: int) -> bool:
 
 def is_premium(user_id: int) -> bool:
     """Премиум-функции доступны и премиум-пользователям, и админам
-    (админам — всегда, независимо от отдельной премиум-записи)."""
+    (админам — всегда, независимо от отдельной премиум-записи).
+    Премиум с истёкшим сроком действия — как будто его нет."""
     if is_admin(user_id):
         return True
-    return user_id in _premium
+    info = _premium.get(user_id)
+    if not info:
+        return False
+    expiry = info.get("expires_at")
+    if expiry is None:
+        return True  # бессрочный премиум
+    try:
+        if datetime.fromisoformat(expiry) <= datetime.now():
+            del _premium[user_id]
+            _save_premium()
+            return False
+    except Exception:
+        pass
+    return True
 
 
 # ============ УПРАВЛЕНИЕ АДМИНАМИ ============
@@ -129,11 +143,15 @@ def get_all_admins() -> List[int]:
 
 # ============ УПРАВЛЕНИЕ ПРЕМИУМОМ ============
 
-def grant_premium(user_id: int, granted_by: Optional[int] = None) -> bool:
+def grant_premium(user_id: int, granted_by: Optional[int] = None, days: float = 1) -> bool:
     is_new = user_id not in _premium
+    expiry = None
+    if days is not None and days > 0:
+        expiry = (datetime.now() + timedelta(days=days)).isoformat()
     _premium[user_id] = {
         "granted_at": datetime.now().isoformat(),
         "granted_by": granted_by,
+        "expires_at": expiry,
     }
     _save_premium()
     return is_new
