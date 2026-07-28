@@ -1,9 +1,11 @@
 """
 Модуль скачивания видео: YouTube (с выбором качества) и TikTok.
 
-ВАЖНО: для скачивания YouTube в высоком качестве (обычно 1080p и выше)
-видео и аудио часто идут отдельными потоками и требуют склейки через
-ffmpeg — он должен быть установлен в окружении (см. Dockerfile).
+Специально используются только уже смешанные (видео+аудио вместе)
+форматы YouTube — это исключает необходимость в ffmpeg на сервере для
+склейки, но ограничивает максимальное доступное качество (обычно до
+720p — более высокие качества YouTube почти всегда отдаёт раздельными
+потоками).
 """
 
 import logging
@@ -67,10 +69,15 @@ def _extract_youtube_formats(url: str):
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(url, download=False)
     formats = info.get("formats", [])
+    # Берём только форматы, где видео и аудио УЖЕ склеены в один поток
+    # (progressive) — раздельные bestvideo+bestaudio требуют ffmpeg для
+    # склейки, а он не гарантированно доступен на хостинге.
     seen_heights = {}
     for f in formats:
         height = f.get("height")
         if not height:
+            continue
+        if f.get("vcodec") in (None, "none") or f.get("acodec") in (None, "none"):
             continue
         seen_heights[height] = True
     return info, sorted(seen_heights.keys(), reverse=True)
@@ -129,9 +136,10 @@ def _download_youtube(url: str, height: int, out_path: str):
     ydl_opts = {
         "quiet": True,
         "no_warnings": True,
-        "format": f"bestvideo[height<={height}]+bestaudio/best[height<={height}]/best",
+        # Только уже смешанные (видео+аудио вместе) форматы — без "+" и
+        # без merge_output_format, чтобы не требовался ffmpeg на сервере.
+        "format": f"best[height<={height}][vcodec!=none][acodec!=none]/best[height<={height}]",
         "outtmpl": out_path,
-        "merge_output_format": "mp4",
     }
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         ydl.download([url])
@@ -159,12 +167,7 @@ async def video_youtube_download(callback: types.CallbackQuery):
                 await loop.run_in_executor(None, _download_youtube, pending["url"], height, out_template)
             except Exception as e:
                 logging.error(f"❌ video_youtube_download: {e}")
-                await callback.message.edit_text(
-                    f"❌ Ошибка скачивания: {e}\n\n"
-                    f"<i>Если ошибка про ffmpeg — он должен быть установлен на сервере "
-                    f"для склейки видео и аудио в этом качестве.</i>",
-                    parse_mode=ParseMode.HTML
-                )
+                await callback.message.edit_text(f"❌ Ошибка скачивания: {e}")
                 return
             
             files = [f for f in glob.glob(os.path.join(tmp_dir, "video.*")) if not f.endswith(('.part', '.ytdl'))]
@@ -389,4 +392,4 @@ __all__ = [
     'router',
     'init_video_download',
     'get_video_menu_keyboard',
-]
+            ]
