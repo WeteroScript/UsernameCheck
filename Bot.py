@@ -252,7 +252,7 @@ def get_sessions_keyboard(user_id: int) -> InlineKeyboardMarkup:
             status = "🟢" if config.get("enabled", False) else "🔴"
             buttons.append([InlineKeyboardButton(
                 text=f"{status} {phone}",
-                callback_data=f"sess_item_{phone}"
+                callback_data=f"bots_sess_{phone}"
             )])
         buttons.append([InlineKeyboardButton(text="🚀 Запустить все сессии", callback_data="sess_start_all")])
         buttons.append([InlineKeyboardButton(text="⏹ Остановить все", callback_data="sess_stop_all")])
@@ -260,6 +260,89 @@ def get_sessions_keyboard(user_id: int) -> InlineKeyboardMarkup:
         buttons.append([InlineKeyboardButton(text="❌ Нет аккаунтов", callback_data="no_action")])
     buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="bots")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+def get_bot_session_item_keyboard(user_id: int, phone: str) -> InlineKeyboardMarkup:
+    """Экран сессии из раздела 'Боты' — только управление заданием, без
+    mute/списка чатов/получения кода (это теперь только в 'Аккаунты')."""
+    config = get_session_config(user_id, phone)
+    is_enabled = config.get("enabled", False)
+    toggle_text = "⏹ Выключить" if is_enabled else "▶️ Включить"
+    interval = config.get("custom_interval_seconds")
+    interval_label = f"⏱ Настроить время ({interval} сек)" if interval else "⏱ Настроить время"
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📱 " + phone, callback_data="no_action")],
+        [InlineKeyboardButton(text=toggle_text, callback_data=f"sess_toggle_{phone}")],
+        [InlineKeyboardButton(text="⚙️ Настройки", callback_data=f"sess_settings_{phone}")],
+        [InlineKeyboardButton(text=interval_label, callback_data=f"sess_interval_{phone}")],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="bot_prgramm")],
+    ])
+
+
+@dp.callback_query(lambda c: c.data and c.data.startswith("bots_sess_"))
+async def bots_sess_item_callback(callback: types.CallbackQuery):
+    await callback.answer()
+    phone = callback.data.replace("bots_sess_", "")
+    user_id = callback.from_user.id
+    config = get_session_config(user_id, phone)
+    task_names = {"channels": "📢 Подписка на каналы", "groups": "👥 Вступление в группы", "posts": "📱 Просмотр постов", "bots": "🤖 Задания с ботами"}
+    status = "🟢 Включена" if config.get("enabled", False) else "🔴 Выключена"
+    text = (
+        f"📱 <b>{phone}</b>\n\n"
+        f"📊 Статус: {status}\n"
+        f"📋 Задание: {task_names.get(config.get('task_type', 'channels'), '—')}\n"
+        f"🤖 Бот: {user_bot_choice.get(user_id, '@gram_piarbot')}\n\n"
+        f"Выбери действие:"
+    )
+    await safe_edit_message(callback.message, text, parse_mode=ParseMode.HTML, reply_markup=get_bot_session_item_keyboard(user_id, phone))
+
+
+@dp.callback_query(lambda c: c.data and c.data.startswith("sess_interval_"))
+async def sess_interval_prompt(callback: types.CallbackQuery, state: FSMContext):
+    await callback.answer()
+    phone = callback.data.replace("sess_interval_", "")
+    await state.update_data(interval_phone=phone)
+    await state.set_state(SessionStates.waiting_interval)
+    await callback.message.edit_text(
+        "⏱ <b>Настройка времени</b>\n\n"
+        "Введи интервал между заданиями в секундах (например, 300 — это 5 минут).\n\n"
+        "Отправь <code>0</code>, чтобы вернуть автоматический интервал по умолчанию.\n\n"
+        "/cancel — отменить",
+        parse_mode=ParseMode.HTML
+    )
+
+
+@dp.message(SessionStates.waiting_interval)
+async def sess_interval_input(message: types.Message, state: FSMContext):
+    text = (message.text or "").strip()
+    if text.lower() in ("/cancel", "отмена"):
+        await state.clear()
+        await message.answer("❌ Отменено", reply_markup=get_main_keyboard(message.from_user.id))
+        return
+    if not text.isdigit():
+        await message.answer("❌ Введи число секунд (например, 300).")
+        return
+    
+    data = await state.get_data()
+    phone = data.get("interval_phone")
+    user_id = message.from_user.id
+    await state.clear()
+    
+    config = get_session_config(user_id, phone)
+    value = int(text)
+    if value <= 0:
+        config.pop("custom_interval_seconds", None)
+        await message.answer(
+            "✅ Возвращён автоматический интервал по умолчанию.",
+            reply_markup=get_bot_session_item_keyboard(user_id, phone)
+        )
+    else:
+        config["custom_interval_seconds"] = value
+        await message.answer(
+            f"✅ Интервал установлен: {value} сек.",
+            reply_markup=get_bot_session_item_keyboard(user_id, phone)
+        )
+    save_session_config()
 
 
 def get_session_item_keyboard(user_id: int, phone: str) -> InlineKeyboardMarkup:
@@ -282,6 +365,8 @@ def get_session_item_keyboard(user_id: int, phone: str) -> InlineKeyboardMarkup:
         )],
         [InlineKeyboardButton(text="📋 Список каналов и групп", callback_data=f"sess_chatlist_{phone}")],
         [InlineKeyboardButton(text="🔑 Получить код", callback_data=f"sess_getcode_{phone}")],
+        [InlineKeyboardButton(text="🚪 Выйти со всех каналов", callback_data=f"sess_leaveall_channels_{phone}")],
+        [InlineKeyboardButton(text="🚪 Выйти со всех групп", callback_data=f"sess_leaveall_groups_{phone}")],
         [InlineKeyboardButton(text="⬅️ Назад", callback_data="accounts")],
     ])
 
@@ -363,6 +448,8 @@ def get_accounts_keyboard(user_id: int) -> InlineKeyboardMarkup:
 class SessionStates(StatesGroup):
     waiting_phone = State()
     waiting_code = State()
+    waiting_2fa_password = State()
+    waiting_interval = State()
 
 
 # ============ ОБРАБОТЧИКИ ============
@@ -755,13 +842,20 @@ async def sess_chatlist_menu(callback: types.CallbackQuery):
     )
 
 
+MAX_CHATLIST_BUTTONS = 80  # запас под лимит Telegram на размер reply_markup
+
+
 async def _build_chat_list_keyboard(phone: str, user_id: int, kind: str) -> InlineKeyboardMarkup:
     config = get_session_config(user_id, phone)
     protected = set(config.get("protected_chats", []))
     client = await _get_connected_client(phone)
     buttons = []
+    truncated = False
     if client:
-        async for dialog in client.iter_dialogs(limit=200):
+        async for dialog in client.iter_dialogs(limit=300):
+            if len(buttons) >= MAX_CHATLIST_BUTTONS:
+                truncated = True
+                break
             entity = dialog.entity
             if kind == "groups":
                 is_match = (isinstance(entity, Chat)) or (isinstance(entity, Channel) and entity.megagroup)
@@ -785,6 +879,8 @@ async def _build_chat_list_keyboard(phone: str, user_id: int, kind: str) -> Inli
             )])
     if not buttons:
         buttons.append([InlineKeyboardButton(text="❌ Пусто", callback_data="no_action")])
+    elif truncated:
+        buttons.insert(0, [InlineKeyboardButton(text=f"⚠️ Показаны первые {MAX_CHATLIST_BUTTONS}", callback_data="no_action")])
     buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=f"sess_chatlist_{phone}")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
@@ -794,13 +890,17 @@ async def sess_chatlist_groups(callback: types.CallbackQuery):
     await callback.answer()
     phone = callback.data.replace("sess_chatlist_groups_", "")
     user_id = callback.from_user.id
-    kb = await _build_chat_list_keyboard(phone, user_id, "groups")
-    await safe_edit_message(
-        callback.message,
-        "👥 <b>Группы</b>\n\n🔒 — уже защищена от выхода\n\nВыбери группу:",
-        parse_mode=ParseMode.HTML,
-        reply_markup=kb
-    )
+    try:
+        kb = await _build_chat_list_keyboard(phone, user_id, "groups")
+        await safe_edit_message(
+            callback.message,
+            "👥 <b>Группы</b>\n\n🔒 — уже защищена от выхода\n\nВыбери группу:",
+            parse_mode=ParseMode.HTML,
+            reply_markup=kb
+        )
+    except Exception as e:
+        logging.error(f"❌ sess_chatlist_groups: {e}")
+        await callback.message.answer(f"❌ Не удалось загрузить список групп: {e}")
 
 
 @dp.callback_query(lambda c: c.data and c.data.startswith("sess_chatlist_channels_"))
@@ -808,13 +908,17 @@ async def sess_chatlist_channels(callback: types.CallbackQuery):
     await callback.answer()
     phone = callback.data.replace("sess_chatlist_channels_", "")
     user_id = callback.from_user.id
-    kb = await _build_chat_list_keyboard(phone, user_id, "channels")
-    await safe_edit_message(
-        callback.message,
-        "📢 <b>Каналы</b>\n\n🔒 — уже защищён от выхода\n\nВыбери канал:",
-        parse_mode=ParseMode.HTML,
-        reply_markup=kb
-    )
+    try:
+        kb = await _build_chat_list_keyboard(phone, user_id, "channels")
+        await safe_edit_message(
+            callback.message,
+            "📢 <b>Каналы</b>\n\n🔒 — уже защищён от выхода\n\nВыбери канал:",
+            parse_mode=ParseMode.HTML,
+            reply_markup=kb
+        )
+    except Exception as e:
+        logging.error(f"❌ sess_chatlist_channels: {e}")
+        await callback.message.answer(f"❌ Не удалось загрузить список каналов: {e}")
 
 
 @dp.callback_query(lambda c: c.data and c.data.startswith("sess_protect_"))
@@ -841,6 +945,77 @@ async def sess_protect_callback(callback: types.CallbackQuery):
     except Exception as e:
         logging.error(f"❌ sess_protect_callback: {e}")
         await callback.answer("❌ Ошибка")
+
+
+@dp.callback_query(lambda c: c.data and c.data.startswith("sess_leaveall_") and not c.data.startswith("sess_leaveall_confirm_"))
+async def sess_leaveall_prompt(callback: types.CallbackQuery):
+    await callback.answer()
+    rest = callback.data.replace("sess_leaveall_", "")
+    kind, _, phone = rest.partition("_")
+    kind_label = "каналов" if kind == "channels" else "групп"
+    await safe_edit_message(
+        callback.message,
+        f"⚠️ <b>Выйти со всех {kind_label}?</b>\n\n"
+        f"Аккаунт выйдет из всех {kind_label}, кроме отмеченных 🔒 (защищённых от выхода).\n"
+        f"Это действие нельзя отменить.",
+        parse_mode=ParseMode.HTML,
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="✅ Да, выйти", callback_data=f"sess_leaveall_confirm_{kind}_{phone}")],
+            [InlineKeyboardButton(text="❌ Отмена", callback_data=f"sess_item_{phone}")],
+        ])
+    )
+
+
+@dp.callback_query(lambda c: c.data and c.data.startswith("sess_leaveall_confirm_"))
+async def sess_leaveall_confirm(callback: types.CallbackQuery):
+    rest = callback.data.replace("sess_leaveall_confirm_", "")
+    kind, _, phone = rest.partition("_")
+    user_id = callback.from_user.id
+    await callback.answer("🚪 Выхожу...")
+    
+    client = await _get_connected_client(phone)
+    if not client:
+        await callback.message.answer("❌ Аккаунт не подключён")
+        return
+    
+    config = get_session_config(user_id, phone)
+    protected = set(config.get("protected_chats", []))
+    
+    left, skipped, failed = 0, 0, 0
+    try:
+        async for dialog in client.iter_dialogs(limit=300):
+            entity = dialog.entity
+            if kind == "groups":
+                is_match = isinstance(entity, Chat) or (isinstance(entity, Channel) and entity.megagroup)
+            else:
+                is_match = isinstance(entity, Channel) and not entity.megagroup
+                if is_match:
+                    participants = getattr(entity, 'participants_count', None)
+                    if participants is not None and participants <= 1:
+                        is_match = False
+            if not is_match:
+                continue
+            if dialog.id in protected:
+                skipped += 1
+                continue
+            try:
+                await client.delete_dialog(entity)
+                left += 1
+                await asyncio.sleep(0.5)
+            except Exception as e:
+                logging.error(f"❌ sess_leaveall({phone}, {dialog.id}): {e}")
+                failed += 1
+    except Exception as e:
+        logging.error(f"❌ sess_leaveall_confirm: {e}")
+        await callback.message.answer(f"❌ Ошибка: {e}")
+        return
+    
+    kind_label = "каналов" if kind == "channels" else "групп"
+    await callback.message.answer(
+        f"✅ Готово. Вышел из {kind_label}: {left}\n"
+        f"🔒 Пропущено (защищено): {skipped}\n"
+        f"❌ Ошибок: {failed}"
+    )
 
 
 @dp.callback_query(lambda c: c.data and c.data.startswith("sess_getcode_"))
@@ -896,25 +1071,19 @@ async def sess_start_all_callback(callback: types.CallbackQuery):
         failed = 0
         
         for phone in user_sessions.get(user_id, []):
-            config = get_session_config(user_id, phone)
-            if not config.get("enabled", False):
-                continue
-            if phone not in active_clients:
-                failed += 1
-                continue
-            client = active_clients[phone]
-            if not client.is_connected():
-                try:
-                    await client.connect()
-                except:
-                    failed += 1
-                    continue
-            if not await client.is_user_authorized():
-                failed += 1
-                continue
             if phone in active_tasks and not active_tasks[phone].done():
                 started += 1
                 continue
+            
+            client = await _get_connected_client(phone)
+            if not client:
+                failed += 1
+                continue
+            
+            config = get_session_config(user_id, phone)
+            config["enabled"] = True
+            save_session_config()
+            
             bot_name = user_bot_choice.get(user_id, "@gram_piarbot")
             await start_gram_worker(client, bot_name, phone, user_id)
             started += 1
@@ -944,10 +1113,13 @@ async def sess_stop_all_callback(callback: types.CallbackQuery):
         await callback.answer("⏹ Останавливаю...")
         stopped = 0
         for phone in user_sessions.get(user_id, []):
+            config = get_session_config(user_id, phone)
+            config["enabled"] = False
             if phone in active_tasks and not active_tasks[phone].done():
                 await stop_gram_bot(phone)
                 stopped += 1
                 await asyncio.sleep(0.3)
+        save_session_config()
         
         await safe_edit_message(
             callback.message,
@@ -1023,7 +1195,8 @@ async def session_phone(message: types.Message, state: FSMContext):
     if result:
         await message.answer(
             "📱 <b>Код отправлен!</b>\n\n"
-            "Введите код подтверждения из Telegram:",
+            "Введите код подтверждения из Telegram в формате:\n"
+            "<code>code12345</code> (префикс code + сам код)",
             parse_mode=ParseMode.HTML
         )
     else:
@@ -1037,25 +1210,50 @@ async def session_phone(message: types.Message, state: FSMContext):
 
 @dp.message(SessionStates.waiting_code)
 async def session_code(message: types.Message, state: FSMContext):
-    code = message.text.strip()
-    if code.lower() in ("/cancel", "отмена"):
+    raw = message.text.strip()
+    if raw.lower() in ("/cancel", "отмена"):
         await state.clear()
         await message.answer("❌ Отменено.", reply_markup=get_main_keyboard(message.from_user.id))
         return
+    
+    # Принимаем код в формате "code12345" — префикс "code" отбрасываем,
+    # оставляем только цифры (тот же формат, что бот теперь просит).
+    code = raw
+    if code.lower().startswith("code"):
+        code = code[4:]
+    code = re.sub(r'\D', '', code)
+    if not code:
+        await message.answer(
+            "❌ Не нашёл цифры кода. Введи код в формате <code>code12345</code>.",
+            parse_mode=ParseMode.HTML
+        )
+        return
+    
     user_id = message.from_user.id
     data = await state.get_data()
     phone = data.get("phone")
-    result = await start_gram_bot_auth(phone, code, "gram_prbot", message.chat.id)
+    bot_name = user_bot_choice.get(user_id, "@gram_piarbot")
+    result = await start_gram_bot_auth(phone, code, bot_name.lstrip('@'), message.chat.id)
+    
+    if result == "need_password":
+        # Аккаунт с облачным паролем (2FA) — код принят, нужен пароль.
+        await state.update_data(phone=phone)
+        await state.set_state(SessionStates.waiting_2fa_password)
+        await message.answer(
+            "🔐 На этом аккаунте включён облачный пароль (2FA).\n\n"
+            "Введи пароль, чтобы завершить вход:\n\n/cancel — отменить"
+        )
+        return
+    
     await state.clear()
     
-    if result:
+    if result == "ok":
         if user_id not in user_sessions:
             user_sessions[user_id] = []
         if phone not in user_sessions[user_id]:
             user_sessions[user_id].append(phone)
             save_sessions()
             get_session_config(user_id, phone)
-        bot_name = user_bot_choice.get(user_id, "@gram_piarbot")
         await message.answer(
             f"✅ <b>Сессия добавлена!</b>\n\n"
             f"📱 {phone}\n"
@@ -1068,11 +1266,67 @@ async def session_code(message: types.Message, state: FSMContext):
                 [InlineKeyboardButton(text="📱 Аккаунты", callback_data="accounts")],
             ])
         )
+    elif result == "invalid_code":
+        await message.answer(
+            "❌ Неверный код.\n"
+            "Проверь код и попробуй снова.\n\n"
+            "Отправь /start для возврата в меню"
+        )
+    elif result == "expired":
+        await message.answer(
+            "❌ Код устарел (действителен недолго).\n"
+            "Отправь /start и запроси новый код."
+        )
+    elif result == "wrong_password":
+        await message.answer("❌ Неверный облачный пароль. Отправь /start и попробуй снова.")
     else:
         await message.answer(
             "❌ Ошибка авторизации.\n"
-            "Проверьте код и попробуйте снова.\n\n"
-            "Отправьте /start для возврата в меню"
+            "Проверь код и попробуй снова.\n\n"
+            "Отправь /start для возврата в меню"
+        )
+
+
+@dp.message(SessionStates.waiting_2fa_password)
+async def session_2fa_password(message: types.Message, state: FSMContext):
+    password = message.text.strip()
+    if password.lower() in ("/cancel", "отмена"):
+        await state.clear()
+        await message.answer("❌ Отменено.", reply_markup=get_main_keyboard(message.from_user.id))
+        return
+    
+    user_id = message.from_user.id
+    data = await state.get_data()
+    phone = data.get("phone")
+    bot_name = user_bot_choice.get(user_id, "@gram_piarbot")
+    result = await start_gram_bot_auth(phone, "", bot_name.lstrip('@'), message.chat.id, password=password)
+    await state.clear()
+    
+    if result == "ok":
+        if user_id not in user_sessions:
+            user_sessions[user_id] = []
+        if phone not in user_sessions[user_id]:
+            user_sessions[user_id].append(phone)
+            save_sessions()
+            get_session_config(user_id, phone)
+        await message.answer(
+            f"✅ <b>Сессия добавлена!</b>\n\n"
+            f"📱 {phone}\n"
+            f"🤖 Выбранный бот: {bot_name}\n"
+            f"📊 Всего сессий: {len(user_sessions[user_id])}/{get_max_sessions(user_id)}\n\n"
+            f"Теперь перейди в раздел 'Боты' → 'PR GRAMM' для настройки",
+            parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🤖 Перейти в Боты", callback_data="bot_prgramm")],
+                [InlineKeyboardButton(text="📱 Аккаунты", callback_data="accounts")],
+            ])
+        )
+    elif result == "wrong_password":
+        await message.answer("❌ Неверный пароль. Отправь /start и попробуй снова.")
+    else:
+        await message.answer(
+            "❌ Ошибка авторизации.\n"
+            "Отправь /start для возврата в меню"
         )
 
 
@@ -1290,7 +1544,7 @@ ADMIN_COMMANDS_HELP = (
     "🛠 <b>Команды администратора</b>\n\n"
     "✅ /addadmin (юз/айди) — выдать права админа\n"
     "✅ /deladmin (юз/айди) — снять права админа\n"
-    "✅ /givepremium (юз/айди) — выдать 💎 премиум\n"
+    "✅ /givepremium (юз/айди) (дней, по умолчанию 1) — выдать 💎 премиум\n"
     "✅ /delpremium (юз/айди) — забрать 💎 премиум\n"
     "✅ /ban (юз/айди) (причина)\n"
     "✅ /unban (юз/айди) (причина)\n"
@@ -1362,16 +1616,26 @@ async def deladmin_command(message: types.Message):
 async def givepremium_command(message: types.Message):
     if not is_admin(message.from_user.id):
         return
-    args = message.text.split(maxsplit=1)
+    args = message.text.split()
     if len(args) < 2:
-        await message.answer("Использование: /givepremium (юз/айди)")
+        await message.answer("Использование: /givepremium (юз/айди) (время премиума в днях, по умолчанию 1)")
         return
     target_id = await resolve_user_id(bot, args[1])
     if not target_id:
         await message.answer("❌ Не удалось найти пользователя.")
         return
-    grant_premium(target_id, granted_by=message.from_user.id)
-    await message.answer(f"✅ {PREMIUM_ICON} Премиум выдан пользователю <code>{target_id}</code>.", parse_mode=ParseMode.HTML)
+    days = 1.0
+    if len(args) >= 3:
+        try:
+            days = float(args[2])
+        except ValueError:
+            await message.answer("❌ Количество дней должно быть числом.")
+            return
+    grant_premium(target_id, granted_by=message.from_user.id, days=days)
+    await message.answer(
+        f"✅ {PREMIUM_ICON} Премиум выдан пользователю <code>{target_id}</code> на {days:g} дн.",
+        parse_mode=ParseMode.HTML
+    )
 
 
 @dp.message(Command("delpremium"))
