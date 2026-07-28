@@ -261,9 +261,13 @@ async def _resolve_and_reply_id(message: types.Message, state: FSMContext, label
             parse_mode=ParseMode.HTML, reply_markup=get_getid_keyboard()
         )
     except Exception as e:
+        # Полную ошибку — в лог (для диагностики), пользователю — короткое
+        # понятное сообщение. Раньше здесь str(e) мог оказаться "сырым"
+        # дампом всех полей чата (например, при ошибке валидации в старой
+        # версии aiogram) — это не пользовательская информация.
+        logging.error(f"❌ _resolve_and_reply_id(@{username}): {type(e).__name__}: {e}")
         await message.answer(
-            f"❌ Не удалось найти «{text}». Убедись, что это публичный канал/группа/бот/пользователь.\n\n"
-            f"({e})",
+            f"❌ Не удалось найти «{text}». Убедись, что это публичный канал/группа/бот/пользователь.",
             reply_markup=get_getid_keyboard()
         )
 
