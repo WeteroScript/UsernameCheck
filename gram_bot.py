@@ -47,6 +47,15 @@ active_clients: Dict[str, TelegramClient] = {}
 active_tasks: Dict[str, asyncio.Task] = {}
 gram_bot_initialized = False
 user_chat_id: Optional[int] = None
+# Владелец каждой сессии (phone -> user_id) — используется ВНУТРИ цикла
+# воркера вместо глобального user_chat_id. Раньше do_cycle/пауза читали
+# именно глобальный user_chat_id, который перезаписывается при ЛЮБОМ
+# взаимодействии любого пользователя с ботом — если во время работы
+# задания кто-то (или сам пользователь в другом разделе) выполнял любое
+# действие, глобальная переменная затиралась чужим ID, и воркер начинал
+# читать чужой (пустой, по умолчанию) конфиг сессии — task_type сбрасывался
+# на "channels" ни с того ни с сего.
+session_owner: Dict[str, int] = {}
 bot_username_for_task: Dict[str, str] = {}
 bot_instance = None
 user_task_choice: Dict[int, str] = {}
@@ -536,11 +545,31 @@ def find_all_buttons(msg, keywords: List[str]) -> List[Any]:
 # TELETHON: БАЗОВЫЕ ОПЕРАЦИИ
 # ============================================================
 
+_bot_entity_cache: Dict[int, Any] = {}  # id(client) -> resolved entity
+
+
+async def _resolve_bot_entity(client: TelegramClient, bot_username: str):
+    """Резолвит username бота в entity ОДИН раз на клиента и переиспользует
+    дальше. Раньше bot_username (строка) передавался напрямую в каждый
+    Telethon-вызов (send_message/get_messages) — Telethon вынужден был
+    заново слать ResolveUsernameRequest почти на каждом цикле, и при
+    большом количестве сессий/циклов это упиралось в лимит Telegram
+    (FloodWaitError на много часов)."""
+    key = id(client)
+    cached = _bot_entity_cache.get(key)
+    if cached is not None:
+        return cached
+    entity = await client.get_entity(bot_username)
+    _bot_entity_cache[key] = entity
+    return entity
+
+
 async def get_last_msg(client: TelegramClient, bot_username: str):
     try:
         if not client.is_connected():
             await client.connect()
-        msgs = await client.get_messages(bot_username, limit=1)
+        entity = await _resolve_bot_entity(client, bot_username)
+        msgs = await client.get_messages(entity, limit=1)
         return msgs[0] if msgs else None
     except Exception as e:
         logging.error(f"❌ get_last_msg: {e}")
@@ -607,10 +636,11 @@ async def send_text(
 ):
     if not client.is_connected():
         await client.connect()
+    entity = await _resolve_bot_entity(client, bot_username)
     before = await get_last_msg(client, bot_username)
     snap = msg_snap(before)
     mid = before.id if before else 0
-    await client.send_message(bot_username, text)
+    await client.send_message(entity, text)
     return await wait_bot_response(client, bot_username, snap, mid, timeout)
 
 
@@ -769,7 +799,7 @@ def get_task_pairs(msg) -> List[Tuple[Any, Any]]:
             t = btn_text(b).lower()
             if is_tg_url(u):
                 sub = b
-            elif "провер" in t or "✅" in t:
+            elif "провер" in t or "подтверд" in t or "✅" in t:
                 chk = b
         if sub and chk:
             pairs.append((sub, chk))
@@ -1231,7 +1261,7 @@ def is_webapp_captcha_message(msg) -> bool:
     return False
 
 
-async def _handle_captcha(msg, task_type: str, user_id: int, phone: str, client) -> bool:
+async def _handle_captcha(msg, task_type: str, user_id: int, phone: str, client, owner_chat_id: int) -> bool:
     """Централизованная обработка капчи в do_cycle. Всегда возвращает
     True — вызывающий код после неё должен return."""
     if task_type == "bots":
@@ -1247,15 +1277,15 @@ async def _handle_captcha(msg, task_type: str, user_id: int, phone: str, client)
                 f"Пожалуйста, перейдите в бота: @{bu}\n"
                 f"И пройдите капчу, после прохождения капчи вернитесь в бота и напишите /continue_gram"
             )
-            if bot_instance and user_chat_id:
+            if bot_instance and owner_chat_id:
                 try:
-                    await bot_instance.send_message(user_chat_id, text)
+                    await bot_instance.send_message(owner_chat_id, text)
                 except Exception as e:
                     logging.error(f"❌ webapp captcha notify: {e}")
         else:
             logging.info(f"🌐 WebApp-капча уже отправлена пользователю (сессия {phone})")
         return True
-    await send_captcha_to_user(msg, user_chat_id, client)
+    await send_captcha_to_user(msg, owner_chat_id, client)
     return True
 
 
@@ -1273,13 +1303,13 @@ async def do_cycle(
     logging.info(f"📋 Тип задания: {task_type} (сессия {phone})")
     cur = await get_last_msg(client, bot_username)
     if cur and is_captcha_message(cur):
-        await _handle_captcha(cur, task_type, user_id, phone, client)
+        await _handle_captcha(cur, task_type, user_id, phone, client, user_id)
         return
     earn_msg = await send_text(client, bot_username, "👨‍💻 Заработать", timeout=15)
     if not earn_msg:
         return
     if is_captcha_message(earn_msg):
-        await _handle_captcha(earn_msg, task_type, user_id, phone, client)
+        await _handle_captcha(earn_msg, task_type, user_id, phone, client, user_id)
         return
     if not is_earn_type_menu(earn_msg):
         await asyncio.sleep(2)
@@ -1301,7 +1331,7 @@ async def do_cycle(
     if not task_msg:
         return
     if is_captcha_message(task_msg):
-        await _handle_captcha(task_msg, task_type, user_id, phone, client)
+        await _handle_captcha(task_msg, task_type, user_id, phone, client, user_id)
         return
     if task_type == "channels" or task_type == "groups":
         pairs = get_task_pairs(task_msg)
@@ -1309,7 +1339,7 @@ async def do_cycle(
             return
         result = await process_tasks(client, bot_username, task_msg, task_type)
         if result and is_captcha_message(result):
-            await _handle_captcha(result, task_type, user_id, phone, client)
+            await _handle_captcha(result, task_type, user_id, phone, client, user_id)
     elif task_type == "bots":
         result = await process_bot_tasks(client, bot_username, task_msg, user_id, phone)
         if result and is_captcha_message(result):
@@ -1416,8 +1446,15 @@ async def send_code(phone: str, bot_username: str) -> bool:
 
 
 async def start_gram_bot(
-    phone: str, code: str, bot_username: str, chat_id: int = None
-) -> bool:
+    phone: str, code: str, bot_username: str, chat_id: int = None, password: str = None
+) -> str:
+    """Возвращает статус строкой: 'ok' | 'need_password' | 'invalid_code' |
+    'expired' | 'wrong_password' | 'error'.
+    Раньше возвращался просто bool, а SessionPasswordNeededError (аккаунт
+    с облачным паролем/2FA) молча превращался в False БЕЗ ЛОГОВ и без
+    единой попытки запросить пароль — пользователь видел "Ошибка
+    авторизации" даже с абсолютно верным кодом, потому что кода одного
+    недостаточно для аккаунтов с 2FA."""
     if chat_id:
         set_user_chat_id(chat_id)
     phone = phone.strip()
@@ -1441,24 +1478,37 @@ async def start_gram_bot(
             if not client.is_connected():
                 await client.connect()
             if await client.is_user_authorized():
-                return True
+                return "ok"
+            if password is not None:
+                # Второй шаг — облачный пароль (2FA), код уже был принят ранее.
+                await client.sign_in(password=password)
+                return "ok"
             await client.sign_in(phone, code)
-            return True
+            return "ok"
         except errors.SessionPasswordNeededError:
-            return False
+            logging.info(f"🔐 {phone}: аккаунт с облачным паролем (2FA) — код верный, нужен пароль")
+            return "need_password"
+        except errors.PasswordHashInvalidError:
+            logging.error(f"❌ start_gram_bot: неверный облачный пароль для {phone}")
+            return "wrong_password"
         except errors.PhoneCodeInvalidError:
-            return False
+            logging.error(f"❌ start_gram_bot: неверный код для {phone}")
+            return "invalid_code"
         except errors.PhoneCodeExpiredError:
-            return False
+            logging.error(f"❌ start_gram_bot: код истёк для {phone}")
+            return "expired"
         except sqlite3.OperationalError as e:
             if "database is locked" in str(e):
+                logging.warning(f"⚠️ start_gram_bot: БД сессии заблокирована для {phone}")
                 cleanup_session_files(phone)
                 await asyncio.sleep(2)
+                return "error"
             else:
-                return False
+                logging.error(f"❌ start_gram_bot: sqlite3.OperationalError для {phone}: {e}")
+                return "error"
         except Exception as e:
-            logging.error(f"❌ start_gram_bot: {e}")
-            return False
+            logging.error(f"❌ start_gram_bot: {type(e).__name__}: {e}")
+            return "error"
 
 
 async def start_gram_worker(
@@ -1495,7 +1545,9 @@ async def start_gram_worker(
         logging.error(f"❌ Ошибка проверки авторизации: {e}")
         return None
     bot_username_for_task[phone] = bot_username
-    task = asyncio.create_task(run_gram_worker(client, bot_username, phone))
+    if user_id:
+        session_owner[phone] = user_id
+    task = asyncio.create_task(run_gram_worker(client, bot_username, phone, user_id))
     active_tasks[phone] = task
     logging.info(f"✅ Воркер запущен: {phone}")
     return task
@@ -1547,7 +1599,7 @@ async def continue_gram_bot(phone: str) -> bool:
         except Exception as e:
             logging.error(f"❌ Ошибка проверки авторизации: {e}")
             return False
-        task = asyncio.create_task(run_gram_worker(client, bot_username, phone))
+        task = asyncio.create_task(run_gram_worker(client, bot_username, phone, session_owner.get(phone)))
         active_tasks[phone] = task
         logging.info(f"✅ Gram бот продолжен: {phone}")
         return True
@@ -1558,16 +1610,21 @@ async def continue_gram_bot(phone: str) -> bool:
 # ВОРКЕР
 # ============================================================
 
-async def run_gram_worker(client: TelegramClient, bot_username: str, phone: str):
+async def run_gram_worker(client: TelegramClient, bot_username: str, phone: str, owner_id: Optional[int] = None):
+    # owner_id — реальный владелец этой сессии, захваченный один раз при
+    # старте воркера. НЕ используем глобальный user_chat_id внутри цикла —
+    # он может измениться в любой момент из-за действий любого пользователя.
+    if owner_id is None:
+        owner_id = session_owner.get(phone, user_chat_id)
     try:
         logging.info(f"🚀 Старт: {bot_username} | задержка: {SUBSCRIBE_DELAY} сек")
         if not client.is_connected():
             await client.connect()
         if not await client.is_user_authorized():
             logging.error(f"❌ Клиент не авторизован: {phone}")
-            if bot_instance and user_chat_id:
+            if bot_instance and owner_id:
                 await bot_instance.send_message(
-                    user_chat_id,
+                    owner_id,
                     f"❌ <b>Сессия {phone} не активна!</b>\n\n"
                     f"Пересоздайте сессию в разделе 'Аккаунты'",
                     parse_mode=ParseMode.HTML
@@ -1601,10 +1658,10 @@ async def run_gram_worker(client: TelegramClient, bot_username: str, phone: str)
                         await asyncio.sleep(min(30, 5 * (attempt + 1)))
                 if not reconnected:
                     logging.error(f"❌ Не удалось переподключиться к {phone} после нескольких попыток")
-                    if bot_instance and user_chat_id:
+                    if bot_instance and owner_id:
                         try:
                             await bot_instance.send_message(
-                                user_chat_id,
+                                owner_id,
                                 f"⚠️ <b>Сессия {phone} потеряла соединение</b>\n\n"
                                 f"Не удалось переподключиться после нескольких попыток. "
                                 f"Попробуй перезапустить сессию в разделе 'Аккаунты'.",
@@ -1614,7 +1671,7 @@ async def run_gram_worker(client: TelegramClient, bot_username: str, phone: str)
                             pass
                     break
             try:
-                await do_cycle(client, bot_username, user_chat_id, phone)
+                await do_cycle(client, bot_username, owner_id, phone)
             except asyncio.CancelledError:
                 break
             except Exception as e:
@@ -1622,8 +1679,12 @@ async def run_gram_worker(client: TelegramClient, bot_username: str, phone: str)
                 import traceback
                 traceback.print_exc()
                 await asyncio.sleep(5)
-            p_config = get_session_config(user_chat_id, phone)
-            if p_config.get("task_type") == "bots":
+            p_config = get_session_config(owner_id, phone)
+            custom_interval = p_config.get("custom_interval_seconds")
+            if custom_interval:
+                p = custom_interval
+                logging.info(f"⏸️ Пауза {p} сек (задано пользователем)...")
+            elif p_config.get("task_type") == "bots":
                 # Для заданий с ботами — интервал 5-10 МИНУТ между заданиями
                 # (а не секунд), т.к. боты-задания обычно требуют больше
                 # времени на выполнение и слишком частые повторы могут
@@ -1664,4 +1725,4 @@ __all__ = [
     'get_bot_category_keyboard', 'get_bot_settings_keyboard',
     'active_clients', 'active_tasks',
     'set_session_config', 'get_session_config'
-            ]
+        ]
