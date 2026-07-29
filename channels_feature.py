@@ -8,7 +8,7 @@ import os
 import logging
 from aiogram import Router, types
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-from aiogram.enums import ParseMode
+from aiogram.enums import ParseMode, ButtonStyle
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from typing import Dict, List, Optional
@@ -51,6 +51,15 @@ class ChannelStates(StatesGroup):
     waiting_auto_accept_count = State()
     waiting_post_text = State()
     waiting_post_button = State()
+
+
+BUTTON_COLOR_CHOICES = [
+    ("default", "⚪ Обычный", None),
+    ("primary", "🔵 Синий", ButtonStyle.PRIMARY),
+    ("success", "🟢 Зелёный", ButtonStyle.SUCCESS),
+    ("danger", "🔴 Красный", ButtonStyle.DANGER),
+]
+BUTTON_COLOR_MARK = {"default": "⚪", "primary": "🔵", "success": "🟢", "danger": "🔴"}
 
 
 def _find_channel(user_id: int, chat_id: int) -> Optional[Dict]:
@@ -429,6 +438,7 @@ async def post_add_btn(callback: types.CallbackQuery, state: FSMContext):
     await callback.message.edit_text(
         "введите имя кнопки и ссылку на неё, в таком формате:\n\n"
         "<code>Название|ссылка</code>\n\n"
+        "После этого предложу выбрать цвет кнопки.\n\n"
         "/cancel — отменить",
         parse_mode=ParseMode.HTML
     )
@@ -467,10 +477,35 @@ async def post_button_input(message: types.Message, state: FSMContext):
         await message.answer("❌ Сессия устарела, начни заново.")
         return
     
-    draft["buttons"].append({"text": name, "url": url})
+    draft["pending_button"] = {"text": name, "url": url}
     await state.clear()
     await message.answer(
-        f"✅ Кнопка «{name}» добавлена.\n\nДобавить кнопки к посту?",
+        "🎨 <b>Задать цвет кнопки</b>\n\nВыбери цвет:",
+        parse_mode=ParseMode.HTML,
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text=label, callback_data=f"post_btn_color_{key}")]
+            for key, label, _ in BUTTON_COLOR_CHOICES
+        ])
+    )
+
+
+@router.callback_query(lambda c: c.data.startswith("post_btn_color_"))
+async def post_btn_color_pick(callback: types.CallbackQuery):
+    color_key = callback.data.replace("post_btn_color_", "")
+    user_id = callback.from_user.id
+    draft = post_drafts.get(user_id)
+    if not draft or "pending_button" not in draft:
+        await callback.answer("❌ Сессия устарела", show_alert=True)
+        return
+    
+    style = next((s for k, _, s in BUTTON_COLOR_CHOICES if k == color_key), None)
+    btn = draft.pop("pending_button")
+    btn["color"] = color_key if style is not None else None
+    draft["buttons"].append(btn)
+    
+    await callback.answer(f"✅ Кнопка «{btn['text']}» добавлена")
+    await callback.message.edit_text(
+        f"✅ Кнопка «{btn['text']}» добавлена.\n\nДобавить кнопки к посту?",
         reply_markup=get_post_buttons_keyboard(draft)
     )
 
@@ -484,7 +519,10 @@ async def post_del_btn_menu(callback: types.CallbackQuery):
         await callback.message.edit_text("Нет кнопок для удаления.", reply_markup=get_post_buttons_keyboard(draft or {"buttons": []}))
         return
     buttons = [
-        [InlineKeyboardButton(text=f"❌ {b['text']}", callback_data=f"post_del_btn_{i}")]
+        [InlineKeyboardButton(
+            text=f"❌ {BUTTON_COLOR_MARK.get(b.get('color'), '⚪')} {b['text']}",
+            callback_data=f"post_del_btn_{i}"
+        )]
         for i, b in enumerate(draft["buttons"])
     ]
     buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="post_back_to_buttons")])
@@ -546,9 +584,15 @@ async def post_cancel(callback: types.CallbackQuery, state: FSMContext):
 def _build_post_markup(draft: Dict) -> Optional[InlineKeyboardMarkup]:
     if not draft["buttons"]:
         return None
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=b["text"], url=b["url"])] for b in draft["buttons"]
-    ])
+    color_to_style = {k: s for k, _, s in BUTTON_COLOR_CHOICES}
+    rows = []
+    for b in draft["buttons"]:
+        style = color_to_style.get(b.get("color"))
+        kwargs = {"text": b["text"], "url": b["url"]}
+        if style is not None:
+            kwargs["style"] = style
+        rows.append([InlineKeyboardButton(**kwargs)])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 @router.callback_query(lambda c: c.data == "post_continue")
@@ -615,4 +659,4 @@ __all__ = [
     'router',
     'init_channels_feature',
     'get_channels_root_keyboard',
-]
+        ]
