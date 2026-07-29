@@ -8,7 +8,7 @@ from typing import Dict, Optional, List, Any
 from aiogram import Bot, Dispatcher, types, BaseMiddleware
 from aiogram.filters import Command
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, FSInputFile
-from aiogram.enums import ParseMode
+from aiogram.enums import ParseMode, ButtonStyle
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -262,6 +262,13 @@ def get_sessions_keyboard(user_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
+class SessionStates(StatesGroup):
+    waiting_phone = State()
+    waiting_code = State()
+    waiting_2fa_password = State()
+    waiting_interval = State()
+
+
 def get_bot_session_item_keyboard(user_id: int, phone: str) -> InlineKeyboardMarkup:
     """Экран сессии из раздела 'Боты' — только управление заданием, без
     mute/списка чатов/получения кода (это теперь только в 'Аккаунты')."""
@@ -384,16 +391,18 @@ def get_session_settings_keyboard(user_id: int, phone: str) -> InlineKeyboardMar
 
 def get_main_keyboard(user_id: Optional[int] = None) -> InlineKeyboardMarkup:
     flat_buttons = [
-        InlineKeyboardButton(text="🤖 Боты", callback_data="bots"),
-        InlineKeyboardButton(text="👤 Юзернеймы", callback_data="users"),
-        InlineKeyboardButton(text="📱 Аккаунты", callback_data="accounts"),
-        InlineKeyboardButton(text="📢 Каналы", callback_data="channels_menu"),
+        InlineKeyboardButton(text="🤖 Боты", callback_data="bots", style=ButtonStyle.PRIMARY),
+        InlineKeyboardButton(text="👤 Юзернеймы", callback_data="users", style=ButtonStyle.PRIMARY),
+        InlineKeyboardButton(text="📱 Аккаунты", callback_data="accounts", style=ButtonStyle.PRIMARY),
+        InlineKeyboardButton(text="📢 Каналы", callback_data="channels_menu", style=ButtonStyle.PRIMARY),
     ]
     flat_buttons.extend(get_extra_main_buttons())
     flat_buttons.append(InlineKeyboardButton(text="📉 Шакализатор", callback_data="shakalizer_menu"))
     
     # Раскладываем плоский список кнопок сеткой по 2 в ряд — компактнее и
-    # приятнее одной длинной колонки.
+    # приятнее одной длинной колонки. Красим только основные разделы
+    # (синий) и премиум (красный, как акцент-CTA) — остальное оставляем
+    # стандартным цветом, чтобы не пестрило.
     rows = [flat_buttons[i:i + 2] for i in range(0, len(flat_buttons), 2)]
     if user_id is not None and is_admin(user_id):
         rows.append([InlineKeyboardButton(text="🛠 Адм хелп", callback_data="adm_help")])
@@ -445,11 +454,6 @@ def get_accounts_keyboard(user_id: int) -> InlineKeyboardMarkup:
 
 # ============ СОСТОЯНИЯ ============
 
-class SessionStates(StatesGroup):
-    waiting_phone = State()
-    waiting_code = State()
-    waiting_2fa_password = State()
-    waiting_interval = State()
 
 
 # ============ ОБРАБОТЧИКИ ============
