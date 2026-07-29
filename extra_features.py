@@ -9,7 +9,7 @@ import asyncio
 from aiogram import Router, types
 from aiogram.filters import Command
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, BufferedInputFile
-from aiogram.enums import ParseMode
+from aiogram.enums import ParseMode, ButtonStyle
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from typing import Optional, List, Dict
@@ -42,7 +42,7 @@ def get_extra_main_buttons() -> List[InlineKeyboardButton]:
     return [
         InlineKeyboardButton(text="🐙 GitHub репозитории", callback_data="github_menu"),
         InlineKeyboardButton(text="🎥 Скачать видео", callback_data="video_menu"),
-        InlineKeyboardButton(text="💎 Премиум", callback_data="premium_menu"),
+        InlineKeyboardButton(text="💎 Премиум", callback_data="premium_menu", style=ButtonStyle.DANGER),
         InlineKeyboardButton(text="🆔 Получить айди", callback_data="getid_menu"),
         InlineKeyboardButton(text="🐛 Сообщить о баге", callback_data="bugreport_menu"),
     ]
@@ -378,4 +378,4 @@ __all__ = [
     'init_extra_features',
     'set_bot',
     'get_extra_main_buttons',
-]
+    ]
