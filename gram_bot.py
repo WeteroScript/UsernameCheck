@@ -1261,11 +1261,21 @@ def is_webapp_captcha_message(msg) -> bool:
     return False
 
 
-async def _handle_captcha(msg, task_type: str, user_id: int, phone: str, client, owner_chat_id: int) -> bool:
+async def _handle_captcha(msg, task_type: str, user_id: int, phone: str, client, owner_chat_id: int, bot_username: str = None) -> bool:
     """Централизованная обработка капчи в do_cycle. Всегда возвращает
     True — вызывающий код после неё должен return."""
     if task_type == "bots":
         logging.info(f"🤖 Капча проигнорирована (тип заданий: боты, сессия {phone})")
+        # ВАЖНО: просто "проигнорировать" и ничего не сделать означало, что
+        # на СЛЕДУЮЩЕМ цикле бот снова видит ТУ ЖЕ капчу (диалог с
+        # pr-gramm ботом завис на ней) — аккаунт застревал навсегда, хотя
+        # воркер формально продолжал работать. Сбрасываем диалог через
+        # /start, чтобы бот реально мог продолжить со следующего цикла.
+        if bot_username:
+            try:
+                await send_text(client, bot_username, "/start", timeout=8)
+            except Exception as e:
+                logging.warning(f"⚠️ Не удалось сбросить диалог после капчи ({phone}): {e}")
         return True
     if task_type == "posts" and is_webapp_captcha_message(msg):
         pending = webapp_captcha_pending.setdefault(user_id, [])
@@ -1303,13 +1313,13 @@ async def do_cycle(
     logging.info(f"📋 Тип задания: {task_type} (сессия {phone})")
     cur = await get_last_msg(client, bot_username)
     if cur and is_captcha_message(cur):
-        await _handle_captcha(cur, task_type, user_id, phone, client, user_id)
+        await _handle_captcha(cur, task_type, user_id, phone, client, user_id, bot_username)
         return
     earn_msg = await send_text(client, bot_username, "👨‍💻 Заработать", timeout=15)
     if not earn_msg:
         return
     if is_captcha_message(earn_msg):
-        await _handle_captcha(earn_msg, task_type, user_id, phone, client, user_id)
+        await _handle_captcha(earn_msg, task_type, user_id, phone, client, user_id, bot_username)
         return
     if not is_earn_type_menu(earn_msg):
         await asyncio.sleep(2)
@@ -1331,7 +1341,7 @@ async def do_cycle(
     if not task_msg:
         return
     if is_captcha_message(task_msg):
-        await _handle_captcha(task_msg, task_type, user_id, phone, client, user_id)
+        await _handle_captcha(task_msg, task_type, user_id, phone, client, user_id, bot_username)
         return
     if task_type == "channels" or task_type == "groups":
         pairs = get_task_pairs(task_msg)
@@ -1339,7 +1349,7 @@ async def do_cycle(
             return
         result = await process_tasks(client, bot_username, task_msg, task_type)
         if result and is_captcha_message(result):
-            await _handle_captcha(result, task_type, user_id, phone, client, user_id)
+            await _handle_captcha(result, task_type, user_id, phone, client, user_id, bot_username)
     elif task_type == "bots":
         result = await process_bot_tasks(client, bot_username, task_msg, user_id, phone)
         if result and is_captcha_message(result):
@@ -1618,9 +1628,21 @@ async def run_gram_worker(client: TelegramClient, bot_username: str, phone: str,
         owner_id = session_owner.get(phone, user_chat_id)
     try:
         logging.info(f"🚀 Старт: {bot_username} | задержка: {SUBSCRIBE_DELAY} сек")
-        if not client.is_connected():
-            await client.connect()
-        if not await client.is_user_authorized():
+        authorized = False
+        for attempt in range(3):
+            try:
+                if not client.is_connected():
+                    await client.connect()
+                authorized = await client.is_user_authorized()
+                break
+            except Exception as e:
+                logging.warning(f"⚠️ Старт {phone}: попытка {attempt + 1}/3 не удалась: {e}")
+                try:
+                    await client.disconnect()
+                except Exception:
+                    pass
+                await asyncio.sleep(3)
+        if not authorized:
             logging.error(f"❌ Клиент не авторизован: {phone}")
             if bot_instance and owner_id:
                 await bot_instance.send_message(
@@ -1725,4 +1747,4 @@ __all__ = [
     'get_bot_category_keyboard', 'get_bot_settings_keyboard',
     'active_clients', 'active_tasks',
     'set_session_config', 'get_session_config'
-        ]
+]
