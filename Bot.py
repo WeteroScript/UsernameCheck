@@ -740,8 +740,16 @@ async def _get_connected_client(phone: str):
     запущено/остановлено — клиента там нет, хотя файл сессии на диске
     рабочий. Раньше это приводило к ложному "Аккаунт не подключён" для
     реально подключённых аккаунтов — теперь при отсутствии в
-    active_clients клиент создаётся заново из файла сессии."""
+    active_clients клиент создаётся заново из файла сессии.
+
+    Также: после долгого простоя client.is_connected() может вернуть
+    True, хотя соединение на деле "протухло" — Telethon узнаёт об этом
+    только при реальном RPC-запросе. Раньше is_user_authorized() в этом
+    случае просто кидал необработанное исключение вместо аккуратного
+    возврата None — теперь при ошибке делаем одну попытку полностью
+    переподключиться и повторить проверку."""
     client = active_clients.get(phone)
+    
     if client is None:
         session_path = f"sessions/{phone.replace('+', '')}"
         if not os.path.exists(session_path + ".session"):
@@ -756,10 +764,7 @@ async def _get_connected_client(phone: str):
         except Exception as e:
             logging.error(f"❌ _get_connected_client({phone}): не удалось создать клиента: {e}")
             return None
-        if not await client.is_user_authorized():
-            return None
         active_clients[phone] = client
-        return client
     
     if not client.is_connected():
         try:
@@ -767,7 +772,26 @@ async def _get_connected_client(phone: str):
         except Exception as e:
             logging.error(f"❌ _get_connected_client({phone}): {e}")
             return None
-    if not await client.is_user_authorized():
+    
+    try:
+        authorized = await client.is_user_authorized()
+    except Exception as e:
+        # Соединение выглядело живым, но реальный запрос упал —
+        # типичный признак "протухшего" после долгого простоя соединения.
+        # Пробуем один раз пересоздать соединение с нуля.
+        logging.warning(f"⚠️ _get_connected_client({phone}): соединение протухло ({e}), переподключаюсь...")
+        try:
+            await client.disconnect()
+        except Exception:
+            pass
+        try:
+            await client.connect()
+            authorized = await client.is_user_authorized()
+        except Exception as e2:
+            logging.error(f"❌ _get_connected_client({phone}): не удалось восстановить соединение: {e2}")
+            return None
+    
+    if not authorized:
         return None
     return client
 
@@ -2129,6 +2153,62 @@ async def stopalltasks_command(message: types.Message):
     await message.answer(f"✅ Остановлено заданий: {count} (сессии остались подключены)")
 
 
+# ============ ВОССТАНОВЛЕНИЕ СЕССИЙ ПОСЛЕ РЕСТАРТА ============
+
+async def resume_enabled_sessions():
+    """При перезапуске процесса бота (деплой, краш, ручной рестарт) все
+    переменные в памяти (active_clients, active_tasks) обнуляются, но
+    файлы сессий на диске и флаг enabled в конфиге остаются рабочими.
+    Раньше после рестарта ничего не переподключалось автоматически —
+    пользователю приходилось вручную заходить в каждый аккаунт и снова
+    нажимать 'Включить'. Теперь при старте бот сам поднимает все
+    сессии, где enabled=True."""
+    resumed, failed = 0, 0
+    for user_id, phones in list(user_sessions.items()):
+        for phone in phones:
+            config = get_session_config(user_id, phone)
+            if not config.get("enabled"):
+                continue
+            try:
+                session_path = f"sessions/{phone.replace('+', '')}"
+                if not os.path.exists(session_path + ".session"):
+                    logging.warning(f"⚠️ resume_enabled_sessions: файл сессии не найден для {phone}")
+                    failed += 1
+                    continue
+                client = TelegramClient(
+                    session_path, API_ID, API_HASH,
+                    connection_retries=5, retry_delay=1,
+                    auto_reconnect=True, flood_sleep_threshold=60
+                )
+                await client.connect()
+                if not await client.is_user_authorized():
+                    logging.warning(f"⚠️ resume_enabled_sessions: {phone} разлогинен, выключаю")
+                    config["enabled"] = False
+                    save_session_config()
+                    failed += 1
+                    try:
+                        await bot.send_message(
+                            user_id,
+                            f"⚠️ Сессия {phone} разлогинена — не удалось возобновить работу "
+                            f"после перезапуска. Пересоздай сессию в разделе 'Аккаунты'."
+                        )
+                    except Exception:
+                        pass
+                    continue
+                active_clients[phone] = client
+                bot_name = user_bot_choice.get(user_id, "@gram_piarbot").lstrip('@')
+                await start_gram_worker(client, bot_name, phone, user_id)
+                resumed += 1
+                # Небольшая пауза между поднятием сессий, чтобы не создавать
+                # много одновременных подключений разом.
+                await asyncio.sleep(1.5)
+            except Exception as e:
+                logging.error(f"❌ resume_enabled_sessions({phone}): {e}")
+                failed += 1
+    if resumed or failed:
+        logging.info(f"🔄 Восстановление сессий после рестарта: {resumed} успешно, {failed} с ошибкой")
+
+
 # ============ ИНИЦИАЛИЗАЦИЯ ============
 
 async def main():
@@ -2165,6 +2245,7 @@ async def main():
     init_channels_feature(dp)
     init_shakalizer(dp)
     start_username_watcher()
+    asyncio.create_task(resume_enabled_sessions())
     
     await dp.start_polling(bot)
 
