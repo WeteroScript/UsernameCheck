@@ -69,6 +69,17 @@ def _find_channel(user_id: int, chat_id: int) -> Optional[Dict]:
     return None
 
 
+def _find_channel_owner(chat_id: int) -> Optional[int]:
+    """Ищет, за каким пользователем УЖЕ закреплён этот канал (в любом
+    аккаунте) — один канал не должен подключаться сразу с нескольких
+    аккаунтов бота, иначе авто-приём заявок/посты будут конфликтовать."""
+    for owner_id, chans in channels_data.items():
+        for ch in chans:
+            if ch["chat_id"] == chat_id:
+                return owner_id
+    return None
+
+
 # ============ ГЛАВНОЕ МЕНЮ "КАНАЛЫ" ============
 
 def get_channels_root_keyboard() -> InlineKeyboardMarkup:
@@ -190,6 +201,15 @@ async def ch_connect_input(message: types.Message, state: FSMContext):
     channels_data.setdefault(user_id, [])
     if _find_channel(user_id, chat_id):
         await message.answer("ℹ️ Этот канал уже подключён.", reply_markup=get_channels_root_keyboard())
+        return
+    
+    existing_owner = _find_channel_owner(chat_id)
+    if existing_owner is not None and existing_owner != user_id:
+        await message.answer(
+            "❌ Этот канал уже подключён к другому аккаунту бота. "
+            "Один канал нельзя привязать сразу к нескольким аккаунтам.",
+            reply_markup=get_channels_root_keyboard()
+        )
         return
     
     channels_data[user_id].append({
@@ -659,4 +679,4 @@ __all__ = [
     'router',
     'init_channels_feature',
     'get_channels_root_keyboard',
-        ]
+    ]
