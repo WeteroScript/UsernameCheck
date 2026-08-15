@@ -110,6 +110,18 @@ storage = MemoryStorage()
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=storage)
 
+
+@dp.errors()
+async def global_error_handler(event: types.ErrorEvent):
+    """Ловит любые необработанные исключения из ЛЮБОГО хендлера (сетевые
+    таймауты Bot API, временные сбои и т.п.) — без этого такие ошибки
+    вылетали сырым трейсбеком в логи и (в худших случаях) могли уронить
+    обработку конкретного апдейта без единого понятного сообщения."""
+    logging.error(
+        f"❌ Необработанная ошибка в хендлере: {type(event.exception).__name__}: {event.exception}"
+    )
+    return True
+
 # Храним сессии пользователей
 user_sessions: Dict[int, List[str]] = {}
 user_bot_choice: Dict[int, str] = {}
@@ -1219,7 +1231,7 @@ async def session_phone(message: types.Message, state: FSMContext):
     else:
         await message.answer(
             "❌ Ошибка отправки кода.\n"
-            "Проверьте номер и попробуйте снова.\n\n"
+            "Проверьте номер и попробуйте снова — иногда помогает просто повторная попытка.\n\n"
             "Отправьте /start для возврата в меню"
         )
         await state.clear()
