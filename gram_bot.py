@@ -1442,10 +1442,19 @@ async def send_code(phone: str, bot_username: str) -> bool:
             logging.error(f"❌ send_code: PhoneNumberInvalidError для {phone} — номер невалиден/забанен Telegram")
             return False
         except sqlite3.OperationalError as e:
-            if "database is locked" in str(e):
+            err_str = str(e)
+            if "database is locked" in err_str:
                 logging.warning(f"⚠️ send_code: БД сессии заблокирована для {phone}, очищаю и жду")
                 cleanup_session_files(phone)
                 await asyncio.sleep(2)
+                return False
+            elif "disk I/O error" in err_str or "database disk image is malformed" in err_str:
+                # Обычно значит, что файл сессии повреждён (например, из-за
+                # прерванной записи при рестарте/сбое диска хостинга) — не
+                # нехватка места как таковая. Чистим файл, чтобы следующая
+                # попытка создала сессию заново с нуля.
+                logging.warning(f"⚠️ send_code: файл сессии повреждён для {phone} ({err_str}), пересоздаю")
+                cleanup_session_files(phone)
                 return False
             else:
                 logging.error(f"❌ send_code: sqlite3.OperationalError для {phone}: {e}")
@@ -1747,4 +1756,4 @@ __all__ = [
     'get_bot_category_keyboard', 'get_bot_settings_keyboard',
     'active_clients', 'active_tasks',
     'set_session_config', 'get_session_config'
-]
+            ]
