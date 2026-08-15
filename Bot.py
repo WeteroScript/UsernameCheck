@@ -95,6 +95,7 @@ from extra_features import (
 from video_download import router as video_router, init_video_download
 from channels_feature import init_channels_feature
 from shakalizer import init_shakalizer
+from gifts_feature import init_gifts_feature, setup as setup_gifts_feature
 
 load_dotenv()
 
@@ -354,14 +355,10 @@ async def sess_interval_input(message: types.Message, state: FSMContext):
 
 def get_session_item_keyboard(user_id: int, phone: str) -> InlineKeyboardMarkup:
     config = get_session_config(user_id, phone)
-    is_enabled = config.get("enabled", False)
-    toggle_text = "⏹ Выключить" if is_enabled else "▶️ Включить"
     groups_muted = config.get("groups_muted", False)
     channels_muted = config.get("channels_muted", False)
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📱 " + phone, callback_data="no_action")],
-        [InlineKeyboardButton(text=toggle_text, callback_data=f"sess_toggle_{phone}")],
-        [InlineKeyboardButton(text="⚙️ Настройки", callback_data=f"sess_settings_{phone}")],
         [InlineKeyboardButton(
             text=f"{'🔇' if groups_muted else '🔊'} Выкл звук в группах",
             callback_data=f"sess_mute_groups_{phone}"
@@ -398,6 +395,7 @@ def get_main_keyboard(user_id: Optional[int] = None) -> InlineKeyboardMarkup:
     ]
     flat_buttons.extend(get_extra_main_buttons())
     flat_buttons.append(InlineKeyboardButton(text="📉 Шакализатор", callback_data="shakalizer_menu"))
+    flat_buttons.append(InlineKeyboardButton(text="🎁 Подарки", callback_data="gifts_menu", style=ButtonStyle.DANGER))
     
     # Раскладываем плоский список кнопок сеткой по 2 в ряд — компактнее и
     # приятнее одной длинной колонки. Красим только основные разделы
@@ -554,20 +552,11 @@ async def sess_item_callback(callback: types.CallbackQuery):
         user_id = callback.from_user.id
         await callback.answer()
         
-        config = get_session_config(user_id, phone)
-        is_enabled = config.get("enabled", False)
-        task_type = config.get("task_type", "channels")
-        task_names = {
-            "channels": "📢 Подписка на каналы",
-            "groups": "👥 Вступление в группы",
-            "posts": "📱 Просмотр постов",
-            "bots": "🤖 Задания с ботами"
-        }
+        client = await _get_connected_client(phone)
+        state_mark = "🟢" if client else "🔴"
         
         text = f"📱 <b>{phone}</b>\n\n"
-        text += f"📊 Статус: {'🟢 Включена' if is_enabled else '🔴 Выключена'}\n"
-        text += f"📋 Задание: {task_names.get(task_type, task_type)}\n"
-        text += f"🤖 Бот: {user_bot_choice.get(user_id, '@gram_piarbot')}\n\n"
+        text += f"Состояние: {state_mark} (🔴 - потерян доступ к сессии, 🟢 - доступно)\n\n"
         text += "Выбери действие:"
         
         await safe_edit_message(
@@ -2244,6 +2233,8 @@ async def main():
     init_video_download(dp)
     init_channels_feature(dp)
     init_shakalizer(dp)
+    setup_gifts_feature(user_sessions, _get_connected_client)
+    init_gifts_feature(dp)
     start_username_watcher()
     asyncio.create_task(resume_enabled_sessions())
     
