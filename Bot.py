@@ -12,7 +12,7 @@ from aiogram.enums import ParseMode, ButtonStyle
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.exceptions import TelegramBadRequest
+from aiogram.exceptions import TelegramBadRequest, TelegramNetworkError
 from dotenv import load_dotenv
 
 from telethon import TelegramClient
@@ -253,6 +253,23 @@ async def safe_edit_message(message: types.Message, text: str, **kwargs):
             pass
         else:
             raise
+
+
+async def send_with_retry(message: types.Message, text: str, attempts: int = 3, **kwargs):
+    """Отправляет сообщение с повторными попытками при сетевом таймауте
+    Bot API. Нужно для критичных шагов флоу (например, запрос пароля 2FA) —
+    раньше при единичном TelegramNetworkError сообщение просто терялось,
+    и пользователь не видел, что от него что-то ждут."""
+    last_error = None
+    for attempt in range(attempts):
+        try:
+            return await message.answer(text, **kwargs)
+        except TelegramNetworkError as e:
+            last_error = e
+            logging.warning(f"⚠️ send_with_retry: попытка {attempt + 1}/{attempts} не удалась: {e}")
+            await asyncio.sleep(2)
+    logging.error(f"❌ send_with_retry: не удалось отправить сообщение после {attempts} попыток: {last_error}")
+    return None
 
 
 # ============ КЛАВИАТУРЫ ============
@@ -1222,7 +1239,8 @@ async def session_phone(message: types.Message, state: FSMContext):
         result = False
     
     if result:
-        await message.answer(
+        await send_with_retry(
+            message,
             "📱 <b>Код отправлен!</b>\n\n"
             "Введите код подтверждения из Telegram в формате:\n"
             "<code>code12345</code> (префикс code + сам код)",
@@ -1268,7 +1286,8 @@ async def session_code(message: types.Message, state: FSMContext):
         # Аккаунт с облачным паролем (2FA) — код принят, нужен пароль.
         await state.update_data(phone=phone)
         await state.set_state(SessionStates.waiting_2fa_password)
-        await message.answer(
+        await send_with_retry(
+            message,
             "🔐 На этом аккаунте включён облачный пароль (2FA).\n\n"
             "Введи пароль, чтобы завершить вход:\n\n/cancel — отменить"
         )
