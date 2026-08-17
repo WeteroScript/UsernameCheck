@@ -1233,15 +1233,17 @@ async def session_phone(message: types.Message, state: FSMContext):
     await state.set_state(SessionStates.waiting_code)
     set_user_chat_id(message.chat.id)
     try:
-        result = await send_code(phone, "gram_prbot")
+        result, delivery_hint = await send_code(phone, "gram_prbot")
     except Exception as e:
         logging.error(f"❌ send_code исключение для {phone}: {e}")
-        result = False
+        result, delivery_hint = False, None
     
     if result:
+        hint_line = f"\n\n{delivery_hint}" if delivery_hint else ""
         await send_with_retry(
             message,
-            "📱 <b>Код отправлен!</b>\n\n"
+            "📱 <b>Код отправлен!</b>"
+            f"{hint_line}\n\n"
             "Введите код подтверждения из Telegram в формате:\n"
             "<code>code12345</code> (префикс code + сам код)",
             parse_mode=ParseMode.HTML
