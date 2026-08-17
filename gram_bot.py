@@ -1411,7 +1411,22 @@ async def _wal(client: TelegramClient):
         pass
 
 
-async def send_code(phone: str, bot_username: str) -> bool:
+SENT_CODE_TYPE_LABELS = {
+    "SentCodeTypeApp": "📲 Код придёт в САМО приложение Telegram (проверь другие свои устройства, где уже выполнен вход — не SMS!)",
+    "SentCodeTypeSms": "💬 Код придёт по SMS",
+    "SentCodeTypeCall": "📞 Будет звонок, код продиктуют голосом",
+    "SentCodeTypeFlashCall": "📞 Будет 'flash call' — код нужно посмотреть в номере входящего звонка",
+    "SentCodeTypeMissedCall": "📞 Код — в последних цифрах номера пропущенного звонка",
+    "SentCodeTypeEmailCode": "📧 Код придёт на почту, привязанную к аккаунту",
+    "SentCodeTypeFragmentSms": "💬 Код придёт через Fragment SMS",
+}
+
+
+async def send_code(phone: str, bot_username: str) -> Tuple[bool, Optional[str]]:
+    """Возвращает (успех, куда_пришёл_код). Второе — понятная подсказка
+    пользователю, т.к. Telegram по умолчанию шлёт код в САМО приложение
+    (если есть активная сессия на другом устройстве), а не по SMS — люди
+    ждут SMS и не находят код, хотя лог честно писал 'Код запрошен'."""
     phone = phone.strip()
     if not phone.startswith('+'):
         phone = '+' + phone
@@ -1428,26 +1443,29 @@ async def send_code(phone: str, bot_username: str) -> bool:
             )
             await client.connect()
             await _wal(client)
+            delivery_hint = None
             if not await client.is_user_authorized():
-                await client.send_code_request(phone)
-                logging.info(f"📤 Код запрошен для {phone}")
+                sent_code = await client.send_code_request(phone)
+                type_name = type(sent_code.type).__name__
+                delivery_hint = SENT_CODE_TYPE_LABELS.get(type_name, f"Тип доставки: {type_name}")
+                logging.info(f"📤 Код запрошен для {phone} — {type_name}")
             else:
                 logging.info(f"✅ Уже авторизован: {phone}")
             active_clients[phone] = client
-            return True
+            return True, delivery_hint
         except errors.FloodWaitError as e:
             logging.error(f"❌ send_code: FloodWaitError для {phone} — нужно подождать {e.seconds} сек")
-            return False
+            return False, None
         except errors.PhoneNumberInvalidError:
             logging.error(f"❌ send_code: PhoneNumberInvalidError для {phone} — номер невалиден/забанен Telegram")
-            return False
+            return False, None
         except sqlite3.OperationalError as e:
             err_str = str(e)
             if "database is locked" in err_str:
                 logging.warning(f"⚠️ send_code: БД сессии заблокирована для {phone}, очищаю и жду")
                 cleanup_session_files(phone)
                 await asyncio.sleep(2)
-                return False
+                return False, None
             elif "disk I/O error" in err_str or "database disk image is malformed" in err_str:
                 # Обычно значит, что файл сессии повреждён (например, из-за
                 # прерванной записи при рестарте/сбое диска хостинга) — не
@@ -1455,13 +1473,13 @@ async def send_code(phone: str, bot_username: str) -> bool:
                 # попытка создала сессию заново с нуля.
                 logging.warning(f"⚠️ send_code: файл сессии повреждён для {phone} ({err_str}), пересоздаю")
                 cleanup_session_files(phone)
-                return False
+                return False, None
             else:
                 logging.error(f"❌ send_code: sqlite3.OperationalError для {phone}: {e}")
-                return False
+                return False, None
         except Exception as e:
             logging.error(f"❌ send_code: {type(e).__name__} для {phone}: {e}")
-            return False
+            return False, None
 
 
 async def start_gram_bot(
@@ -1756,4 +1774,4 @@ __all__ = [
     'get_bot_category_keyboard', 'get_bot_settings_keyboard',
     'active_clients', 'active_tasks',
     'set_session_config', 'get_session_config'
-            ]
+    ]
