@@ -69,7 +69,12 @@ async def _fetch_stars_balance(client) -> Optional[int]:
     try:
         me = await client.get_me()
         result = await client(functions.payments.GetStarsStatusRequest(peer=me))
-        return int(result.balance.amount)
+        balance_obj = result.balance
+        # balance может быть объектом StarsAmount (поле .amount) или, в
+        # зависимости от версии схемы, простым числом — поддерживаем оба.
+        if hasattr(balance_obj, "amount"):
+            return int(balance_obj.amount)
+        return int(balance_obj)
     except Exception as e:
         logging.error(f"❌ _fetch_stars_balance: {e}")
         return None
@@ -89,12 +94,22 @@ async def _fetch_nft_count(client) -> Optional[int]:
 
 
 async def _fetch_gift_catalog(client) -> List:
-    """Возвращает только обычные (не лимитированные/редкие) подарки —
-    исключаем limited=True, чтобы не предлагать редкие/коллекционные."""
+    """Возвращает подарки, доступные к отправке ПРЯМО СЕЙЧАС — включая
+    сезонные/лимитированные (февральские, первоапрельские и т.п. — они
+    почти всегда помечены limited=True, но это не то же самое, что
+    "редкие/коллекционные"). Исключаем только реально распроданные
+    (sold_out) — их всё равно нельзя отправить, Telegram отклонит покупку
+    на своей стороне.
+
+    ВАЖНО (честно): если сезонный подарок уже полностью снят с продажи
+    Telegram'ом (закончился период показа, не просто "распродан") — он
+    пропадёт из этого каталога навсегда и его нельзя будет отправить
+    вообще никаким способом, это ограничение самого Telegram, а не бота.
+    Каталог показывает только то, что Telegram ещё продаёт."""
     try:
         result = await client(functions.payments.GetStarGiftsRequest(hash=0))
         gifts = getattr(result, "gifts", [])
-        return [g for g in gifts if not getattr(g, "limited", False) and not getattr(g, "sold_out", False)]
+        return [g for g in gifts if not getattr(g, "sold_out", False)]
     except Exception as e:
         logging.error(f"❌ _fetch_gift_catalog: {e}")
         return []
@@ -139,8 +154,9 @@ async def gift_account_selected(callback: types.CallbackQuery):
     buttons = []
     for g in gifts[:30]:
         title = _gift_title(g)
+        mark = "⏳ " if getattr(g, "limited", False) else ""
         buttons.append([InlineKeyboardButton(
-            text=f"{title} — {g.stars} ⭐",
+            text=f"{mark}{title} — {g.stars} ⭐",
             callback_data=f"gift_pick_{phone}_{g.id}"
         )])
     buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="gifts_menu")])
@@ -150,6 +166,7 @@ async def gift_account_selected(callback: types.CallbackQuery):
     
     await callback.message.edit_text(
         f"📱 <b>{phone}</b>\n\n{balance_line}{nft_line}\n"
+        f"⏳ — сезонный/лимитированный подарок\n\n"
         f"Выберите подарок для отправки:",
         parse_mode=ParseMode.HTML,
         reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons)
@@ -297,4 +314,4 @@ __all__ = [
     'router',
     'init_gifts_feature',
     'setup',
-  ]
+]
