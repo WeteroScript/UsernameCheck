@@ -151,27 +151,76 @@ async def gift_account_selected(callback: types.CallbackQuery):
         )
         return
     
-    buttons = []
-    for g in gifts[:30]:
-        title = _gift_title(g)
-        mark = "⏳ " if getattr(g, "limited", False) else ""
-        buttons.append([InlineKeyboardButton(
-            text=f"{mark}{title} — {g.stars} ⭐",
-            callback_data=f"gift_pick_{phone}_{g.id}"
-        )])
-    buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="gifts_menu")])
+    gift_drafts.setdefault(callback.from_user.id, {})["_catalog"] = {g.id: g for g in gifts}
+    
+    normal_count = sum(1 for g in gifts if not getattr(g, "limited", False))
+    limited_count = sum(1 for g in gifts if getattr(g, "limited", False))
     
     balance_line = f"💰 Баланс: {balance} ⭐\n" if balance is not None else ""
     nft_line = f"🖼 NFT-подарков: {nft_count}\n" if nft_count is not None else ""
     
     await callback.message.edit_text(
         f"📱 <b>{phone}</b>\n\n{balance_line}{nft_line}\n"
-        f"⏳ — сезонный/лимитированный подарок\n\n"
-        f"Выберите подарок для отправки:",
+        f"Выберите раздел подарков:",
+        parse_mode=ParseMode.HTML,
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text=f"🎁 Обычные ({normal_count})", callback_data=f"gift_cat_{phone}_normal")],
+            [InlineKeyboardButton(text=f"⏳ Лимитированные ({limited_count})", callback_data=f"gift_cat_{phone}_limited")],
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data="gifts_menu")],
+        ])
+    )
+
+
+@router.callback_query(lambda c: c.data.startswith("gift_cat_"))
+async def gift_category_selected(callback: types.CallbackQuery):
+    rest = callback.data.replace("gift_cat_", "")
+    phone, _, category = rest.rpartition("_")
+    user_id = callback.from_user.id
+    
+    catalog = gift_drafts.get(user_id, {}).get("_catalog", {})
+    if not catalog:
+        await callback.answer("❌ Каталог устарел, начни заново", show_alert=True)
+        await callback.message.edit_text(
+            "❌ Каталог устарел",
+            reply_markup=get_gifts_accounts_keyboard(user_id)
+        )
+        return
+    
+    await callback.answer()
+    
+    if category == "limited":
+        gifts = [g for g in catalog.values() if getattr(g, "limited", False)]
+        title = "⏳ Лимитированные"
+        hint = "Сезонные подарки — добавлены на ограниченное время, но не редкие/коллекционные.\n\n"
+    else:
+        gifts = [g for g in catalog.values() if not getattr(g, "limited", False)]
+        title = "🎁 Обычные"
+        hint = ""
+    
+    if not gifts:
+        await callback.message.edit_text(
+            f"{title}\n\n❌ В этой категории пока нет подарков.",
+            parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="⬅️ Назад", callback_data=f"gift_acc_{phone}")]
+            ])
+        )
+        return
+    
+    buttons = []
+    for g in gifts[:30]:
+        gtitle = _gift_title(g)
+        buttons.append([InlineKeyboardButton(
+            text=f"{gtitle} — {g.stars} ⭐",
+            callback_data=f"gift_pick_{phone}_{g.id}"
+        )])
+    buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=f"gift_acc_{phone}")])
+    
+    await callback.message.edit_text(
+        f"📱 <b>{phone}</b>\n\n{title}\n\n{hint}Выберите подарок для отправки:",
         parse_mode=ParseMode.HTML,
         reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons)
     )
-    gift_drafts.setdefault(callback.from_user.id, {})["_catalog"] = {g.id: g for g in gifts}
 
 
 @router.callback_query(lambda c: c.data.startswith("gift_pick_"))
@@ -314,4 +363,4 @@ __all__ = [
     'router',
     'init_gifts_feature',
     'setup',
-]
+            ]
