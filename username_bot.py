@@ -278,20 +278,31 @@ def _generate_random_username(settings: Dict, premium: bool = False) -> str:
         else random.sample(other_letters, fill_count) if fill_count else []
     )
 
-    base_tokens = letter_tokens + digit_tokens + fill_letters
-    random.shuffle(base_tokens)
+    # Повторяющиеся символы держим вместе (aaab, baaa).
+    # Собираем блок повторений и блок заполнения, затем случайно решаем
+    # — поставить блок в начало или в конец. Это даёт aaab / baaa форматы.
+    repeat_block = ''.join(letter_tokens)
+    digit_block = ''.join(digit_tokens)
+    fill_block = ''.join(random.sample(fill_letters, len(fill_letters)) if fill_letters else [])
 
-    # Юзернейм не может начинаться с цифры — если после перемешивания
-    # первый символ цифра, меняем его местами с первой попавшейся буквой.
-    if base_tokens and base_tokens[0].isdigit():
-        for i, t in enumerate(base_tokens):
-            if not t.isdigit():
-                base_tokens[0], base_tokens[i] = base_tokens[i], base_tokens[0]
+    # Позиция блока повторений: начало или конец
+    if random.choice([True, False]):
+        # repeat_block в начале: aaab[digits][fill]
+        combined = repeat_block + digit_block + fill_block
+    else:
+        # repeat_block в конце: [fill][digits]aaab
+        combined = fill_block + digit_block + repeat_block
+
+    base = combined[:budget]
+
+    # Юзернейм не может начинаться с цифры
+    if base and base[0].isdigit():
+        for i, ch in enumerate(base):
+            if not ch.isdigit():
+                base = ch + base[1:i] + base[0] + base[i + 1:]
                 break
         else:
-            base_tokens[0] = main_letter  # на крайний случай (все токены — цифры)
-
-    base = ''.join(base_tokens)[:budget]
+            base = main_letter + base[1:]
 
     if use_underscore and len(base) >= 2:
         insert_pos = random.randint(1, len(base) - 1)
@@ -753,8 +764,8 @@ def get_digit_count_keyboard(max_length: int = 5) -> InlineKeyboardMarkup:
 
 def get_style_keyboard() -> InlineKeyboardMarkup:
     rows = [
-        [InlineKeyboardButton(text=name, callback_data=f"set_style_{key}")]
-        for key, name in STYLE_NAMES.items()
+        [InlineKeyboardButton(text="Обычные", callback_data="set_style_random")],
+        [InlineKeyboardButton(text="Красивые", callback_data="set_style_beautiful")],
     ]
     rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="settings")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
@@ -775,7 +786,7 @@ async def _run_username_search(callback: types.CallbackQuery, send_new: bool):
     user_id = callback.from_user.id
     settings = get_user_settings(user_id)
 
-    progress_text = "✨ <b>Оптимистичный поиск...</b>\n\n<i>Игнорирую ложные срабатывания</i>"
+    progress_text = "🔎 поиск..."
     if send_new:
         # "Ещё" — продолжаем поиск НОВЫМ сообщением, не трогая предыдущий
         # найденный результат.
@@ -1037,7 +1048,7 @@ async def set_length_input(message: types.Message, state: FSMContext):
 async def change_style(callback: types.CallbackQuery):
     await callback.answer()
     await callback.message.edit_text(
-        f"🎨 Выбери стиль генерации:\n\n<i>«Красивые» — {PREMIUM_ICON} премиум-функция</i>",
+        f"🎨 Выбери стиль генерации:\n\nСтиль \"Красивые\" - премиум {PREMIUM_ICON}",
         parse_mode=ParseMode.HTML,
         reply_markup=get_style_keyboard()
     )
@@ -1256,4 +1267,4 @@ __all__ = [
     'TAKEN_DB_FILE',
     'FREE_DB_FILE',
     'BANNED_DB_FILE'
-]
+    ]
