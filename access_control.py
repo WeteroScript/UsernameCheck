@@ -24,7 +24,7 @@ PREMIUM_ICON = "💎"
 SUPER_ADMIN_ID = 5877790074
 
 # Канал обязательной подписки по умолчанию (задан явно, без срока действия).
-DEFAULT_MANDATORY_CHANNEL_ID = -1004329748530
+DEFAULT_MANDATORY_CHANNELS = [-1004447078589, -1004461974511]
 
 _admins: Set[int] = set()
 _premium: Dict[int, Dict] = {}  # user_id -> {"granted_at": iso, "granted_by": id|None}
@@ -58,7 +58,7 @@ def _load():
         except Exception as e:
             logging.error(f"❌ Ошибка загрузки mandatory_channels.json: {e}")
     else:
-        _mandatory_channels = {DEFAULT_MANDATORY_CHANNEL_ID: None}
+        _mandatory_channels = {ch: None for ch in DEFAULT_MANDATORY_CHANNELS}
         _save_mandatory()
 
 
@@ -173,17 +173,36 @@ def get_all_premium() -> Dict[int, Dict]:
 
 async def resolve_user_id(bot, arg: str) -> Optional[int]:
     """Принимает либо числовой user_id, либо @username и возвращает
-    numeric user_id (или None, если распознать не удалось)."""
+    numeric user_id (или None, если распознать не удалось).
+
+    get_chat корректно работает для каналов и групп, но для обычных
+    пользователей (user) Bot API может вернуть ошибку "Chat not found",
+    если бот с ним никогда не общался. Поэтому сначала пробуем получить
+    из кэша known_users (если передан), затем get_chat."""
     arg = arg.strip()
     if arg.lstrip('-').isdigit():
         return int(arg)
-    username = arg.lstrip('@')
+    username = arg.lstrip('@').lower()
+    # Пробуем через Bot API
     try:
         chat = await bot.get_chat(f"@{username}")
         return chat.id
-    except Exception as e:
-        logging.error(f"❌ resolve_user_id: не удалось найти @{username}: {e}")
-        return None
+    except Exception:
+        pass
+    # Если бот не знает этого чата — ищем в known_users по username
+    try:
+        # known_users живёт в Bot.py; импортировать нельзя из-за циклических
+        # зависимостей, поэтому ищем через bot.get_updates (нет) —
+        # используем атрибут переданного bot._known_users если он есть
+        ku = getattr(bot, '_known_users_ref', None)
+        if ku:
+            for uid, info in ku.items():
+                if (info.get("username") or "").lower() == username:
+                    return uid
+    except Exception:
+        pass
+    logging.error(f"❌ resolve_user_id: не удалось найти @{username}")
+    return None
 
 
 # ============ ЛИМИТЫ АККАУНТОВ ПО ПРЕМИУМ-СТАТУСУ ============
@@ -191,8 +210,45 @@ async def resolve_user_id(bot, arg: str) -> Optional[int]:
 MAX_SESSIONS_FREE = 3
 MAX_SESSIONS_PREMIUM = 10
 
+CUSTOM_LIMITS_FILE = "custom_session_limits.json"
+_custom_limits: Dict[int, int] = {}
+
+
+def _load_custom_limits():
+    global _custom_limits
+    if os.path.exists(CUSTOM_LIMITS_FILE):
+        try:
+            with open(CUSTOM_LIMITS_FILE, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                _custom_limits = {int(k): v for k, v in data.items()}
+        except Exception as e:
+            logging.error(f"❌ Ошибка загрузки custom_session_limits.json: {e}")
+
+
+def _save_custom_limits():
+    try:
+        with open(CUSTOM_LIMITS_FILE, 'w', encoding='utf-8') as f:
+            json.dump(_custom_limits, f, indent=2, ensure_ascii=False)
+    except Exception as e:
+        logging.error(f"❌ Ошибка сохранения custom_session_limits.json: {e}")
+
+
+_load_custom_limits()
+
+
+def set_custom_session_limit(user_id: int, limit: int):
+    """Устанавливает индивидуальный лимит сессий. limit=0 сбрасывает на дефолт."""
+    if limit <= 0:
+        _custom_limits.pop(user_id, None)
+    else:
+        _custom_limits[user_id] = limit
+    _save_custom_limits()
+
 
 def get_max_sessions(user_id: int) -> int:
+    # Индивидуальный лимит имеет приоритет над премиумом
+    if user_id in _custom_limits:
+        return _custom_limits[user_id]
     return MAX_SESSIONS_PREMIUM if is_premium(user_id) else MAX_SESSIONS_FREE
 
 
