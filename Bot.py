@@ -69,6 +69,7 @@ from access_control import (
     get_all_premium,
     resolve_user_id,
     get_max_sessions,
+    set_custom_session_limit,
     is_phone_allowed,
     PREMIUM_ICON,
     FREE_ALLOWED_COUNTRY_CODES,
@@ -126,6 +127,49 @@ async def global_error_handler(event: types.ErrorEvent):
 user_sessions: Dict[int, List[str]] = {}
 user_bot_choice: Dict[int, str] = {}
 user_session_config: Dict[int, Dict[str, Dict[str, Any]]] = {}
+user_lang: Dict[int, str] = {}  # user_id -> "ru" | "en"
+
+LANG_FILE = "user_lang.json"
+
+LANG_STRINGS = {
+    "ru": {
+        "settings_title": "⚙️ <b>Настройки</b>\n\nВыберите язык / Choose language:",
+        "lang_set": "✅ Язык установлен: Русский 🇷🇺",
+        "back": "⬅️ Назад",
+        "lang_ru": "🇷🇺 Русский",
+        "lang_en": "🇬🇧 English",
+    },
+    "en": {
+        "settings_title": "⚙️ <b>Settings</b>\n\nSelect language / Выберите язык:",
+        "lang_set": "✅ Language set: English 🇬🇧",
+        "back": "⬅️ Back",
+        "lang_ru": "🇷🇺 Russian",
+        "lang_en": "🇬🇧 English",
+    },
+}
+
+
+def get_user_lang(user_id: int) -> str:
+    return user_lang.get(user_id, "ru")
+
+
+def load_lang() -> Dict[int, str]:
+    if os.path.exists(LANG_FILE):
+        try:
+            with open(LANG_FILE, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                return {int(k): v for k, v in data.items()}
+        except Exception as e:
+            logging.error(f"Ошибка загрузки user_lang.json: {e}")
+    return {}
+
+
+def save_lang():
+    try:
+        with open(LANG_FILE, 'w', encoding='utf-8') as f:
+            json.dump(user_lang, f, indent=2, ensure_ascii=False)
+    except Exception as e:
+        logging.error(f"Ошибка сохранения user_lang.json: {e}")
 
 SESSIONS_FILE = "user_sessions.json"
 BOT_CHOICE_FILE = "user_bot_choice.json"
@@ -310,7 +354,7 @@ def get_bot_session_item_keyboard(user_id: int, phone: str) -> InlineKeyboardMar
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📱 " + phone, callback_data="no_action")],
         [InlineKeyboardButton(text=toggle_text, callback_data=f"sess_toggle_{phone}")],
-        [InlineKeyboardButton(text="⚙️ Настройки", callback_data=f"sess_settings_{phone}")],
+        [InlineKeyboardButton(text="⚙️ Настройки", callback_data=f"bots_settings_{phone}")],
         [InlineKeyboardButton(text=interval_label, callback_data=f"sess_interval_{phone}")],
         [InlineKeyboardButton(text="⬅️ Назад", callback_data="bot_prgramm")],
     ])
@@ -323,12 +367,17 @@ async def bots_sess_item_callback(callback: types.CallbackQuery):
     user_id = callback.from_user.id
     config = get_session_config(user_id, phone)
     task_names = {"channels": "📢 Подписка на каналы", "groups": "👥 Вступление в группы", "posts": "📱 Просмотр постов", "bots": "🤖 Задания с ботами"}
+    # Дефолты при первом показе новой сессии: выключена, задание — выбрать в настройках
     status = "🟢 Включена" if config.get("enabled", False) else "🔴 Выключена"
+    task_type = config.get("task_type", "channels")
+    bot_label = user_bot_choice.get(user_id, "@gram_piarbot")
+    # Если сессия только добавлена и ни разу не настраивалась, показываем подсказки
+    task_display = task_names.get(task_type, "—")
     text = (
         f"📱 <b>{phone}</b>\n\n"
-        f"📊 Статус: {status}\n"
-        f"📋 Задание: {task_names.get(config.get('task_type', 'channels'), '—')}\n"
-        f"🤖 Бот: {user_bot_choice.get(user_id, '@gram_piarbot')}\n\n"
+        f"🤖 Бот: {bot_label}\n"
+        f"📋 Задание: {task_display}\n"
+        f"📊 Статус: {status}\n\n"
         f"Выбери действие:"
     )
     await safe_edit_message(callback.message, text, parse_mode=ParseMode.HTML, reply_markup=get_bot_session_item_keyboard(user_id, phone))
@@ -404,14 +453,17 @@ def get_session_item_keyboard(user_id: int, phone: str) -> InlineKeyboardMarkup:
     ])
 
 
-def get_session_settings_keyboard(user_id: int, phone: str) -> InlineKeyboardMarkup:
+def get_session_settings_keyboard(user_id: int, phone: str, back_to: str = None) -> InlineKeyboardMarkup:
     config = get_session_config(user_id, phone)
     task_type = config.get("task_type", "channels")
     task_names = {"channels": "📢 Подписка", "groups": "👥 Группы", "posts": "📱 Посты", "bots": "🤖 Боты"}
+    # back_to позволяет вернуться в нужный контекст:
+    # из раздела "Боты" → bots_sess_{phone}, из "Аккаунтов" → sess_item_{phone}
+    back_cb = back_to if back_to else f"sess_item_{phone}"
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=f"📋 Тип: {task_names.get(task_type, task_type)}", callback_data=f"sess_task_{phone}")],
         [InlineKeyboardButton(text="🔄 Сменить бота", callback_data=f"sess_bot_{phone}")],
-        [InlineKeyboardButton(text="⬅️ Назад", callback_data=f"sess_item_{phone}")],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data=back_cb)],
     ])
 
 
@@ -425,6 +477,7 @@ def get_main_keyboard(user_id: Optional[int] = None) -> InlineKeyboardMarkup:
     flat_buttons.extend(get_extra_main_buttons())
     flat_buttons.append(InlineKeyboardButton(text="📉 Шакализатор", callback_data="shakalizer_menu"))
     flat_buttons.append(InlineKeyboardButton(text="🎁 Подарки", callback_data="gifts_menu", style=ButtonStyle.DANGER))
+    flat_buttons.append(InlineKeyboardButton(text="⚙️ Настройки", callback_data="bot_settings_menu"))
     
     # Раскладываем плоский список кнопок сеткой по 2 в ряд — компактнее и
     # приятнее одной длинной колонки. Красим только основные разделы
@@ -436,9 +489,17 @@ def get_main_keyboard(user_id: Optional[int] = None) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def get_bots_list_keyboard() -> InlineKeyboardMarkup:
+def get_bots_list_keyboard(user_id: int = None) -> InlineKeyboardMarkup:
+    premium = is_premium(user_id) if user_id else False
+    if premium:
+        prgramm_btn = InlineKeyboardButton(text=f"📢 PR GRAMM {PREMIUM_ICON}", callback_data="bot_prgramm")
+    else:
+        prgramm_btn = InlineKeyboardButton(
+            text=f"📢 PR GRAMM 🔒 {PREMIUM_ICON}",
+            callback_data="bot_prgramm_locked"
+        )
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📢 PR GRAMM", callback_data="bot_prgramm")],
+        [prgramm_btn],
         [InlineKeyboardButton(text="⬅️ Назад", callback_data="main")],
     ])
 
@@ -498,6 +559,8 @@ async def start_command(message: types.Message):
         user_session_config.update(load_session_config())
     if not known_users:
         known_users.update(load_known_users())
+    if not user_lang:
+        user_lang.update(load_lang())
     register_known_user(message.from_user)
     
     if user_id not in user_bot_choice:
@@ -530,6 +593,64 @@ async def main_menu(callback: types.CallbackQuery):
     )
 
 
+@dp.callback_query(lambda c: c.data == "bot_settings_menu")
+async def bot_settings_menu(callback: types.CallbackQuery):
+    """Раздел настроек бота: смена языка."""
+    await callback.answer()
+    user_id = callback.from_user.id
+    lang = get_user_lang(user_id)
+    ls = LANG_STRINGS[lang]
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(
+                text=("✅ " if lang == "ru" else "") + ls["lang_ru"],
+                callback_data="set_lang_ru"
+            ),
+            InlineKeyboardButton(
+                text=("✅ " if lang == "en" else "") + ls["lang_en"],
+                callback_data="set_lang_en"
+            ),
+        ],
+        [InlineKeyboardButton(text=ls["back"], callback_data="main")],
+    ])
+    await safe_edit_message(
+        callback.message,
+        ls["settings_title"],
+        parse_mode=ParseMode.HTML,
+        reply_markup=kb
+    )
+
+
+@dp.callback_query(lambda c: c.data in ("set_lang_ru", "set_lang_en"))
+async def set_lang_callback(callback: types.CallbackQuery):
+    user_id = callback.from_user.id
+    new_lang = "ru" if callback.data == "set_lang_ru" else "en"
+    user_lang[user_id] = new_lang
+    save_lang()
+    ls = LANG_STRINGS[new_lang]
+    await callback.answer(ls["lang_set"])
+    # Возвращаем обновлённое меню настроек
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(
+                text=("✅ " if new_lang == "ru" else "") + ls["lang_ru"],
+                callback_data="set_lang_ru"
+            ),
+            InlineKeyboardButton(
+                text=("✅ " if new_lang == "en" else "") + ls["lang_en"],
+                callback_data="set_lang_en"
+            ),
+        ],
+        [InlineKeyboardButton(text=ls["back"], callback_data="main")],
+    ])
+    await safe_edit_message(
+        callback.message,
+        ls["settings_title"],
+        parse_mode=ParseMode.HTML,
+        reply_markup=kb
+    )
+
+
 @dp.callback_query(lambda c: c.data == "bots")
 async def bots_menu(callback: types.CallbackQuery):
     await callback.answer()
@@ -537,7 +658,15 @@ async def bots_menu(callback: types.CallbackQuery):
         callback.message,
         "🤖 <b>Боты</b>\n\nВыбери бота:",
         parse_mode=ParseMode.HTML,
-        reply_markup=get_bots_list_keyboard()
+        reply_markup=get_bots_list_keyboard(callback.from_user.id)
+    )
+
+
+@dp.callback_query(lambda c: c.data == "bot_prgramm_locked")
+async def bot_prgramm_locked(callback: types.CallbackQuery):
+    await callback.answer(
+        f"PR GRAMM — премиум-функция {PREMIUM_ICON}\nОбратитесь к администратору @BotFarmSupport",
+        show_alert=True
     )
 
 
@@ -623,6 +752,25 @@ async def sess_toggle_callback(callback: types.CallbackQuery):
         await bot_prgramm_menu(callback)
     except Exception as e:
         logging.error(f"❌ sess_toggle_callback: {e}")
+        await callback.answer("❌ Ошибка")
+
+
+@dp.callback_query(lambda c: c.data and c.data.startswith("bots_settings_"))
+async def bots_settings_callback(callback: types.CallbackQuery):
+    """Настройки сессии из раздела 'Боты' — Назад возвращает в bots_sess_, не в аккаунты."""
+    try:
+        phone = callback.data.replace("bots_settings_", "")
+        user_id = callback.from_user.id
+        await callback.answer()
+        await safe_edit_message(
+            callback.message,
+            f"⚙️ <b>Настройки — {phone}</b>\n\n"
+            "Выбери настройку:",
+            parse_mode=ParseMode.HTML,
+            reply_markup=get_session_settings_keyboard(user_id, phone, back_to=f"bots_sess_{phone}")
+        )
+    except Exception as e:
+        logging.error(f"❌ bots_settings_callback: {e}")
         await callback.answer("❌ Ошибка")
 
 
@@ -888,45 +1036,73 @@ async def sess_chatlist_menu(callback: types.CallbackQuery):
     )
 
 
-MAX_CHATLIST_BUTTONS = 80  # запас под лимит Telegram на размер reply_markup
+CHATLIST_PAGE_SIZE = 50  # чатов на страницу
 
 
-async def _build_chat_list_keyboard(phone: str, user_id: int, kind: str) -> InlineKeyboardMarkup:
+async def _get_all_chats(phone: str, kind: str):
+    """Собирает все чаты нужного типа из Telethon и возвращает список (chat_id, title)."""
+    client = await _get_connected_client(phone)
+    result = []
+    if not client:
+        return result
+    async for dialog in client.iter_dialogs(limit=500):
+        entity = dialog.entity
+        if kind == "groups":
+            is_match = (isinstance(entity, Chat)) or (isinstance(entity, Channel) and entity.megagroup)
+        else:
+            is_match = isinstance(entity, Channel) and not entity.megagroup
+            if is_match:
+                participants = getattr(entity, 'participants_count', None)
+                if participants is not None and participants <= 1:
+                    is_match = False
+        if not is_match:
+            continue
+        result.append((dialog.id, dialog.title or "Без названия"))
+    return result
+
+
+async def _build_chat_list_keyboard(phone: str, user_id: int, kind: str, page: int = 0) -> InlineKeyboardMarkup:
     config = get_session_config(user_id, phone)
     protected = set(config.get("protected_chats", []))
-    client = await _get_connected_client(phone)
+    all_chats = await _get_all_chats(phone, kind)
+
+    total = len(all_chats)
+    total_pages = max(1, (total + CHATLIST_PAGE_SIZE - 1) // CHATLIST_PAGE_SIZE)
+    page = max(0, min(page, total_pages - 1))
+    start = page * CHATLIST_PAGE_SIZE
+    page_chats = all_chats[start:start + CHATLIST_PAGE_SIZE]
+
     buttons = []
-    truncated = False
-    if client:
-        async for dialog in client.iter_dialogs(limit=300):
-            if len(buttons) >= MAX_CHATLIST_BUTTONS:
-                truncated = True
-                break
-            entity = dialog.entity
-            if kind == "groups":
-                is_match = (isinstance(entity, Chat)) or (isinstance(entity, Channel) and entity.megagroup)
-            else:
-                # Каналы: широковещательные (не супергруппы), исключаем
-                # "личные" — каналы, где кроме самого аккаунта никого нет
-                # (обычно используются как личный блокнот/архив).
-                is_match = isinstance(entity, Channel) and not entity.megagroup
-                if is_match:
-                    participants = getattr(entity, 'participants_count', None)
-                    if participants is not None and participants <= 1:
-                        is_match = False
-            if not is_match:
-                continue
-            chat_id = dialog.id
+    if not all_chats:
+        buttons.append([InlineKeyboardButton(text="❌ Пусто", callback_data="no_action")])
+    else:
+        for chat_id, title in page_chats:
             mark = "🔒 " if chat_id in protected else ""
-            title = (dialog.title or "Без названия")[:40]
             buttons.append([InlineKeyboardButton(
-                text=f"{mark}{title}",
+                text=f"{mark}{title[:40]}",
                 callback_data=f"sess_protect_{phone}_{chat_id}"
             )])
-    if not buttons:
-        buttons.append([InlineKeyboardButton(text="❌ Пусто", callback_data="no_action")])
-    elif truncated:
-        buttons.insert(0, [InlineKeyboardButton(text=f"⚠️ Показаны первые {MAX_CHATLIST_BUTTONS}", callback_data="no_action")])
+
+    # Навигация между страницами
+    nav_row = []
+    if page > 0:
+        nav_row.append(InlineKeyboardButton(
+            text="◀️",
+            callback_data=f"sess_chatpage_{kind}_{phone}_{page - 1}"
+        ))
+    if total_pages > 1:
+        nav_row.append(InlineKeyboardButton(
+            text=f"{page + 1}/{total_pages}",
+            callback_data="no_action"
+        ))
+    if page < total_pages - 1:
+        nav_row.append(InlineKeyboardButton(
+            text="▶️",
+            callback_data=f"sess_chatpage_{kind}_{phone}_{page + 1}"
+        ))
+    if nav_row:
+        buttons.append(nav_row)
+
     buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=f"sess_chatlist_{phone}")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
@@ -937,7 +1113,7 @@ async def sess_chatlist_groups(callback: types.CallbackQuery):
     phone = callback.data.replace("sess_chatlist_groups_", "")
     user_id = callback.from_user.id
     try:
-        kb = await _build_chat_list_keyboard(phone, user_id, "groups")
+        kb = await _build_chat_list_keyboard(phone, user_id, "groups", page=0)
         await safe_edit_message(
             callback.message,
             "👥 <b>Группы</b>\n\n🔒 — уже защищена от выхода\n\nВыбери группу:",
@@ -955,7 +1131,7 @@ async def sess_chatlist_channels(callback: types.CallbackQuery):
     phone = callback.data.replace("sess_chatlist_channels_", "")
     user_id = callback.from_user.id
     try:
-        kb = await _build_chat_list_keyboard(phone, user_id, "channels")
+        kb = await _build_chat_list_keyboard(phone, user_id, "channels", page=0)
         await safe_edit_message(
             callback.message,
             "📢 <b>Каналы</b>\n\n🔒 — уже защищён от выхода\n\nВыбери канал:",
@@ -965,6 +1141,41 @@ async def sess_chatlist_channels(callback: types.CallbackQuery):
     except Exception as e:
         logging.error(f"❌ sess_chatlist_channels: {e}")
         await callback.message.answer(f"❌ Не удалось загрузить список каналов: {e}")
+
+
+@dp.callback_query(lambda c: c.data and c.data.startswith("sess_chatpage_"))
+async def sess_chatpage_callback(callback: types.CallbackQuery):
+    """Листание страниц в списке каналов/групп."""
+    await callback.answer()
+    # формат: sess_chatpage_{kind}_{phone}_{page}
+    rest = callback.data[len("sess_chatpage_"):]
+    # kind — "groups" или "channels", не содержит "_"
+    kind, _, remainder = rest.partition("_")
+    # phone может содержать "+", но не "_"; page — последний сегмент
+    parts = remainder.rsplit("_", 1)
+    if len(parts) != 2:
+        await callback.answer("❌ Ошибка навигации", show_alert=True)
+        return
+    phone, page_str = parts
+    try:
+        page = int(page_str)
+    except ValueError:
+        await callback.answer("❌ Ошибка страницы", show_alert=True)
+        return
+    user_id = callback.from_user.id
+    try:
+        kb = await _build_chat_list_keyboard(phone, user_id, kind, page=page)
+        label = "👥 <b>Группы</b>" if kind == "groups" else "📢 <b>Каналы</b>"
+        hint = "🔒 — уже защищена от выхода\n\nВыбери группу:" if kind == "groups" else "🔒 — уже защищён от выхода\n\nВыбери канал:"
+        await safe_edit_message(
+            callback.message,
+            f"{label}\n\n{hint}",
+            parse_mode=ParseMode.HTML,
+            reply_markup=kb
+        )
+    except Exception as e:
+        logging.error(f"❌ sess_chatpage_callback: {e}")
+        await callback.answer("❌ Ошибка загрузки страницы", show_alert=True)
 
 
 @dp.callback_query(lambda c: c.data and c.data.startswith("sess_protect_"))
@@ -1188,7 +1399,14 @@ async def session_add(callback: types.CallbackQuery, state: FSMContext):
     user_id = callback.from_user.id
     
     if user_id in user_sessions and len(user_sessions[user_id]) >= get_max_sessions(user_id):
-        await callback.answer(f"❌ Достигнут лимит аккаунтов ({get_max_sessions(user_id)})", show_alert=True)
+        await callback.answer()
+        await callback.message.edit_text(
+            "Похоже ты упёрся в лимит 😔\n"
+            "Обратись к администратору @BotFarmSupport, за покупкой премиума для увеличения слотов.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="⬅️ Назад", callback_data="accounts")]
+            ])
+        )
         return
     
     await state.set_state(SessionStates.waiting_phone)
@@ -1228,7 +1446,25 @@ async def session_phone(message: types.Message, state: FSMContext):
             parse_mode=ParseMode.HTML
         )
         return
-    
+
+    # Проверка: не позволять подключить номер, уже зарегистрированный в боте
+    # (защита от очистки чужой сессии при повторном вводе занятого номера).
+    phone_normalized = phone if phone.startswith('+') else '+' + phone
+    for owner_uid, phones in user_sessions.items():
+        if phone_normalized in phones or phone.lstrip('+') in [p.lstrip('+') for p in phones]:
+            if owner_uid == user_id:
+                await message.answer(
+                    f"❌ Номер <code>{phone}</code> уже подключён к вашему аккаунту.",
+                    parse_mode=ParseMode.HTML
+                )
+            else:
+                await message.answer(
+                    "❌ Этот номер уже зарегистрирован в боте другим пользователем.\n"
+                    "Подключение невозможно."
+                )
+            await state.clear()
+            return
+
     await state.update_data(phone=phone)
     await state.set_state(SessionStates.waiting_code)
     set_user_chat_id(message.chat.id)
@@ -1244,6 +1480,7 @@ async def session_phone(message: types.Message, state: FSMContext):
             message,
             "📱 <b>Код отправлен!</b>"
             f"{hint_line}\n\n"
+            "📲 Код придёт в системный чат Telegram\n\n"
             "Введите код подтверждения из Telegram в формате:\n"
             "<code>code12345</code> (префикс code + сам код)",
             parse_mode=ParseMode.HTML
@@ -1454,7 +1691,7 @@ async def username_menu(callback: types.CallbackQuery):
     await safe_edit_message(
         callback.message,
         "👤 <b>Раздел Юзернеймы</b>\n\n"
-        "🔍 Поиск свободных 5-значных юзернеймов\n\n"
+        "🔍 Поиск свободных юзернеймов по вашим критериям\n\n"
         "Выбери действие:",
         parse_mode=ParseMode.HTML,
         reply_markup=get_username_keyboard()
@@ -1596,6 +1833,7 @@ ADMIN_COMMANDS_HELP = (
     "✅ /deladmin (юз/айди) — снять права админа\n"
     "✅ /givepremium (юз/айди) (дней, по умолчанию 1) — выдать 💎 премиум\n"
     "✅ /delpremium (юз/айди) — забрать 💎 премиум\n"
+    "✅ /setsessionlimit (юз/айди) (кол-во) — лимит сессий для пользователя\n"
     "✅ /ban (юз/айди) (причина)\n"
     "✅ /unban (юз/айди) (причина)\n"
     "✅ /mail (текст) — рассылка всем\n"
@@ -1999,13 +2237,39 @@ async def unblocktechpod_command(message: types.Message):
 
 # ============ /sessions — АДМИНСКАЯ ПАНЕЛЬ ВСЕХ СЕССИЙ ============
 
-def get_admin_sessions_keyboard() -> InlineKeyboardMarkup:
+def get_admin_users_keyboard() -> InlineKeyboardMarkup:
+    """Главный экран /sessions: список пользователей с кол-вом сессий."""
     buttons = []
-    for owner_id, phones in user_sessions.items():
-        for phone in phones:
-            buttons.append([InlineKeyboardButton(
-                text=f"📱 {phone}", callback_data=f"adm_sess_{owner_id}_{phone}"
-            )])
+    for i, (owner_id, phones) in enumerate(user_sessions.items(), 1):
+        if not phones:
+            continue
+        info = known_users.get(owner_id, {})
+        username = info.get("username")
+        label = f"@{username}" if username else f"id:{owner_id}"
+        count = len(phones)
+        word = "сессия" if count % 10 == 1 and count % 100 != 11 else (
+            "сессии" if 2 <= count % 10 <= 4 and not (12 <= count % 100 <= 14) else "сессий"
+        )
+        buttons.append([InlineKeyboardButton(
+            text=f"{i}. {label} ({count} подключённых {word})",
+            callback_data=f"adm_user_sess_{owner_id}"
+        )])
+    if not buttons:
+        buttons.append([InlineKeyboardButton(text="❌ Нет пользователей с сессиями", callback_data="no_action")])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+def get_admin_user_phones_keyboard(owner_id: int) -> InlineKeyboardMarkup:
+    """Экран конкретного юзера: все его сессии."""
+    phones = user_sessions.get(owner_id, [])
+    buttons = []
+    for phone in phones:
+        config = get_session_config(owner_id, phone)
+        status = "🟢" if config.get("enabled", False) else "🔴"
+        buttons.append([InlineKeyboardButton(
+            text=f"{status} {phone}",
+            callback_data=f"adm_sess_{owner_id}_{phone}"
+        )])
     if not buttons:
         buttons.append([InlineKeyboardButton(text="❌ Нет сессий", callback_data="no_action")])
     buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="adm_sessions_list")])
@@ -2016,10 +2280,11 @@ def get_admin_sessions_keyboard() -> InlineKeyboardMarkup:
 async def admin_sessions_command(message: types.Message):
     if not is_admin(message.from_user.id):
         return
+    total = sum(len(phones) for phones in user_sessions.values() if phones)
     await message.answer(
-        "📋 <b>Все активные сессии</b>",
+        f"📋 <b>Все сессии</b>\n\nВсего сессий: {total}\nКликни на пользователя, чтобы увидеть его сессии:",
         parse_mode=ParseMode.HTML,
-        reply_markup=get_admin_sessions_keyboard()
+        reply_markup=get_admin_users_keyboard()
     )
 
 
@@ -2028,14 +2293,39 @@ async def adm_sessions_list_callback(callback: types.CallbackQuery):
     if not is_admin(callback.from_user.id):
         return
     await callback.answer()
+    total = sum(len(phones) for phones in user_sessions.values() if phones)
     await callback.message.edit_text(
-        "📋 <b>Все активные сессии</b>",
+        f"📋 <b>Все сессии</b>\n\nВсего сессий: {total}\nКликни на пользователя, чтобы увидеть его сессии:",
         parse_mode=ParseMode.HTML,
-        reply_markup=get_admin_sessions_keyboard()
+        reply_markup=get_admin_users_keyboard()
     )
 
 
-@dp.callback_query(lambda c: c.data.startswith("adm_sess_") and not c.data.startswith("adm_sess_action_"))
+@dp.callback_query(lambda c: c.data.startswith("adm_user_sess_"))
+async def adm_user_sess_callback(callback: types.CallbackQuery):
+    """Список сессий конкретного пользователя."""
+    if not is_admin(callback.from_user.id):
+        return
+    await callback.answer()
+    owner_id = int(callback.data.replace("adm_user_sess_", ""))
+    info = known_users.get(owner_id, {})
+    username = info.get("username")
+    label = f"@{username}" if username else f"id:{owner_id}"
+    premium_str = f"{PREMIUM_ICON} да" if is_premium(owner_id) else "нет"
+    max_sess = get_max_sessions(owner_id)
+    phones = user_sessions.get(owner_id, [])
+    await callback.message.edit_text(
+        f"👤 <b>{label}</b>\n"
+        f"Айди: <code>{owner_id}</code>\n"
+        f"Премиум: {premium_str}\n"
+        f"Лимит сессий: {len(phones)}/{max_sess}\n\n"
+        f"Его сессии:",
+        parse_mode=ParseMode.HTML,
+        reply_markup=get_admin_user_phones_keyboard(owner_id)
+    )
+
+
+@dp.callback_query(lambda c: c.data.startswith("adm_sess_") and not c.data.startswith("adm_sess_action_") and not c.data.startswith("adm_user_sess_"))
 async def adm_sess_item_callback(callback: types.CallbackQuery):
     if not is_admin(callback.from_user.id):
         return
@@ -2066,7 +2356,7 @@ async def adm_sess_item_callback(callback: types.CallbackQuery):
             [InlineKeyboardButton(text="⏹ Остановить задание", callback_data=f"adm_sess_action_stop_{owner_id}_{phone}")],
             [InlineKeyboardButton(text="🔑 Получить код", callback_data=f"adm_sess_action_code_{owner_id}_{phone}")],
             [InlineKeyboardButton(text="📄 Получить session файл", callback_data=f"adm_sess_action_file_{owner_id}_{phone}")],
-            [InlineKeyboardButton(text="⬅️ Назад", callback_data="adm_sessions_list")],
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data=f"adm_user_sess_{owner_id}")],
         ])
     )
 
@@ -2175,6 +2465,33 @@ async def stopalltasks_command(message: types.Message):
     await message.answer(f"✅ Остановлено заданий: {count} (сессии остались подключены)")
 
 
+@dp.message(Command("setsessionlimit"))
+async def setsessionlimit_command(message: types.Message):
+    """Устанавливает индивидуальный лимит сессий для пользователя."""
+    if not is_admin(message.from_user.id):
+        return
+    args = message.text.split()
+    if len(args) < 3:
+        await message.answer("Использование: /setsessionlimit (юз/айди) (кол-во сессий)")
+        return
+    target_id = await resolve_user_id(bot, args[1])
+    if not target_id:
+        await message.answer("❌ Не удалось найти пользователя.")
+        return
+    try:
+        limit = int(args[2])
+        if limit < 0:
+            raise ValueError
+    except ValueError:
+        await message.answer("❌ Кол-во сессий должно быть целым неотрицательным числом.")
+        return
+    set_custom_session_limit(target_id, limit)
+    await message.answer(
+        f"✅ Лимит сессий для <code>{target_id}</code> установлен: <b>{limit}</b>",
+        parse_mode=ParseMode.HTML
+    )
+
+
 # ============ ВОССТАНОВЛЕНИЕ СЕССИЙ ПОСЛЕ РЕСТАРТА ============
 
 async def resume_enabled_sessions():
@@ -2252,6 +2569,8 @@ async def main():
     set_username_bot(bot)
     set_extra_bot(bot)
     set_captcha_bot(bot)
+    # Передаём ссылку на known_users в bot для resolve_user_id в access_control
+    bot._known_users_ref = known_users
     set_captcha_clients(active_clients)
     set_captcha_continue_callback(continue_gram_bot)
     set_auto_click_timeout(30)
