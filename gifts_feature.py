@@ -237,7 +237,7 @@ async def _render_gift_category(target, user_id: int, phone: str, category: str,
     if category == "limited":
         gifts = [g for g in catalog.values() if getattr(g, "limited", False)]
         title = "⏳ Лимитированные"
-        hint = "Сезонные подарки — добавлены на ограниченное время, но не редкие/коллекционные.\n\n"
+        hint = "Сезонные подарки — добавлены на ограниченное время.\n\n"
     else:
         gifts = [g for g in catalog.values() if not getattr(g, "limited", False)]
         title = "🎁 Обычные"
@@ -252,12 +252,31 @@ async def _render_gift_category(target, user_id: int, phone: str, category: str,
         buttons = []
         for g in gifts[:30]:
             gtitle = _gift_title(g)
-            buttons.append([InlineKeyboardButton(
-                text=f"{gtitle} — {_gift_price_label(g)}",
-                callback_data=f"gift_pick_{phone}_{g.id}"
-            )])
+            # Для лимитированных подарков цена всегда 50⭐
+            if category == "limited":
+                price_label = "50 ⭐"
+            else:
+                price_label = _gift_price_label(g)
+            # Лимитированным кнопкам задаём цветной стиль
+            if category == "limited":
+                btn = InlineKeyboardButton(
+                    text=f"{gtitle} — {price_label}",
+                    callback_data=f"gift_pick_{phone}_{g.id}",
+                    style=ButtonStyle.SUCCESS
+                )
+            else:
+                btn = InlineKeyboardButton(
+                    text=f"{gtitle} — {price_label}",
+                    callback_data=f"gift_pick_{phone}_{g.id}"
+                )
+            buttons.append([btn])
         buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=f"gift_acc_{phone}")])
-        text = f"📱 <b>{phone}</b>\n\n{title}\n\n{hint}Выберите подарок для отправки:"
+        # Для лимитированных — показываем номер телефона в формате "Выбранная сессия"
+        if category == "limited":
+            header = f"Выбранная сессия: 📱+{phone.lstrip('+')}"
+        else:
+            header = f"📱 <b>{phone}</b>"
+        text = f"{header}\n\n{title}\n\n{hint}Выберите подарок для отправки:"
         markup = InlineKeyboardMarkup(inline_keyboard=buttons)
 
     if isinstance(target, types.CallbackQuery):
@@ -602,4 +621,4 @@ __all__ = [
     'router',
     'init_gifts_feature',
     'setup',
-        ]
+]
