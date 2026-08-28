@@ -120,13 +120,13 @@ def get_session_config(user_id: int, phone: str) -> Dict[str, Any]:
 
 
 def get_task_choice_keyboard(user_id: int, phone: str = None) -> InlineKeyboardMarkup:
+    # "posts" убран из списка по запросу — раздел не используется
     task_types = {
         "channels": "📢 Подписка на каналы",
         "groups": "👥 Вступление в группы",
-        "posts": "📱 Просмотр постов",
         "bots": f"{PREMIUM_ICON} 🤖 Задания с ботами",
     }
-    
+
     if phone:
         callback_prefix = f"task_choose_sess_"
         back_callback = f"sess_item_{phone}"
@@ -726,60 +726,123 @@ async def subscribe(client: TelegramClient, url: str) -> Tuple[bool, str]:
 # ЗАДАНИЯ С БОТАМИ
 # ============================================================
 
-async def process_bot_tasks(client: TelegramClient, bot_username: str, msg, user_id: int = None, phone: str = None):
+async def process_bot_tasks(
+    client: TelegramClient,
+    bot_username: str,
+    msg,
+    user_id: int = None,
+    phone: str = None
+):
+    """Обрабатывает задания типа «Боты» в PR GRAMM.
+
+    Механика PR GRAMM для ботов:
+    1. После нажатия «Боты» PR GRAMM показывает подменю:
+       «Обычные боты», «Боты с Web App», «С дополнительными условиями».
+    2. Нажимаем нужный подтип (по настройке bot_category).
+    3. PR GRAMM показывает список заданий: кнопки «Перейти в бота | +N GRAM».
+    4. Нажимаем на первую кнопку задания → PR GRAMM просит скриншот.
+    5. Генерируем новый скриншот и отправляем.
+    6. PR GRAMM подтверждает («✅ Выполнение №N отправлено...»), даёт кнопки.
+    7. Нажимаем «Следующий бот» и повторяем.
+    ВАЖНО: слова «капча», «captcha» и т.п. в типе заданий «боты» ИГНОРИРУЮТСЯ.
+    """
     try:
-        if not msg or not msg.buttons:
+        if not msg:
             return msg
+
         if user_id and phone:
             config = get_session_config(user_id, phone)
             category = config.get("bot_category", "regular")
         else:
-            category = user_bot_category.get(user_id, "regular")
-        category_keywords = {
-            "regular": ["обычные боты"],
-            "webapp": ["боты с web app", "web app"],
-            "conditions": ["с дополнительными условиями", "с доп. условиями"]
+            category = user_bot_category.get(user_id, "regular") if user_id else "regular"
+
+        # Шаг 1: выбираем подтип ботов если показано подменю
+        subtype_keywords = {
+            "regular":    ["обычные боты", "стандартные боты"],
+            "webapp":     ["боты с web app", "web app", "webapp"],
+            "conditions": ["с дополнительными условиями", "с доп. условиями", "дополнительными"],
         }
-        keywords = category_keywords.get(category, ["обычные боты"])
-        category_btn = find_button(msg, keywords)
-        if category_btn:
-            result = await click_btn(client, bot_username, category_btn, timeout=15)
-            if not result:
-                return msg
-            if is_captcha_message(result):
-                return await get_last_msg(client, bot_username)
-            msg = result
-        all_task_btns = find_all_buttons(msg, ["перейти в бота"])
-        if not all_task_btns:
-            return msg
-        for task_btn in all_task_btns:
-            task_text = btn_text(task_btn)
-            if re.search(r'100\s*000|100k|100000', task_text, re.IGNORECASE):
-                skip_btn = find_button(msg, ["скрыть", "пропустить", "▶️", "следующий"])
-                if skip_btn:
-                    await click_btn(client, bot_username, skip_btn, timeout=5)
-                    await asyncio.sleep(1)
-                continue
+        kws = subtype_keywords.get(category, ["обычные боты"])
+
+        # PR GRAMM может показать подменю выбора подтипа
+        if msg.buttons:
+            subtype_btn = find_button(msg, kws)
+            if subtype_btn:
+                logging.info(f"🤖 Выбираем подтип ботов: {btn_text(subtype_btn)}")
+                result = await click_btn(client, bot_username, subtype_btn, timeout=15)
+                if result:
+                    msg = result
+
+        # Шаг 2: ищем кнопки заданий «Перейти в бота | +N GRAM»
+        # Формат кнопки: «Перейти в бота ∣+N GRAM» — URL-кнопка (ведёт на бота)
+        MAX_BOT_TASKS = 10
+        processed = 0
+
+        for _ in range(MAX_BOT_TASKS):
+            if not msg or not msg.buttons:
+                break
+
+            # Ищем первую кнопку-задание (URL-кнопка с t.me/... или просто кнопка «Перейти в бота»)
+            task_btn = None
+            for row in msg.buttons:
+                for b in row:
+                    t = btn_text(b).lower()
+                    u = btn_url(b) or ""
+                    if "перейти в бота" in t or (is_tg_url(u) and "gram" not in t.lower()):
+                        task_btn = b
+                        break
+                if task_btn:
+                    break
+
+            if not task_btn:
+                logging.info(f"🤖 Кнопок заданий с ботами не найдено, завершаем")
+                break
+
+            logging.info(f"🤖 Нажимаем задание с ботом: {btn_text(task_btn)}")
             result = await click_btn(client, bot_username, task_btn, timeout=15)
             if not result:
-                continue
-            if is_captcha_message(result):
-                continue
+                break
+
+            # Ожидаем запрос скриншота от PR GRAMM
+            # (сообщение содержит "скриншот" или "отправьте")
+            await asyncio.sleep(random.uniform(1.5, 3.0))
+
+            # Шаг 3: генерируем НОВЫЙ скриншот каждый раз
             photo_bytes = generate_bot_image()
-            photo_result = await send_photo(client, bot_username, photo_bytes, timeout=15)
+            photo_result = await send_photo(client, bot_username, photo_bytes, timeout=20)
+
             if not photo_result:
-                continue
-            if is_captcha_message(photo_result):
-                continue
-            await asyncio.sleep(1)
-            next_btn = find_button(photo_result, ["следующий бот"])
+                logging.warning(f"🤖 Фото не отправлено, переходим к следующему")
+                break
+
+            # Капча в типе «боты» — полный игнор: не останавливаемся
+            # (по ТЗ: «В типе заданий с ботами нету капчи! Игнорировать слова "капча" и т.д.»)
+
+            processed += 1
+            await asyncio.sleep(random.uniform(1.0, 2.5))
+
+            # Ищем кнопку «Следующий бот»
+            next_btn = find_button(photo_result, ["следующий бот", "следующий"])
+            if not next_btn:
+                # Может быть в более свежем сообщении
+                last = await get_last_msg(client, bot_username)
+                if last:
+                    next_btn = find_button(last, ["следующий бот", "следующий"])
+                    msg = last
+
             if next_btn:
-                await click_btn(client, bot_username, next_btn, timeout=15)
-            delay = random.randint(2, 4)
-            await asyncio.sleep(delay)
+                logging.info(f"🤖 Нажимаем 'Следующий бот' (выполнено: {processed})")
+                msg = await click_btn(client, bot_username, next_btn, timeout=15) or msg
+                await asyncio.sleep(random.uniform(2.0, 4.0))
+            else:
+                logging.info(f"🤖 Кнопки 'Следующий бот' нет, завершаем")
+                break
+
+        logging.info(f"🤖 Цикл ботов завершён. Обработано заданий: {processed}")
         return await get_last_msg(client, bot_username)
+
     except Exception as e:
-        logging.error(f"❌ Ошибка обработки заданий с ботами: {e}")
+        logging.error(f"❌ Ошибка process_bot_tasks: {e}")
         return msg
 
 
@@ -807,13 +870,16 @@ def get_task_pairs(msg) -> List[Tuple[Any, Any]]:
 
 
 def is_earn_type_menu(msg) -> bool:
+    """Определяет, что перед нами меню выбора категории заданий PR GRAMM.
+    Кнопки в нём: «Каналы •N», «Группы •N», «Боты •N» и т.д."""
     if not msg or not msg.buttons:
         return False
-    kws = [
-        "подписаться на канал", "вступить в группу",
-        "просмотр постов", "перейти в бота",
-        "поставить реакци", "премиум буст"
-    ]
+    # Проверяем текст сообщения
+    txt = (msg.raw_text or "").lower()
+    if "выберите категорию заданий" in txt or "выбери категорию" in txt:
+        return True
+    # Либо проверяем по кнопкам (хотя бы одна содержит известный маркер)
+    kws = ["каналы", "группы", "боты", "просмотры", "реакции", "boost", "правила"]
     for row in msg.buttons:
         for b in row:
             t = btn_text(b).lower()
@@ -1311,62 +1377,63 @@ async def do_cycle(
         logging.info(f"💎 Тип заданий 'боты' требует премиум — сессия {phone} остановлена")
         return
     logging.info(f"📋 Тип задания: {task_type} (сессия {phone})")
+
     cur = await get_last_msg(client, bot_username)
     if cur and is_captcha_message(cur):
         await _handle_captcha(cur, task_type, user_id, phone, client, user_id, bot_username)
         return
-    earn_msg = await send_text(client, bot_username, "👨‍💻 Заработать", timeout=15)
+
+    # Шаг 1: отправляем «Заработать» текстом
+    earn_msg = await send_text(client, bot_username, "Заработать", timeout=15)
     if not earn_msg:
+        logging.warning(f"⚠️ do_cycle {phone}: не получили ответ на 'Заработать'")
         return
     if is_captcha_message(earn_msg):
         await _handle_captcha(earn_msg, task_type, user_id, phone, client, user_id, bot_username)
         return
+
+    # Шаг 2: ждём меню категорий если не пришло сразу
     if not is_earn_type_menu(earn_msg):
         await asyncio.sleep(2)
         earn_msg = await get_last_msg(client, bot_username)
     if not earn_msg or not is_earn_type_menu(earn_msg):
+        logging.warning(f"⚠️ do_cycle {phone}: меню категорий не появилось")
         return
-    if task_type == "channels":
-        kw = "подписаться на канал"
-    elif task_type == "groups":
-        kw = "вступить в группу"
-    elif task_type == "bots":
-        kw = "перейти в бота"
-    else:
-        kw = "просмотр постов"
-    target_btn = find_button(earn_msg, [kw])
+
+    # Шаг 3: выбираем кнопку нужной категории
+    # PR GRAMM: «Каналы •15», «Группы •7», «Боты •N» — ищем по началу текста кнопки
+    cat_keywords = {
+        "channels": ["каналы"],
+        "groups":   ["группы"],
+        "bots":     ["боты"],
+    }
+    kws = cat_keywords.get(task_type, ["каналы"])
+    target_btn = find_button(earn_msg, kws)
     if not target_btn:
+        logging.warning(f"⚠️ do_cycle {phone}: кнопка категории '{kws}' не найдена")
         return
+
     task_msg = await click_btn(client, bot_username, target_btn, timeout=15)
     if not task_msg:
         return
     if is_captcha_message(task_msg):
         await _handle_captcha(task_msg, task_type, user_id, phone, client, user_id, bot_username)
         return
-    if task_type == "channels" or task_type == "groups":
+
+    # Шаг 4: обработка заданий по категории
+    if task_type in ("channels", "groups"):
         pairs = get_task_pairs(task_msg)
         if not pairs:
+            logging.warning(f"⚠️ do_cycle {phone}: пар заданий не найдено")
             return
         result = await process_tasks(client, bot_username, task_msg, task_type)
         if result and is_captcha_message(result):
             await _handle_captcha(result, task_type, user_id, phone, client, user_id, bot_username)
     elif task_type == "bots":
         result = await process_bot_tasks(client, bot_username, task_msg, user_id, phone)
+        # Капча в типе "боты" игнорируется — по ТЗ
         if result and is_captcha_message(result):
             logging.info(f"🤖 Капча проигнорирована (тип заданий: боты, сессия {phone})")
-            return
-    else:
-        wait_time = random.randint(8, 15)
-        await asyncio.sleep(wait_time)
-        if task_msg.buttons:
-            for row in task_msg.buttons:
-                for b in row:
-                    t = btn_text(b).lower()
-                    if any(k in t for k in ["просмотрел", "готово", "получить"]):
-                        r = await click_btn(client, bot_username, b, timeout=10)
-                        if r and is_captcha_message(r):
-                            await send_captcha_to_user(r, user_chat_id, client)
-                        return
 
 
 # ============================================================
@@ -1412,7 +1479,7 @@ async def _wal(client: TelegramClient):
 
 
 SENT_CODE_TYPE_LABELS = {
-    "SentCodeTypeApp": "📲 Код придёт в САМО приложение Telegram (проверь другие свои устройства, где уже выполнен вход — не SMS!)",
+    "SentCodeTypeApp": "📲 Код придёт в системный чат Telegram",
     "SentCodeTypeSms": "💬 Код придёт по SMS",
     "SentCodeTypeCall": "📞 Будет звонок, код продиктуют голосом",
     "SentCodeTypeFlashCall": "📞 Будет 'flash call' — код нужно посмотреть в номере входящего звонка",
@@ -1774,4 +1841,4 @@ __all__ = [
     'get_bot_category_keyboard', 'get_bot_settings_keyboard',
     'active_clients', 'active_tasks',
     'set_session_config', 'get_session_config'
-    ]
+]
