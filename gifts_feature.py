@@ -250,25 +250,21 @@ async def _render_gift_category(target, user_id: int, phone: str, category: str,
         ])
     else:
         buttons = []
-        for g in gifts[:30]:
+        REGULAR_STYLES = [ButtonStyle.PRIMARY, ButtonStyle.DANGER, ButtonStyle.SUCCESS]
+        LIMITED_STYLES = [ButtonStyle.SUCCESS, ButtonStyle.PRIMARY, ButtonStyle.DANGER]
+        for idx, g in enumerate(gifts[:30]):
             gtitle = _gift_title(g)
-            # Для лимитированных подарков цена всегда 50⭐
             if category == "limited":
                 price_label = "50 ⭐"
+                style = LIMITED_STYLES[idx % len(LIMITED_STYLES)]
             else:
                 price_label = _gift_price_label(g)
-            # Лимитированным кнопкам задаём цветной стиль
-            if category == "limited":
-                btn = InlineKeyboardButton(
-                    text=f"{gtitle} — {price_label}",
-                    callback_data=f"gift_pick_{phone}_{g.id}",
-                    style=ButtonStyle.SUCCESS
-                )
-            else:
-                btn = InlineKeyboardButton(
-                    text=f"{gtitle} — {price_label}",
-                    callback_data=f"gift_pick_{phone}_{g.id}"
-                )
+                style = REGULAR_STYLES[idx % len(REGULAR_STYLES)]
+            btn = InlineKeyboardButton(
+                text=f"{gtitle} — {price_label}",
+                callback_data=f"gift_pick_{phone}_{g.id}",
+                style=style
+            )
             buttons.append([btn])
         buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=f"gift_acc_{phone}")])
         # Для лимитированных — показываем номер телефона в формате "Выбранная сессия"
@@ -621,4 +617,4 @@ __all__ = [
     'router',
     'init_gifts_feature',
     'setup',
-]
+    ]
