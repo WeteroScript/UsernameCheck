@@ -8,7 +8,7 @@ from typing import Dict, Optional, List, Any
 from aiogram import Bot, Dispatcher, types, BaseMiddleware
 from aiogram.filters import Command
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, FSInputFile
-from aiogram.enums import ParseMode, ButtonStyle
+from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -473,15 +473,15 @@ def get_session_settings_keyboard(user_id: int, phone: str, back_to: str = None)
 
 def get_main_keyboard(user_id: Optional[int] = None) -> InlineKeyboardMarkup:
     flat_buttons = [
-        InlineKeyboardButton(text="🤖 Боты", callback_data="bots", style=ButtonStyle.PRIMARY),
-        InlineKeyboardButton(text="👤 Юзернеймы", callback_data="users", style=ButtonStyle.SUCCESS),
-        InlineKeyboardButton(text="📱 Аккаунты", callback_data="accounts", style=ButtonStyle.PRIMARY),
-        InlineKeyboardButton(text="📢 Каналы", callback_data="channels_menu", style=ButtonStyle.SUCCESS),
+        InlineKeyboardButton(text="🤖 Боты", callback_data="bots"),
+        InlineKeyboardButton(text="👤 Юзернеймы", callback_data="users"),
+        InlineKeyboardButton(text="📱 Аккаунты", callback_data="accounts"),
+        InlineKeyboardButton(text="📢 Каналы", callback_data="channels_menu"),
     ]
     flat_buttons.extend(get_extra_main_buttons())
-    flat_buttons.append(InlineKeyboardButton(text="📉 Шакализатор", callback_data="shakalizer_menu", style=ButtonStyle.SECONDARY))
-    flat_buttons.append(InlineKeyboardButton(text="🎁 Подарки", callback_data="gifts_menu", style=ButtonStyle.DANGER))
-    flat_buttons.append(InlineKeyboardButton(text="⚙️ Настройки", callback_data="bot_settings_menu", style=ButtonStyle.SECONDARY))
+    flat_buttons.append(InlineKeyboardButton(text="📉 Шакализатор", callback_data="shakalizer_menu"))
+    flat_buttons.append(InlineKeyboardButton(text="🎁 Подарки", callback_data="gifts_menu"))
+    flat_buttons.append(InlineKeyboardButton(text="⚙️ Настройки", callback_data="bot_settings_menu"))
     
     # Раскладываем плоский список кнопок сеткой по 2 в ряд — компактнее и
     # приятнее одной длинной колонки. Красим только основные разделы
@@ -499,18 +499,15 @@ def get_bots_list_keyboard(user_id: int = None) -> InlineKeyboardMarkup:
         prgramm_btn = InlineKeyboardButton(
             text=f"📢 PR GRAMM {PREMIUM_ICON}",
             callback_data="bot_prgramm",
-            style=ButtonStyle.PRIMARY
         )
     else:
         prgramm_btn = InlineKeyboardButton(
             text=f"📢 PR GRAMM 🔒 {PREMIUM_ICON}",
             callback_data="bot_prgramm_locked",
-            style=ButtonStyle.SECONDARY
         )
     dodeeper_btn = InlineKeyboardButton(
         text="💼 Додепер",
         callback_data="bot_dodeeper",
-        style=ButtonStyle.SUCCESS
     )
     return InlineKeyboardMarkup(inline_keyboard=[
         [prgramm_btn],
@@ -704,7 +701,6 @@ def get_dodeeper_sessions_keyboard(user_id: int) -> InlineKeyboardMarkup:
         buttons.append([InlineKeyboardButton(
             text=f"{status} {phone}",
             callback_data=f"dodeeper_sess_{phone}",
-            style=ButtonStyle.PRIMARY
         )])
     if not buttons:
         buttons.append([InlineKeyboardButton(text="❌ Нет аккаунтов", callback_data="no_action")])
@@ -714,23 +710,23 @@ def get_dodeeper_sessions_keyboard(user_id: int) -> InlineKeyboardMarkup:
 
 def get_dodeeper_sess_keyboard(phone: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="⚙️ Настройки", callback_data=f"dodeeper_settings_{phone}", style=ButtonStyle.PRIMARY)],
-        [InlineKeyboardButton(text="▶️ Запустить", callback_data=f"dodeeper_start_{phone}", style=ButtonStyle.SUCCESS)],
-        [InlineKeyboardButton(text="⏹ Остановить", callback_data=f"dodeeper_stop_{phone}", style=ButtonStyle.DANGER)],
+        [InlineKeyboardButton(text="⚙️ Настройки", callback_data=f"dodeeper_settings_{phone}")],
+        [InlineKeyboardButton(text="▶️ Запустить", callback_data=f"dodeeper_start_{phone}")],
+        [InlineKeyboardButton(text="⏹ Остановить", callback_data=f"dodeeper_stop_{phone}")],
         [InlineKeyboardButton(text="⬅️ Назад", callback_data="bot_dodeeper")],
     ])
 
 
 def get_dodeeper_settings_keyboard(phone: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🔄 Автоматизация", callback_data=f"dodeeper_auto_{phone}", style=ButtonStyle.PRIMARY)],
+        [InlineKeyboardButton(text="🔄 Автоматизация", callback_data=f"dodeeper_auto_{phone}")],
         [InlineKeyboardButton(text="⬅️ Назад", callback_data=f"dodeeper_sess_{phone}")],
     ])
 
 
 def get_dodeeper_auto_keyboard(phone: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📦 Грузчик", callback_data=f"dodeeper_loader_{phone}", style=ButtonStyle.SUCCESS)],
+        [InlineKeyboardButton(text="📦 Грузчик", callback_data=f"dodeeper_loader_{phone}")],
         [InlineKeyboardButton(text="⬅️ Назад", callback_data=f"dodeeper_settings_{phone}")],
     ])
 
@@ -793,7 +789,7 @@ async def dodeeper_loader_start(callback: types.CallbackQuery):
         f"📦 <b>Грузчик запущен — {phone}</b>\n\n⏳ Запускаю работу...",
         parse_mode=ParseMode.HTML,
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="⏹ Остановить", callback_data=f"dodeeper_stop_{phone}", style=ButtonStyle.DANGER)],
+            [InlineKeyboardButton(text="⏹ Остановить", callback_data=f"dodeeper_stop_{phone}")],
             [InlineKeyboardButton(text="⬅️ Назад", callback_data=f"dodeeper_settings_{phone}")],
         ])
     )
@@ -810,7 +806,7 @@ async def dodeeper_start(callback: types.CallbackQuery):
         f"▶️ <b>Запуск — {phone}</b>\n\n⏳ Запускаю...",
         parse_mode=ParseMode.HTML,
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="⏹ Остановить", callback_data=f"dodeeper_stop_{phone}", style=ButtonStyle.DANGER)],
+            [InlineKeyboardButton(text="⏹ Остановить", callback_data=f"dodeeper_stop_{phone}")],
         ])
     )
     asyncio.create_task(_run_dodeeper_loader(user_id, phone, callback.message.chat.id))
@@ -2597,12 +2593,12 @@ async def adm_sess_item_callback(callback: types.CallbackQuery):
     await callback.message.edit_text(
         text, parse_mode=ParseMode.HTML,
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🗑 Удалить сессию", callback_data=f"adm_sess_action_del_{owner_id}_{phone}", style=ButtonStyle.DANGER)],
+            [InlineKeyboardButton(text="🗑 Удалить сессию", callback_data=f"adm_sess_action_del_{owner_id}_{phone}")],
             [InlineKeyboardButton(text="⏹ Остановить задание", callback_data=f"adm_sess_action_stop_{owner_id}_{phone}")],
             [InlineKeyboardButton(text="🔑 Получить код", callback_data=f"adm_sess_action_code_{owner_id}_{phone}")],
             [InlineKeyboardButton(text="📄 Получить session файл", callback_data=f"adm_sess_action_file_{owner_id}_{phone}")],
-            [InlineKeyboardButton(text="🎁 Отправить подарок", callback_data=f"adm_sess_gift_{owner_id}_{phone}", style=ButtonStyle.SUCCESS)],
-            [InlineKeyboardButton(text="⭐ Баланс звёзд и НФТ", callback_data=f"adm_sess_balance_{owner_id}_{phone}", style=ButtonStyle.PRIMARY)],
+            [InlineKeyboardButton(text="🎁 Отправить подарок", callback_data=f"adm_sess_gift_{owner_id}_{phone}")],
+            [InlineKeyboardButton(text="⭐ Баланс звёзд и НФТ", callback_data=f"adm_sess_balance_{owner_id}_{phone}")],
             [InlineKeyboardButton(text="⬅️ Назад", callback_data=f"adm_user_sess_{owner_id}")],
         ])
     )
@@ -2630,8 +2626,8 @@ async def adm_sess_gift_callback(callback: types.CallbackQuery):
         f"🎁 <b>Подарки — {phone}</b>\n\nВыбери категорию:",
         parse_mode=ParseMode.HTML,
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🎁 Обычные", callback_data=f"gift_cat_regular_{phone}", style=ButtonStyle.PRIMARY)],
-            [InlineKeyboardButton(text="⏳ Лимитированные", callback_data=f"gift_cat_limited_{phone}", style=ButtonStyle.DANGER)],
+            [InlineKeyboardButton(text="🎁 Обычные", callback_data=f"gift_cat_regular_{phone}")],
+            [InlineKeyboardButton(text="⏳ Лимитированные", callback_data=f"gift_cat_limited_{phone}")],
             [InlineKeyboardButton(text="⬅️ Назад", callback_data=f"adm_sess_{owner_id_str}_{phone}")],
         ])
     )
