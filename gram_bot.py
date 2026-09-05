@@ -129,7 +129,7 @@ def get_task_choice_keyboard(user_id: int, phone: str = None) -> InlineKeyboardM
 
     if phone:
         callback_prefix = f"task_choose_sess_"
-        back_callback = f"sess_item_{phone}"
+        back_callback = f"bots_settings_{phone}"
         current_task_type = get_session_config(user_id, phone).get("task_type", "channels")
     else:
         callback_prefix = "task_choose_"
@@ -1135,7 +1135,7 @@ async def task_choose_callback(callback: types.CallbackQuery):
                         f"Для сессии {phone}",
                         parse_mode=ParseMode.HTML,
                         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                            [InlineKeyboardButton(text="⬅️ Назад", callback_data=f"sess_item_{phone}")],
+                            [InlineKeyboardButton(text="⬅️ Назад", callback_data=f"sess_task_{phone}")],
                             [InlineKeyboardButton(text="📋 Изменить", callback_data=f"sess_task_{phone}")]
                         ])
                     )
@@ -1841,4 +1841,4 @@ __all__ = [
     'get_bot_category_keyboard', 'get_bot_settings_keyboard',
     'active_clients', 'active_tasks',
     'set_session_config', 'get_session_config'
-]
+            ]
