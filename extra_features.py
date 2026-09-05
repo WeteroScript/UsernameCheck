@@ -226,7 +226,6 @@ async def _resolve_and_reply_id(message: types.Message, state: FSMContext, label
 
     await state.clear()
 
-    # Пересланное сообщение — берём ID напрямую, без обращения к API.
     if message.forward_from:
         await message.answer(
             f"🆔 <b>{label}</b>\n\nID: <code>{message.forward_from.id}</code>",
@@ -251,6 +250,7 @@ async def _resolve_and_reply_id(message: types.Message, state: FSMContext, label
     if "t.me/" in username:
         username = username.split("t.me/")[-1].split("/")[0].split("?")[0]
 
+    # Попытка 1: Bot API (работает для каналов, групп, ботов и пользователей которых бот знает)
     try:
         chat = await message.bot.get_chat(f"@{username}")
         title = getattr(chat, "title", None) or getattr(chat, "full_name", None) or chat.username or "—"
@@ -260,16 +260,37 @@ async def _resolve_and_reply_id(message: types.Message, state: FSMContext, label
             f"ID: <code>{chat.id}</code>",
             parse_mode=ParseMode.HTML, reply_markup=get_getid_keyboard()
         )
+        return
+    except Exception:
+        pass
+
+    # Попытка 2: Telethon — работает для ЛЮБЫХ пользователей даже незнакомых боту
+    try:
+        from Bot import active_clients
+        client = next(iter(active_clients.values()), None) if active_clients else None
+        if client:
+            entity = await client.get_entity(f"@{username}")
+            if hasattr(entity, "id"):
+                name = (
+                    getattr(entity, "title", None)
+                    or f"{getattr(entity, 'first_name', '') or ''} {getattr(entity, 'last_name', '') or ''}".strip()
+                    or username
+                )
+                await message.answer(
+                    f"🆔 <b>{label}</b>\n\n"
+                    f"Название: {name}\n"
+                    f"ID: <code>{entity.id}</code>",
+                    parse_mode=ParseMode.HTML, reply_markup=get_getid_keyboard()
+                )
+                return
     except Exception as e:
-        # Полную ошибку — в лог (для диагностики), пользователю — короткое
-        # понятное сообщение. Раньше здесь str(e) мог оказаться "сырым"
-        # дампом всех полей чата (например, при ошибке валидации в старой
-        # версии aiogram) — это не пользовательская информация.
-        logging.error(f"❌ _resolve_and_reply_id(@{username}): {type(e).__name__}: {e}")
-        await message.answer(
-            f"❌ Не удалось найти «{text}». Убедись, что это публичный канал/группа/бот/пользователь.",
-            reply_markup=get_getid_keyboard()
-        )
+        logging.error(f"❌ _resolve_and_reply_id Telethon(@{username}): {type(e).__name__}: {e}")
+
+    logging.error(f"❌ _resolve_and_reply_id(@{username}): не найдено ни Bot API, ни Telethon")
+    await message.answer(
+        f"❌ Не удалось найти «{text}». Убедись, что юзернейм правильный и аккаунт публичный.",
+        reply_markup=get_getid_keyboard()
+    )
 
 
 @router.message(ExtraStates.waiting_id_channel)
@@ -378,4 +399,4 @@ __all__ = [
     'init_extra_features',
     'set_bot',
     'get_extra_main_buttons',
-    ]
+        ]
