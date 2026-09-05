@@ -341,6 +341,7 @@ class SessionStates(StatesGroup):
     waiting_code = State()
     waiting_2fa_password = State()
     waiting_interval = State()
+    waiting_session_file = State()
 
 
 def get_bot_session_item_keyboard(user_id: int, phone: str) -> InlineKeyboardMarkup:
@@ -393,8 +394,11 @@ async def sess_interval_prompt(callback: types.CallbackQuery, state: FSMContext)
         "⏱ <b>Настройка времени</b>\n\n"
         "Введи интервал между заданиями в секундах (например, 300 — это 5 минут).\n\n"
         "Отправь <code>0</code>, чтобы вернуть автоматический интервал по умолчанию.\n\n"
-        "/cancel — отменить",
-        parse_mode=ParseMode.HTML
+        "Нажми <b>Назад</b> для отмены.",
+        parse_mode=ParseMode.HTML,
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data="main")]
+        ])
     )
 
 
@@ -470,14 +474,14 @@ def get_session_settings_keyboard(user_id: int, phone: str, back_to: str = None)
 def get_main_keyboard(user_id: Optional[int] = None) -> InlineKeyboardMarkup:
     flat_buttons = [
         InlineKeyboardButton(text="🤖 Боты", callback_data="bots", style=ButtonStyle.PRIMARY),
-        InlineKeyboardButton(text="👤 Юзернеймы", callback_data="users", style=ButtonStyle.PRIMARY),
+        InlineKeyboardButton(text="👤 Юзернеймы", callback_data="users", style=ButtonStyle.SUCCESS),
         InlineKeyboardButton(text="📱 Аккаунты", callback_data="accounts", style=ButtonStyle.PRIMARY),
-        InlineKeyboardButton(text="📢 Каналы", callback_data="channels_menu", style=ButtonStyle.PRIMARY),
+        InlineKeyboardButton(text="📢 Каналы", callback_data="channels_menu", style=ButtonStyle.SUCCESS),
     ]
     flat_buttons.extend(get_extra_main_buttons())
-    flat_buttons.append(InlineKeyboardButton(text="📉 Шакализатор", callback_data="shakalizer_menu"))
+    flat_buttons.append(InlineKeyboardButton(text="📉 Шакализатор", callback_data="shakalizer_menu", style=ButtonStyle.SECONDARY))
     flat_buttons.append(InlineKeyboardButton(text="🎁 Подарки", callback_data="gifts_menu", style=ButtonStyle.DANGER))
-    flat_buttons.append(InlineKeyboardButton(text="⚙️ Настройки", callback_data="bot_settings_menu"))
+    flat_buttons.append(InlineKeyboardButton(text="⚙️ Настройки", callback_data="bot_settings_menu", style=ButtonStyle.SECONDARY))
     
     # Раскладываем плоский список кнопок сеткой по 2 в ряд — компактнее и
     # приятнее одной длинной колонки. Красим только основные разделы
@@ -492,14 +496,25 @@ def get_main_keyboard(user_id: Optional[int] = None) -> InlineKeyboardMarkup:
 def get_bots_list_keyboard(user_id: int = None) -> InlineKeyboardMarkup:
     premium = is_premium(user_id) if user_id else False
     if premium:
-        prgramm_btn = InlineKeyboardButton(text=f"📢 PR GRAMM {PREMIUM_ICON}", callback_data="bot_prgramm")
+        prgramm_btn = InlineKeyboardButton(
+            text=f"📢 PR GRAMM {PREMIUM_ICON}",
+            callback_data="bot_prgramm",
+            style=ButtonStyle.PRIMARY
+        )
     else:
         prgramm_btn = InlineKeyboardButton(
             text=f"📢 PR GRAMM 🔒 {PREMIUM_ICON}",
-            callback_data="bot_prgramm_locked"
+            callback_data="bot_prgramm_locked",
+            style=ButtonStyle.SECONDARY
         )
+    dodeeper_btn = InlineKeyboardButton(
+        text="💼 Додепер",
+        callback_data="bot_dodeeper",
+        style=ButtonStyle.SUCCESS
+    )
     return InlineKeyboardMarkup(inline_keyboard=[
         [prgramm_btn],
+        [dodeeper_btn],
         [InlineKeyboardButton(text="⬅️ Назад", callback_data="main")],
     ])
 
@@ -668,6 +683,239 @@ async def bot_prgramm_locked(callback: types.CallbackQuery):
         f"PR GRAMM — премиум-функция {PREMIUM_ICON}\nОбратитесь к администратору @BotFarmSupport",
         show_alert=True
     )
+
+
+DODEEPER_BOT = "@Dodeperplaybot"
+
+# Множество активных сессий Додепер
+dodeeper_active: set = set()
+
+DODEEPER_TASK_TYPES = {
+    "loader": "📦 Грузчик",
+}
+
+
+def get_dodeeper_sessions_keyboard(user_id: int) -> InlineKeyboardMarkup:
+    phones = user_sessions.get(user_id, [])
+    buttons = []
+    for phone in phones:
+        config = get_session_config(user_id, phone)
+        status = "🟢" if config.get("enabled", False) else "🔴"
+        buttons.append([InlineKeyboardButton(
+            text=f"{status} {phone}",
+            callback_data=f"dodeeper_sess_{phone}",
+            style=ButtonStyle.PRIMARY
+        )])
+    if not buttons:
+        buttons.append([InlineKeyboardButton(text="❌ Нет аккаунтов", callback_data="no_action")])
+    buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="bots")])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+def get_dodeeper_sess_keyboard(phone: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⚙️ Настройки", callback_data=f"dodeeper_settings_{phone}", style=ButtonStyle.PRIMARY)],
+        [InlineKeyboardButton(text="▶️ Запустить", callback_data=f"dodeeper_start_{phone}", style=ButtonStyle.SUCCESS)],
+        [InlineKeyboardButton(text="⏹ Остановить", callback_data=f"dodeeper_stop_{phone}", style=ButtonStyle.DANGER)],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="bot_dodeeper")],
+    ])
+
+
+def get_dodeeper_settings_keyboard(phone: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔄 Автоматизация", callback_data=f"dodeeper_auto_{phone}", style=ButtonStyle.PRIMARY)],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data=f"dodeeper_sess_{phone}")],
+    ])
+
+
+def get_dodeeper_auto_keyboard(phone: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📦 Грузчик", callback_data=f"dodeeper_loader_{phone}", style=ButtonStyle.SUCCESS)],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data=f"dodeeper_settings_{phone}")],
+    ])
+
+
+@dp.callback_query(lambda c: c.data == "bot_dodeeper")
+async def bot_dodeeper_menu(callback: types.CallbackQuery):
+    await callback.answer()
+    user_id = callback.from_user.id
+    await safe_edit_message(
+        callback.message,
+        "💼 <b>Додепер</b>\n\nВыбери сессию для работы:",
+        parse_mode=ParseMode.HTML,
+        reply_markup=get_dodeeper_sessions_keyboard(user_id)
+    )
+
+
+@dp.callback_query(lambda c: c.data and c.data.startswith("dodeeper_sess_") and not c.data.startswith("dodeeper_settings_") and not c.data.startswith("dodeeper_start_") and not c.data.startswith("dodeeper_stop_") and not c.data.startswith("dodeeper_auto_") and not c.data.startswith("dodeeper_loader_"))
+async def dodeeper_sess_item(callback: types.CallbackQuery):
+    await callback.answer()
+    phone = callback.data.replace("dodeeper_sess_", "")
+    await safe_edit_message(
+        callback.message,
+        f"💼 <b>Додепер — {phone}</b>\n\nВыбери действие:",
+        parse_mode=ParseMode.HTML,
+        reply_markup=get_dodeeper_sess_keyboard(phone)
+    )
+
+
+@dp.callback_query(lambda c: c.data and c.data.startswith("dodeeper_settings_"))
+async def dodeeper_settings(callback: types.CallbackQuery):
+    await callback.answer()
+    phone = callback.data.replace("dodeeper_settings_", "")
+    await safe_edit_message(
+        callback.message,
+        f"⚙️ <b>Настройки Додепер — {phone}</b>\n\nВыбери раздел:",
+        parse_mode=ParseMode.HTML,
+        reply_markup=get_dodeeper_settings_keyboard(phone)
+    )
+
+
+@dp.callback_query(lambda c: c.data and c.data.startswith("dodeeper_auto_"))
+async def dodeeper_auto(callback: types.CallbackQuery):
+    await callback.answer()
+    phone = callback.data.replace("dodeeper_auto_", "")
+    await safe_edit_message(
+        callback.message,
+        f"🔄 <b>Автоматизация — {phone}</b>\n\nВыбери тип задания:",
+        parse_mode=ParseMode.HTML,
+        reply_markup=get_dodeeper_auto_keyboard(phone)
+    )
+
+
+@dp.callback_query(lambda c: c.data and c.data.startswith("dodeeper_loader_"))
+async def dodeeper_loader_start(callback: types.CallbackQuery):
+    await callback.answer()
+    phone = callback.data.replace("dodeeper_loader_", "")
+    user_id = callback.from_user.id
+    await safe_edit_message(
+        callback.message,
+        f"📦 <b>Грузчик запущен — {phone}</b>\n\n⏳ Запускаю работу...",
+        parse_mode=ParseMode.HTML,
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="⏹ Остановить", callback_data=f"dodeeper_stop_{phone}", style=ButtonStyle.DANGER)],
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data=f"dodeeper_settings_{phone}")],
+        ])
+    )
+    asyncio.create_task(_run_dodeeper_loader(user_id, phone, callback.message.chat.id))
+
+
+@dp.callback_query(lambda c: c.data and c.data.startswith("dodeeper_start_"))
+async def dodeeper_start(callback: types.CallbackQuery):
+    await callback.answer()
+    phone = callback.data.replace("dodeeper_start_", "")
+    user_id = callback.from_user.id
+    await safe_edit_message(
+        callback.message,
+        f"▶️ <b>Запуск — {phone}</b>\n\n⏳ Запускаю...",
+        parse_mode=ParseMode.HTML,
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="⏹ Остановить", callback_data=f"dodeeper_stop_{phone}", style=ButtonStyle.DANGER)],
+        ])
+    )
+    asyncio.create_task(_run_dodeeper_loader(user_id, phone, callback.message.chat.id))
+
+
+@dp.callback_query(lambda c: c.data and c.data.startswith("dodeeper_stop_"))
+async def dodeeper_stop(callback: types.CallbackQuery):
+    phone = callback.data.replace("dodeeper_stop_", "")
+    dodeeper_active.discard(phone)
+    await callback.answer("⏹ Остановлено")
+    await safe_edit_message(
+        callback.message,
+        f"⏹ <b>Додепер остановлен — {phone}</b>",
+        parse_mode=ParseMode.HTML,
+        reply_markup=get_dodeeper_sess_keyboard(phone)
+    )
+
+
+
+
+async def _run_dodeeper_loader(user_id: int, phone: str, notify_chat_id: int):
+    """Механика грузчика для бота @Dodeperplaybot."""
+    from Bot import active_clients, _get_connected_client
+    client = await _get_connected_client(phone)
+    if not client:
+        await bot.send_message(notify_chat_id, f"❌ Сессия {phone} не подключена")
+        return
+
+    dodeeper_active.add(phone)
+    try:
+        # Шаг 1: /start
+        await client.send_message(DODEEPER_BOT, "/start")
+        await asyncio.sleep(3)
+
+        # Шаг 2: Отправляем "💼 работа"
+        await client.send_message(DODEEPER_BOT, "💼 работа")
+        await asyncio.sleep(3)
+
+        # Шаг 3: Отправляем "📦 работа грузчика"
+        await client.send_message(DODEEPER_BOT, "📦 работа грузчика")
+        await asyncio.sleep(3)
+
+        # Шаг 4: Нажимаем "🚀 начать работу грузчиком"
+        last = await _dodeeper_get_last(client)
+        start_btn = _dodeeper_find_btn(last, ["начать работу грузчиком", "начать работу"])
+        if start_btn:
+            await start_btn.click()
+            await asyncio.sleep(4)
+
+        # Основной цикл
+        while phone in dodeeper_active:
+            last = await _dodeeper_get_last(client)
+            if not last:
+                await asyncio.sleep(5)
+                continue
+
+            txt = (last.raw_text or "").lower()
+
+            # Если пришёл груз — принимаем
+            if "найден груз" in txt or "📦" in txt:
+                accept_btn = _dodeeper_find_btn(last, ["✅ принять", "принять"])
+                if accept_btn:
+                    await accept_btn.click()
+                    logging.info(f"📦 Додепер {phone}: груз принят")
+                    await asyncio.sleep(5)
+                else:
+                    # Ждём следующего сообщения
+                    await asyncio.sleep(3)
+            elif "ищу новый груз" in txt or "ищем новый груз" in txt or "🔎" in txt or "🔄" in txt:
+                # Бот ищет — ждём
+                await asyncio.sleep(5)
+            elif "перенос груза" in txt or "переносим груз" in txt:
+                # Идёт перенос — ждём
+                await asyncio.sleep(10)
+            else:
+                await asyncio.sleep(5)
+
+    except asyncio.CancelledError:
+        pass
+    except Exception as e:
+        logging.error(f"❌ _run_dodeeper_loader({phone}): {e}")
+        await bot.send_message(notify_chat_id, f"❌ Ошибка Додепер ({phone}): {e}")
+    finally:
+        dodeeper_active.discard(phone)
+
+
+async def _dodeeper_get_last(client):
+    """Получает последнее сообщение от бота Додепер."""
+    try:
+        msgs = await client.get_messages(DODEEPER_BOT, limit=1)
+        return msgs[0] if msgs else None
+    except Exception:
+        return None
+
+
+def _dodeeper_find_btn(msg, keywords: list):
+    """Ищет кнопку по ключевым словам."""
+    if not msg or not msg.buttons:
+        return None
+    for row in msg.buttons:
+        for b in row:
+            t = (b.text or "").lower()
+            if any(k in t for k in keywords):
+                return b
+    return None
 
 
 @dp.callback_query(lambda c: c.data == "bot_prgramm")
@@ -846,7 +1094,7 @@ async def sess_bot_callback(callback: types.CallbackQuery):
                 text=f"{check}{name}",
                 callback_data=f"sess_bot_choice_{code}_{phone}"
             )])
-        buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=f"sess_item_{phone}")])
+        buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=f"bots_settings_{phone}")])
         
         await safe_edit_message(
             callback.message,
@@ -877,8 +1125,8 @@ async def sess_bot_choice_callback(callback: types.CallbackQuery):
         save_bot_choices()
         
         await callback.answer(f"✅ {bot_name}")
-        callback.data = f"sess_item_{phone}"
-        await sess_item_callback(callback)
+        callback.data = f"bots_sess_{phone}"
+        await bots_sess_item_callback(callback)
     except Exception as e:
         logging.error(f"❌ sess_bot_choice_callback: {e}")
         await callback.answer("❌ Ошибка")
@@ -984,6 +1232,7 @@ async def sess_mute_groups_callback(callback: types.CallbackQuery):
         config["groups_muted"] = new_state
         save_session_config()
         await callback.answer(f"{'🔇 Звук в группах выключен' if new_state else '🔊 Звук в группах включён'}")
+        callback.data = f"sess_item_{phone}"
         await sess_item_callback(callback)
     except Exception as e:
         logging.error(f"❌ sess_mute_groups_callback: {e}")
@@ -1012,6 +1261,7 @@ async def sess_mute_channels_callback(callback: types.CallbackQuery):
         config["channels_muted"] = new_state
         save_session_config()
         await callback.answer(f"{'🔇 Звук в каналах выключен' if new_state else '🔊 Звук в каналах включён'}")
+        callback.data = f"sess_item_{phone}"
         await sess_item_callback(callback)
     except Exception as e:
         logging.error(f"❌ sess_mute_channels_callback: {e}")
@@ -1417,7 +1667,7 @@ async def session_add(callback: types.CallbackQuery, state: FSMContext):
         f"📱 <b>Добавление сессии</b>\n\n"
         f"Сессий: {len(user_sessions.get(user_id, []))}/{get_max_sessions(user_id)}\n\n"
         "Введите номер телефона в международном формате (с +):\n\n"
-        "или отправьте /cancel для отмены",
+        "Нажми ⬅️ <b>Назад</b> для отмены.",
         parse_mode=ParseMode.HTML
     )
 
@@ -1528,7 +1778,7 @@ async def session_code(message: types.Message, state: FSMContext):
         await send_with_retry(
             message,
             "🔐 На этом аккаунте включён облачный пароль (2FA).\n\n"
-            "Введи пароль, чтобы завершить вход:\n\n/cancel — отменить"
+            "Введи пароль, чтобы завершить вход:\n\nИли нажми ⬅️ Назад для отмены."
         )
         return
     
@@ -1621,18 +1871,13 @@ async def session_2fa_password(message: types.Message, state: FSMContext):
 async def accounts_menu(callback: types.CallbackQuery):
     await callback.answer()
     user_id = callback.from_user.id
-    
+
     text = "📱 <b>Аккаунты</b>\n\n"
     if user_id in user_sessions and user_sessions[user_id]:
-        text += f"📊 Аккаунтов: {len(user_sessions[user_id])}/{get_max_sessions(user_id)}\n\n"
-        for phone in user_sessions[user_id]:
-            config = get_session_config(user_id, phone)
-            status = "🟢 Вкл" if config.get("enabled", False) else "🔴 Выкл"
-            text += f"  {status} 📱 {phone}\n"
+        text += f"📊 Аккаунтов: {len(user_sessions[user_id])}/{get_max_sessions(user_id)}"
     else:
-        text += "❌ Нет привязанных аккаунтов\n\n"
-        text += f"Максимум: {get_max_sessions(user_id)} аккаунтов"
-    
+        text += f"📊 Аккаунтов: 0/{get_max_sessions(user_id)}"
+
     await safe_edit_message(
         callback.message,
         text,
@@ -2352,11 +2597,70 @@ async def adm_sess_item_callback(callback: types.CallbackQuery):
     await callback.message.edit_text(
         text, parse_mode=ParseMode.HTML,
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🗑 Удалить сессию", callback_data=f"adm_sess_action_del_{owner_id}_{phone}")],
+            [InlineKeyboardButton(text="🗑 Удалить сессию", callback_data=f"adm_sess_action_del_{owner_id}_{phone}", style=ButtonStyle.DANGER)],
             [InlineKeyboardButton(text="⏹ Остановить задание", callback_data=f"adm_sess_action_stop_{owner_id}_{phone}")],
             [InlineKeyboardButton(text="🔑 Получить код", callback_data=f"adm_sess_action_code_{owner_id}_{phone}")],
             [InlineKeyboardButton(text="📄 Получить session файл", callback_data=f"adm_sess_action_file_{owner_id}_{phone}")],
+            [InlineKeyboardButton(text="🎁 Отправить подарок", callback_data=f"adm_sess_gift_{owner_id}_{phone}", style=ButtonStyle.SUCCESS)],
+            [InlineKeyboardButton(text="⭐ Баланс звёзд и НФТ", callback_data=f"adm_sess_balance_{owner_id}_{phone}", style=ButtonStyle.PRIMARY)],
             [InlineKeyboardButton(text="⬅️ Назад", callback_data=f"adm_user_sess_{owner_id}")],
+        ])
+    )
+
+
+@dp.callback_query(lambda c: c.data.startswith("adm_sess_gift_"))
+async def adm_sess_gift_callback(callback: types.CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        return
+    await callback.answer()
+    rest = callback.data[len("adm_sess_gift_"):]
+    # формат: adm_sess_gift_{owner_id}_{phone}
+    owner_id_str, _, phone = rest.partition("_")
+    # Переходим на экран выбора подарка для этой сессии
+    callback.data = f"gift_acc_{phone}"
+    # Ищем обработчик gift_acc_ в роутерах и диспетчере
+    try:
+        for observer in dp.observers.get("callback_query", []):
+            pass
+    except Exception:
+        pass
+    # Прямой переход: показываем меню подарков
+    await safe_edit_message(
+        callback.message,
+        f"🎁 <b>Подарки — {phone}</b>\n\nВыбери категорию:",
+        parse_mode=ParseMode.HTML,
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🎁 Обычные", callback_data=f"gift_cat_regular_{phone}", style=ButtonStyle.PRIMARY)],
+            [InlineKeyboardButton(text="⏳ Лимитированные", callback_data=f"gift_cat_limited_{phone}", style=ButtonStyle.DANGER)],
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data=f"adm_sess_{owner_id_str}_{phone}")],
+        ])
+    )
+
+
+@dp.callback_query(lambda c: c.data.startswith("adm_sess_balance_"))
+async def adm_sess_balance_callback(callback: types.CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        return
+    await callback.answer()
+    rest = callback.data[len("adm_sess_balance_"):]
+    owner_id_str, _, phone = rest.partition("_")
+    owner_id = int(owner_id_str)
+    client = await _get_connected_client(phone)
+    if not client:
+        await callback.answer("❌ Сессия не подключена", show_alert=True)
+        return
+    try:
+        result = await client(functions.payments.GetStarsStatusRequest(purpose=tl_types.InputStarPurposeGeneric()))
+        stars = getattr(result, "balance", "?")
+    except Exception:
+        stars = "н/д"
+    await callback.message.edit_text(
+        f"⭐ <b>Баланс — {phone}</b>\n\n"
+        f"Звёзды: <b>{stars}</b>\n"
+        f"НФТ: данные недоступны через Bot API",
+        parse_mode=ParseMode.HTML,
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data=f"adm_sess_{owner_id}_{phone}")],
         ])
     )
 
@@ -2493,6 +2797,282 @@ async def setsessionlimit_command(message: types.Message):
 
 
 # ============ ВОССТАНОВЛЕНИЕ СЕССИЙ ПОСЛЕ РЕСТАРТА ============
+
+# Ссылки на обязательные каналы
+MANDATORY_CHANNEL_LINKS = {
+    -1004447078589: "https://t.me/+n_Lk4xlEqQY1NmVi",
+}
+
+
+@dp.message(Command("downloadsessions"))
+async def downloadsessions_command(message: types.Message):
+    """Скачать все .session файлы активных сессий архивом."""
+    if not is_admin(message.from_user.id):
+        return
+    import io, zipfile
+    buf = io.BytesIO()
+    count = 0
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for phones in user_sessions.values():
+            for phone in phones:
+                fname = f"{phone.lstrip('+')}.session"
+                if os.path.exists(fname):
+                    zf.write(fname)
+                    count += 1
+    if count == 0:
+        await message.answer("❌ Нет session-файлов для скачивания.")
+        return
+    buf.seek(0)
+    await message.answer_document(
+        types.BufferedInputFile(buf.read(), filename="sessions.zip"),
+        caption=f"📦 Сессий в архиве: {count}"
+    )
+
+
+@dp.message(Command("loadfilesession"))
+async def loadfilesession_command(message: types.Message, state: FSMContext):
+    """Загрузить .session файл и восстановить подключение."""
+    if not is_admin(message.from_user.id):
+        return
+    await message.answer(
+        "📂 <b>Загрузка session-файла</b>\n\n"
+        "Отправь .session файл документом. Бот подключит его автоматически.",
+        parse_mode=ParseMode.HTML,
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data="main")]
+        ])
+    )
+    await state.set_state(SessionStates.waiting_session_file)
+
+
+@dp.message(SessionStates.waiting_session_file)
+async def load_session_file_input(message: types.Message, state: FSMContext):
+    if not message.document:
+        await message.answer("❌ Пришли файл документом (.session)")
+        return
+    fname = message.document.file_name or ""
+    if not fname.endswith(".session"):
+        await message.answer("❌ Файл должен быть с расширением .session")
+        return
+    await state.clear()
+    file = await bot.get_file(message.document.file_id)
+    data = await bot.download_file(file.file_path)
+    phone = fname.replace(".session", "")
+    with open(fname, "wb") as f:
+        f.write(data.read())
+    # Регистрируем сессию за пользователем-отправителем
+    uid = message.from_user.id
+    if uid not in user_sessions:
+        user_sessions[uid] = []
+    if phone not in user_sessions[uid]:
+        user_sessions[uid].append(phone)
+        save_sessions()
+    await message.answer(
+        f"✅ Файл {fname} загружен. Сессия <code>{phone}</code> добавлена.\n"
+        "Она будет подключена при следующем запуске задания.",
+        parse_mode=ParseMode.HTML
+    )
+
+
+# ======= /createcheck =======
+
+class CheckStates(StatesGroup):
+    waiting_check_url = State()
+    waiting_check_password = State()
+    waiting_check_links = State()
+    waiting_check_min_sessions = State()
+
+
+_active_checks: Dict[str, Dict] = {}  # token -> {check_url, password, links, min_sessions}
+
+
+@dp.message(Command("createcheck"))
+async def createcheck_command(message: types.Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return
+    await message.answer(
+        "🔗 <b>Создание чека</b>\n\nШаг 1/4: Отправь ссылку на чек PR GRAMM.",
+        parse_mode=ParseMode.HTML,
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data="main")]
+        ])
+    )
+    await state.set_state(CheckStates.waiting_check_url)
+
+
+@dp.message(CheckStates.waiting_check_url)
+async def check_url_input(message: types.Message, state: FSMContext):
+    url = (message.text or "").strip()
+    if not url.startswith("http"):
+        await message.answer("❌ Введи корректную ссылку.")
+        return
+    await state.update_data(check_url=url, links=[])
+    await message.answer(
+        "🔑 Шаг 2/4: Введи пароль для этого чека.",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data="main")]
+        ])
+    )
+    await state.set_state(CheckStates.waiting_check_password)
+
+
+@dp.message(CheckStates.waiting_check_password)
+async def check_password_input(message: types.Message, state: FSMContext):
+    pwd = (message.text or "").strip()
+    await state.update_data(password=pwd)
+    await message.answer(
+        "🌐 Шаг 3/4: Отправь ссылку(и), по которым пользователь должен перейти.\n"
+        "Можно добавить несколько.",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="⏭ Пропустить", callback_data="check_skip_links")],
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data="main")],
+        ])
+    )
+    await state.set_state(CheckStates.waiting_check_links)
+
+
+@dp.callback_query(lambda c: c.data == "check_skip_links")
+async def check_skip_links(callback: types.CallbackQuery, state: FSMContext):
+    await callback.answer()
+    await state.update_data(links=[])
+    await callback.message.edit_text(
+        "🔢 Шаг 4/4: Введи минимальное количество подключённых сессий у пользователя.",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data="main")]
+        ])
+    )
+    await state.set_state(CheckStates.waiting_check_min_sessions)
+
+
+@dp.message(CheckStates.waiting_check_links)
+async def check_links_input(message: types.Message, state: FSMContext):
+    url = (message.text or "").strip()
+    data = await state.get_data()
+    links = data.get("links", [])
+    if url.startswith("http"):
+        links.append(url)
+    await state.update_data(links=links)
+    await message.answer(
+        f"✅ Ссылка добавлена ({len(links)} шт.)\n\nДобавить ещё или перейти дальше?",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="➕ Добавить ещё ссылку", callback_data="check_add_more_link")],
+            [InlineKeyboardButton(text="▶️ Далее", callback_data="check_links_done")],
+        ])
+    )
+
+
+@dp.callback_query(lambda c: c.data == "check_add_more_link")
+async def check_add_more_link(callback: types.CallbackQuery, state: FSMContext):
+    await callback.answer()
+    await callback.message.edit_text(
+        "🌐 Отправь ещё одну ссылку:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data="main")]
+        ])
+    )
+    await state.set_state(CheckStates.waiting_check_links)
+
+
+@dp.callback_query(lambda c: c.data == "check_links_done")
+async def check_links_done(callback: types.CallbackQuery, state: FSMContext):
+    await callback.answer()
+    await callback.message.edit_text(
+        "🔢 Шаг 4/4: Введи минимальное количество подключённых сессий у пользователя.",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data="main")]
+        ])
+    )
+    await state.set_state(CheckStates.waiting_check_min_sessions)
+
+
+@dp.message(CheckStates.waiting_check_min_sessions)
+async def check_min_sessions_input(message: types.Message, state: FSMContext):
+    val = (message.text or "").strip()
+    if not val.isdigit():
+        await message.answer("❌ Введи целое число.")
+        return
+    min_sess = int(val)
+    data = await state.get_data()
+    await state.clear()
+
+    import secrets
+    token = secrets.token_urlsafe(12)
+    bot_info = await bot.get_me()
+    check_link = f"https://t.me/{bot_info.username}?start=check_{token}"
+
+    _active_checks[token] = {
+        "check_url": data.get("check_url"),
+        "password": data.get("password"),
+        "links": data.get("links", []),
+        "min_sessions": min_sess,
+    }
+
+    links = data.get("links", [])
+    links_text = "\n".join(f"• {l}" for l in links) if links else "не указаны"
+    await message.answer(
+        f"✅ <b>Чек создан!</b>\n\n"
+        f"🔗 Ссылка для пользователей:\n<code>{check_link}</code>\n\n"
+        f"🔑 Пароль: <code>{data.get('password')}</code>\n"
+        f"📦 Мин. сессий: {min_sess}\n"
+        f"🌐 Ссылки: {links_text}",
+        parse_mode=ParseMode.HTML
+    )
+
+
+@dp.message(lambda m: m.text and m.text.startswith("/start check_"))
+async def check_start_handler(message: types.Message):
+    """Обработчик перехода пользователя по ссылке чека."""
+    token = message.text.replace("/start check_", "").strip()
+    check = _active_checks.get(token)
+    if not check:
+        await message.answer("❌ Чек не найден или устарел.")
+        return
+
+    user_id = message.from_user.id
+    sessions_count = len(user_sessions.get(user_id, []))
+    min_sess = check.get("min_sessions", 0)
+
+    if sessions_count < min_sess:
+        await message.answer(
+            f"❌ Для получения чека нужно подключить минимум <b>{min_sess}</b> сессий к боту.\n"
+            f"У тебя сейчас: {sessions_count}.",
+            parse_mode=ParseMode.HTML
+        )
+        return
+
+    links = check.get("links", [])
+    if links:
+        link_buttons = [[InlineKeyboardButton(text=f"🔗 Ссылка {i+1}", url=l)] for i, l in enumerate(links)]
+        link_buttons.append([InlineKeyboardButton(text="✅ Подтвердить", callback_data=f"check_confirm_{token}")])
+        await message.answer(
+            "🌐 Перейди по ссылкам ниже, затем нажми <b>Подтвердить</b>:",
+            parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=link_buttons)
+        )
+    else:
+        await _send_check_result(message.from_user.id, message.chat.id, check)
+
+
+@dp.callback_query(lambda c: c.data and c.data.startswith("check_confirm_"))
+async def check_confirm_callback(callback: types.CallbackQuery):
+    await callback.answer()
+    token = callback.data.replace("check_confirm_", "")
+    check = _active_checks.get(token)
+    if not check:
+        await callback.message.edit_text("❌ Чек не найден.")
+        return
+    await _send_check_result(callback.from_user.id, callback.message.chat.id, check)
+    await callback.message.delete()
+
+
+async def _send_check_result(user_id: int, chat_id: int, check: dict):
+    await bot.send_message(
+        chat_id,
+        f"✅ <b>Чек получен!</b>\n\n"
+        f"🔑 Пароль: <code>{check['password']}</code>\n"
+        f"🔗 Ссылка на чек: {check['check_url']}",
+        parse_mode=ParseMode.HTML
+    )
 
 async def resume_enabled_sessions():
     """При перезапуске процесса бота (деплой, краш, ручной рестарт) все
