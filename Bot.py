@@ -18,6 +18,7 @@ from dotenv import load_dotenv
 from telethon import TelegramClient
 from telethon import functions, types as tl_types
 from telethon.tl.types import Channel, Chat
+from telethon.errors import MessageIdInvalidError, RPCError
 
 from username_bot import (
     router as username_router,
@@ -853,7 +854,7 @@ async def _run_dodeeper_loader(user_id: int, phone: str, notify_chat_id: int):
         last = await _dodeeper_get_last(client)
         start_btn = _dodeeper_find_btn(last, ["начать работу грузчиком", "начать работу"])
         if start_btn:
-            await start_btn.click()
+            await _dodeeper_safe_click(client, last, start_btn)
             await asyncio.sleep(4)
 
         # Основной цикл
@@ -869,8 +870,9 @@ async def _run_dodeeper_loader(user_id: int, phone: str, notify_chat_id: int):
             if "найден груз" in txt or "📦" in txt:
                 accept_btn = _dodeeper_find_btn(last, ["✅ принять", "принять"])
                 if accept_btn:
-                    await accept_btn.click()
-                    logging.info(f"📦 Додепер {phone}: груз принят")
+                    clicked = await _dodeeper_safe_click(client, last, accept_btn)
+                    if clicked:
+                        logging.info(f"📦 Додепер {phone}: груз принят")
                     await asyncio.sleep(5)
                 else:
                     # Ждём следующего сообщения
@@ -912,6 +914,45 @@ def _dodeeper_find_btn(msg, keywords: list):
             if any(k in t for k in keywords):
                 return b
     return None
+
+
+async def _dodeeper_safe_click(client, msg, btn):
+    """
+    Безопасный клик по кнопке Додепер.
+    Если сообщение устарело/удалено (MessageIdInvalidError) —
+    перечитываем последнее сообщение и пробуем снова.
+    Если и повтор не помог — отправляем текст кнопки как сообщение (fallback).
+    """
+    try:
+        await btn.click()
+        return True
+    except (MessageIdInvalidError, RPCError):
+        pass
+    except Exception:
+        pass
+
+    # Перечитываем — бот мог прислать новое сообщение
+    try:
+        fresh = await _dodeeper_get_last(client)
+        if fresh and fresh.id != msg.id and fresh.buttons:
+            for row in fresh.buttons:
+                for b in row:
+                    if (b.text or "").lower() == (btn.text or "").lower():
+                        try:
+                            await b.click()
+                            return True
+                        except Exception:
+                            break
+    except Exception:
+        pass
+
+    # Финальный fallback: текст кнопки как обычное сообщение
+    try:
+        await client.send_message(DODEEPER_BOT, btn.text)
+        return True
+    except Exception as e:
+        logging.warning(f"Додепер: fallback send_message тоже упал: {e}")
+        return False
 
 
 @dp.callback_query(lambda c: c.data == "bot_prgramm")
