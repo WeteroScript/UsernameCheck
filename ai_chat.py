@@ -9,6 +9,7 @@ import logging
 import os
 import re
 import uuid
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -20,6 +21,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from dotenv import load_dotenv
+from access_control import is_premium
 
 load_dotenv()
 
@@ -31,6 +33,11 @@ HISTORY_PATH = Path(os.getenv("AI_CHAT_HISTORY_FILE", "data/ai_chats.json"))
 
 MAX_CONTEXT_MESSAGES = 40
 TELEGRAM_TEXT_LIMIT = 4000
+REQUEST_COOLDOWN_SECONDS = 30
+_last_request_at: Dict[int, float] = {}
+_active_requests: set[int] = set()
+_active_tasks: Dict[int, asyncio.Task] = {}
+_waiting_messages: Dict[int, types.Message] = {}
 SYSTEM_PROMPT = (
     "Ты — полезный ИИ-помощник. Отвечай на языке пользователя. "
     "Если пользователь просит код, приводи полный и понятный пример."
@@ -111,6 +118,19 @@ def _save_history() -> bool:
         return False
 
 
+async def pause_ai_chat(user_id: int) -> None:
+    """Останавливает активный запрос пользователя при переходе в /start."""
+    task = _active_tasks.get(user_id)
+    waiting = _waiting_messages.get(user_id)
+    if task and not task.done():
+        task.cancel()
+    if waiting:
+        try:
+            await waiting.edit_text("Диалог приостановлен командой /start.")
+        except Exception:
+            logging.debug("Не удалось обновить сообщение ожидания при паузе ИИ-чата")
+
+
 def init_ai_chat(dispatcher) -> None:
     """Загружает историю и подключает роутер к Dispatcher."""
     global chat_history
@@ -173,8 +193,12 @@ def _new_chat_keyboard() -> InlineKeyboardMarkup:
     ])
 
 
+def _is_paid_model(model: str) -> bool:
+    return model.startswith("claude") or model in {"gpt-6-astra", "gpt-6-sol"}
+
+
 def _model_style(model: str) -> ButtonStyle:
-    if model.startswith("claude"):
+    if _is_paid_model(model):
         return ButtonStyle.DANGER
     if model.startswith(("gpt", "deepseek", "minimax")):
         return ButtonStyle.SUCCESS
@@ -184,7 +208,7 @@ def _model_style(model: str) -> ButtonStyle:
 def _models_keyboard() -> InlineKeyboardMarkup:
     buttons = [
         InlineKeyboardButton(
-            text=model,
+            text=f"🔒 {model}" if _is_paid_model(model) else model,
             callback_data=f"ai_model_{model}",
             style=_model_style(model),
         )
@@ -199,30 +223,6 @@ def _models_keyboard() -> InlineKeyboardMarkup:
         )
     ])
     return InlineKeyboardMarkup(inline_keyboard=rows)
-
-
-def _chat_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(
-                text="📚 Мои чаты",
-                callback_data="ai_my_chats",
-                style=ButtonStyle.PRIMARY,
-            ),
-            InlineKeyboardButton(
-                text="➕ Новый чат",
-                callback_data="ai_new",
-                style=ButtonStyle.SUCCESS,
-            ),
-        ],
-        [
-            InlineKeyboardButton(
-                text="🏠 Главное меню",
-                callback_data="main",
-                style=ButtonStyle.DANGER,
-            )
-        ],
-    ])
 
 
 def _short_title(value: str, limit: int = 32) -> str:
@@ -389,8 +389,7 @@ async def ai_menu(callback: types.CallbackQuery, state: FSMContext):
     await callback.answer()
     await state.clear()
     await callback.message.edit_text(
-        "💬 <b>Чат с ИИ</b>\n\nСоздавай отдельные диалоги с разными моделями. "
-        "История каждого чата сохраняется.",
+        "💬 <b>Чат с ИИ</b>\n\nСоздавай отдельные диалоги. Контекст диалогов сохраняется.",
         parse_mode="HTML",
         reply_markup=_root_keyboard(),
     )
@@ -428,7 +427,7 @@ async def ai_my_chats(callback: types.CallbackQuery, state: FSMContext):
     else:
         text = (
             f"📚 <b>Мои чаты</b>\n\n"
-            f"Сохранено диалогов: {len(chats)}. Выбери нужный:"
+            f"Сохранено диалогов: {len(chats)}. Выбери диалог, затем отправь сообщение:"
         )
     await callback.message.edit_text(
         text,
@@ -442,6 +441,9 @@ async def ai_model_selected(callback: types.CallbackQuery, state: FSMContext):
     model = callback.data[len("ai_model_"):]
     if model not in MODELS:
         await callback.answer("Неизвестная модель.", show_alert=True)
+        return
+    if _is_paid_model(model) and not is_premium(callback.from_user.id):
+        await callback.answer("Эта модель доступна только с премиум-доступом.", show_alert=True)
         return
 
     user_id = callback.from_user.id
@@ -466,9 +468,8 @@ async def ai_model_selected(callback: types.CallbackQuery, state: FSMContext):
     await callback.message.edit_text(
         f"✅ <b>Новый чат создан</b>\n\n"
         f"Модель: <code>{model}</code>\n\n"
-        "Отправь сообщение обычным сообщением боту.",
+        "Диалог активен. Отправь сообщение, чтобы начать.",
         parse_mode="HTML",
-        reply_markup=_chat_keyboard(),
     )
 
 
@@ -476,6 +477,9 @@ async def ai_model_selected(callback: types.CallbackQuery, state: FSMContext):
 async def ai_open_chat(callback: types.CallbackQuery, state: FSMContext):
     chat_id = callback.data[len("ai_open_"):]
     chat = _find_chat(callback.from_user.id, chat_id)
+    if chat and _is_paid_model(str(chat.get("model", ""))) and not is_premium(callback.from_user.id):
+        await callback.answer("Эта модель доступна только с премиум-доступом.", show_alert=True)
+        return
     if not chat:
         await callback.answer("Чат не найден.", show_alert=True)
         return
@@ -484,8 +488,9 @@ async def ai_open_chat(callback: types.CallbackQuery, state: FSMContext):
     await state.update_data(ai_chat_id=chat_id)
     await callback.answer()
     await callback.message.edit_text(
-        _chat_transcript(chat),
-        reply_markup=_chat_keyboard(),
+        f"Диалог с моделью <code>{chat.get('model', 'неизвестна')}</code> выбран.\n"
+        "Отправь сообщение, чтобы продолжить диалог.",
+        parse_mode="HTML",
         disable_web_page_preview=True,
     )
 
@@ -496,53 +501,73 @@ async def ai_chat_message(message: types.Message, state: FSMContext):
     if not user_text:
         await message.answer("Отправь текстовое сообщение. Файлы и голосовые сообщения пока не поддерживаются.")
         return
-
     if user_text.lower() in ("/cancel", "отмена"):
         await state.clear()
-        await message.answer("Режим чата завершён. Открой раздел «Чат с ИИ» из главного меню.")
+        await message.answer("Диалог приостановлен. Чтобы продолжить, открой «Мои чаты» и выбери его.")
         return
 
-    state_data = await state.get_data()
-    chat_id = state_data.get("ai_chat_id")
-    chat = _find_chat(message.from_user.id, chat_id or "")
+    user_id = message.from_user.id
+    data = await state.get_data()
+    chat = _find_chat(user_id, data.get("ai_chat_id") or "")
     if not chat:
         await state.clear()
-        await message.answer("Этот чат больше не найден. Открой «Мои чаты» и выбери диалог заново.")
+        await message.answer("Активный диалог не выбран. Открой «Мои чаты» и выбери диалог или создай новый.")
+        return
+    model = str(chat.get("model", "неизвестная модель"))
+    if _is_paid_model(model) and not is_premium(user_id):
+        await state.clear()
+        await message.answer("Эта модель доступна только с премиум-доступом. Выбери другую модель.")
+        return
+    if user_id in _active_requests:
+        await message.answer("Предыдущий запрос ещё обрабатывается. Дождись ответа.")
         return
 
+    now = time.monotonic()
+    previous = _last_request_at.get(user_id)
+    if previous is not None:
+        remaining = REQUEST_COOLDOWN_SECONDS - (now - previous)
+        if remaining > 0:
+            await message.answer(f"Следующий запрос можно отправить через {int(remaining) + 1} сек.")
+            return
+
+    _last_request_at[user_id] = now
+    _active_requests.add(user_id)
+    _active_tasks[user_id] = asyncio.current_task()
+    waiting = None
     try:
-        reply = await _request_model(
-            str(chat.get("model", "")),
-            chat.get("messages", []),
-            user_text,
-        )
+        waiting = await message.answer("👀 Ии готовит ответ")
+        _waiting_messages[user_id] = waiting
+        reply = await _request_model(model, chat.get("messages", []), user_text)
+        messages = chat.setdefault("messages", [])
+        messages.extend([
+            {"role": "user", "content": user_text},
+            {"role": "assistant", "content": reply},
+        ])
+        if chat.get("title") == "Новый чат":
+            chat["title"] = _short_title(user_text, 48)
+        chat["updated_at"] = _now()
+        if not _save_history():
+            logging.error("Ответ ИИ получен, но историю диалога не удалось сохранить.")
+
+        chunks = _split_text(f'"{model}" - {reply}')
+        try:
+            if waiting:
+                await waiting.edit_text(chunks[0])
+        except Exception:
+            logging.exception("Не удалось изменить сообщение ожидания")
+            await message.answer(chunks[0])
+        for chunk in chunks[1:]:
+            await message.answer(chunk)
     except RuntimeError as exc:
-        await message.answer(f"Ошибка запроса: {exc}", reply_markup=_chat_keyboard())
-        return
+        if waiting:
+            await waiting.edit_text(f'"{model}" - Ошибка запроса: {exc}')
+    except asyncio.CancelledError:
+        raise
     except Exception:
         logging.exception("Непредвиденная ошибка при запросе к TokenPlan")
-        await message.answer(
-            "Произошла внутренняя ошибка при обращении к API. Подробности записаны в журнал.",
-            reply_markup=_chat_keyboard(),
-        )
-        return
-
-    messages = chat.setdefault("messages", [])
-    messages.append({"role": "user", "content": user_text})
-    messages.append({"role": "assistant", "content": reply})
-    if chat.get("title") == "Новый чат":
-        chat["title"] = _short_title(user_text, 48)
-    chat["updated_at"] = _now()
-
-    if not _save_history():
-        await message.answer(
-            "Ответ получен, но историю не удалось записать на диск. Проверь права на запись.",
-            reply_markup=_chat_keyboard(),
-        )
-
-    chunks = _split_text(reply)
-    for index, chunk in enumerate(chunks):
-        await message.answer(
-            chunk,
-            reply_markup=_chat_keyboard() if index == len(chunks) - 1 else None,
-        )
+        if waiting:
+            await waiting.edit_text(f'"{model}" - Произошла внутренняя ошибка при обращении к API.')
+    finally:
+        _active_requests.discard(user_id)
+        _active_tasks.pop(user_id, None)
+        _waiting_messages.pop(user_id, None)
