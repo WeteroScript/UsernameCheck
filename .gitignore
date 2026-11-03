@@ -1,6 +1,11 @@
-__pycache__/
-*.pyc
 .env
+.env.*
+!.env.example
+__pycache__/
+*.py[cod]
 venv/
 .venv/
 *.log
+data/
+ai_chats.json
+*.tmp
