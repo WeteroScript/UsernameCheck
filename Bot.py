@@ -102,7 +102,9 @@ from ai_chat import init_ai_chat
 
 load_dotenv()
 
-BOT_TOKEN = os.getenv("BOT_TOKEN")
+BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
+if not BOT_TOKEN:
+    raise RuntimeError("Не задана переменная окружения BOT_TOKEN. Добавь её в настройках хостинга.")
 
 logging.basicConfig(
     level=logging.INFO,
