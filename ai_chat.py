@@ -533,9 +533,10 @@ async def ai_chat_message(message: types.Message, state: FSMContext):
     _last_request_at[user_id] = now
     _active_requests.add(user_id)
     _active_tasks[user_id] = asyncio.current_task()
-    waiting = await message.answer("👀 Ии готовит ответ")
-    _waiting_messages[user_id] = waiting
+    waiting = None
     try:
+        waiting = await message.answer("👀 Ии готовит ответ")
+        _waiting_messages[user_id] = waiting
         reply = await _request_model(model, chat.get("messages", []), user_text)
         messages = chat.setdefault("messages", [])
         messages.extend([
@@ -550,17 +551,22 @@ async def ai_chat_message(message: types.Message, state: FSMContext):
 
         chunks = _split_text(f'"{model}" - {reply}')
         try:
-            await waiting.edit_text(chunks[0])
+            if waiting:
+                await waiting.edit_text(chunks[0])
         except Exception:
             logging.exception("Не удалось изменить сообщение ожидания")
             await message.answer(chunks[0])
         for chunk in chunks[1:]:
             await message.answer(chunk)
     except RuntimeError as exc:
-        await waiting.edit_text(f'"{model}" - Ошибка запроса: {exc}')
+        if waiting:
+            await waiting.edit_text(f'"{model}" - Ошибка запроса: {exc}')
+    except asyncio.CancelledError:
+        raise
     except Exception:
         logging.exception("Непредвиденная ошибка при запросе к TokenPlan")
-        await waiting.edit_text(f'"{model}" - Произошла внутренняя ошибка при обращении к API.')
+        if waiting:
+            await waiting.edit_text(f'"{model}" - Произошла внутренняя ошибка при обращении к API.')
     finally:
         _active_requests.discard(user_id)
         _active_tasks.pop(user_id, None)
