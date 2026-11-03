@@ -36,6 +36,8 @@ TELEGRAM_TEXT_LIMIT = 4000
 REQUEST_COOLDOWN_SECONDS = 30
 _last_request_at: Dict[int, float] = {}
 _active_requests: set[int] = set()
+_active_tasks: Dict[int, asyncio.Task] = {}
+_waiting_messages: Dict[int, types.Message] = {}
 SYSTEM_PROMPT = (
     "Ты — полезный ИИ-помощник. Отвечай на языке пользователя. "
     "Если пользователь просит код, приводи полный и понятный пример."
@@ -114,6 +116,19 @@ def _save_history() -> bool:
         except OSError:
             pass
         return False
+
+
+async def pause_ai_chat(user_id: int) -> None:
+    """Останавливает активный запрос пользователя при переходе в /start."""
+    task = _active_tasks.get(user_id)
+    waiting = _waiting_messages.get(user_id)
+    if task and not task.done():
+        task.cancel()
+    if waiting:
+        try:
+            await waiting.edit_text("Диалог приостановлен командой /start.")
+        except Exception:
+            logging.debug("Не удалось обновить сообщение ожидания при паузе ИИ-чата")
 
 
 def init_ai_chat(dispatcher) -> None:
@@ -462,6 +477,9 @@ async def ai_model_selected(callback: types.CallbackQuery, state: FSMContext):
 async def ai_open_chat(callback: types.CallbackQuery, state: FSMContext):
     chat_id = callback.data[len("ai_open_"):]
     chat = _find_chat(callback.from_user.id, chat_id)
+    if chat and _is_paid_model(str(chat.get("model", ""))) and not is_premium(callback.from_user.id):
+        await callback.answer("Эта модель доступна только с премиум-доступом.", show_alert=True)
+        return
     if not chat:
         await callback.answer("Чат не найден.", show_alert=True)
         return
@@ -495,6 +513,11 @@ async def ai_chat_message(message: types.Message, state: FSMContext):
         await state.clear()
         await message.answer("Активный диалог не выбран. Открой «Мои чаты» и выбери диалог или создай новый.")
         return
+    model = str(chat.get("model", "неизвестная модель"))
+    if _is_paid_model(model) and not is_premium(user_id):
+        await state.clear()
+        await message.answer("Эта модель доступна только с премиум-доступом. Выбери другую модель.")
+        return
     if user_id in _active_requests:
         await message.answer("Предыдущий запрос ещё обрабатывается. Дождись ответа.")
         return
@@ -509,8 +532,9 @@ async def ai_chat_message(message: types.Message, state: FSMContext):
 
     _last_request_at[user_id] = now
     _active_requests.add(user_id)
-    model = str(chat.get("model", "неизвестная модель"))
+    _active_tasks[user_id] = asyncio.current_task()
     waiting = await message.answer("👀 Ии готовит ответ")
+    _waiting_messages[user_id] = waiting
     try:
         reply = await _request_model(model, chat.get("messages", []), user_text)
         messages = chat.setdefault("messages", [])
@@ -539,3 +563,5 @@ async def ai_chat_message(message: types.Message, state: FSMContext):
         await waiting.edit_text(f'"{model}" - Произошла внутренняя ошибка при обращении к API.')
     finally:
         _active_requests.discard(user_id)
+        _active_tasks.pop(user_id, None)
+        _waiting_messages.pop(user_id, None)
