@@ -98,6 +98,7 @@ from video_download import router as video_router, init_video_download
 from channels_feature import init_channels_feature
 from shakalizer import init_shakalizer
 from gifts_feature import init_gifts_feature, setup as setup_gifts_feature
+from ai_chat import init_ai_chat
 
 load_dotenv()
 
@@ -489,6 +490,9 @@ def get_main_keyboard(user_id: Optional[int] = None) -> InlineKeyboardMarkup:
             InlineKeyboardButton(text="📉 Шакализатор",callback_data="shakalizer_menu",style=ButtonStyle.SUCCESS),
             InlineKeyboardButton(text="🎁 Подарки",    callback_data="gifts_menu",    style=ButtonStyle.DANGER),
         ],
+        [
+            InlineKeyboardButton(text="💬 Чат с ИИ", callback_data="ai_menu", style=ButtonStyle.SUCCESS),
+        ],
     ]
     extra = get_extra_main_buttons()
     if extra:
@@ -600,7 +604,8 @@ async def start_command(message: types.Message):
 
 
 @dp.callback_query(lambda c: c.data == "main")
-async def main_menu(callback: types.CallbackQuery):
+async def main_menu(callback: types.CallbackQuery, state: FSMContext):
+    await state.clear()
     await callback.answer()
     await safe_edit_message(
         callback.message,
@@ -4071,6 +4076,7 @@ async def main():
     init_shakalizer(dp)
     setup_gifts_feature(user_sessions, _get_connected_client)
     init_gifts_feature(dp)
+    init_ai_chat(dp)
     start_username_watcher()
     asyncio.create_task(resume_enabled_sessions())
     
