@@ -570,7 +570,9 @@ def get_accounts_keyboard(user_id: int) -> InlineKeyboardMarkup:
 # ============ ОБРАБОТЧИКИ ============
 
 @dp.message(Command("start"))
-async def start_command(message: types.Message):
+async def start_command(message: types.Message, state: FSMContext):
+    # /start приостанавливает активный диалог с ИИ.
+    await state.clear()
     user_id = message.from_user.id
     global user_sessions, user_bot_choice, user_session_config, known_users
     
