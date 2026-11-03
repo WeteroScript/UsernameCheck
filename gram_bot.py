@@ -38,10 +38,17 @@ except ImportError:
 
 router = Router()
 
-# По умолчанию используются данные Telegram Desktop, если свои не заданы
-# в .env — при необходимости можно переопределить через API_ID/API_HASH.
-API_ID = int(os.getenv("API_ID", "2040"))
-API_HASH = os.getenv("API_HASH", "b18441a1ff607e10a989891a5462e627")
+# Обязательные параметры задаются в переменных окружения хостинга.
+_api_id_value = os.getenv("API_ID", "").strip()
+API_HASH = os.getenv("API_HASH", "").strip()
+if not _api_id_value:
+    raise RuntimeError("Не задана переменная окружения API_ID.")
+if not API_HASH:
+    raise RuntimeError("Не задана переменная окружения API_HASH.")
+try:
+    API_ID = int(_api_id_value)
+except ValueError as exc:
+    raise RuntimeError("Переменная API_ID должна содержать целое число.") from exc
 
 active_clients: Dict[str, TelegramClient] = {}
 active_tasks: Dict[str, asyncio.Task] = {}
