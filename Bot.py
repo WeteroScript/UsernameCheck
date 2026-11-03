@@ -98,7 +98,7 @@ from video_download import router as video_router, init_video_download
 from channels_feature import init_channels_feature
 from shakalizer import init_shakalizer
 from gifts_feature import init_gifts_feature, setup as setup_gifts_feature
-from ai_chat import init_ai_chat
+from ai_chat import init_ai_chat, pause_ai_chat
 
 load_dotenv()
 
@@ -571,7 +571,8 @@ def get_accounts_keyboard(user_id: int) -> InlineKeyboardMarkup:
 
 @dp.message(Command("start"))
 async def start_command(message: types.Message, state: FSMContext):
-    # /start приостанавливает активный диалог с ИИ.
+    # /start приостанавливает активный диалог и отменяет незавершённый запрос ИИ.
+    await pause_ai_chat(message.from_user.id)
     await state.clear()
     user_id = message.from_user.id
     global user_sessions, user_bot_choice, user_session_config, known_users
