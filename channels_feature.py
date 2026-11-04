@@ -459,9 +459,9 @@ async def post_add_btn(callback: types.CallbackQuery, state: FSMContext):
     await callback.message.edit_text(
         "введите имя кнопки и ссылку на неё, в таком формате:\n\n"
         "<code>Название|ссылка</code>\n\n"
-        "После этого предложу выбрать цвет кнопки.\n\n"
-        "/cancel — отменить",
-        parse_mode=ParseMode.HTML
+        "После этого предложу выбрать цвет кнопки.",
+        parse_mode=ParseMode.HTML,
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад", callback_data="fsm_back")]])
     )
 
 
