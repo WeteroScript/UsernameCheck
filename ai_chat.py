@@ -842,11 +842,15 @@ async def ai_chat_message(message: types.Message, state: FSMContext):
         for chunk in chunks[1:]:
             await message.answer(chunk)
         if len(generated_files) >= 2:
-            archive_content = _build_generated_zip(generated_files)
-            await message.answer_document(
-                BufferedInputFile(archive_content, filename="generated_files.zip"),
-                caption=f'Архив с {len(generated_files)} файлами от модели {model}',
-            )
+            try:
+                archive_content = _build_generated_zip(generated_files)
+            except ValueError as exc:
+                await message.answer(f"Не удалось собрать ZIP-архив: {exc}")
+            else:
+                await message.answer_document(
+                    BufferedInputFile(archive_content, filename="generated_files.zip"),
+                    caption=f'Архив с {len(generated_files)} файлами от модели {model}',
+                )
         elif generated_files:
             filename, file_content = generated_files[0]
             await message.answer_document(
