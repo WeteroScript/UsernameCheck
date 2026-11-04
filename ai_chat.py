@@ -37,7 +37,7 @@ HISTORY_PATH = Path(os.getenv("AI_CHAT_HISTORY_FILE", "data/ai_chats.json"))
 
 MAX_CONTEXT_MESSAGES = 40
 TELEGRAM_TEXT_LIMIT = 4000
-MAX_UPLOAD_BYTES = int(os.getenv("AI_CHAT_MAX_UPLOAD_MB", "150")) * 1024 * 1024
+MAX_UPLOAD_MB = max(1, int(os.getenv("AI_CHAT_MAX_UPLOAD_MB", "150")))\nMAX_UPLOAD_BYTES = MAX_UPLOAD_MB * 1024 * 1024
 MAX_EXTRACTED_CHARS = 80000
 MAX_ARCHIVE_FILES = 40
 MAX_GENERATED_FILE_BYTES = 10 * 1024 * 1024
@@ -445,7 +445,7 @@ async def _document_to_text(message: types.Message) -> str:
     if not document:
         raise ValueError("Документ не найден.")
     if document.file_size and document.file_size > MAX_UPLOAD_BYTES:
-        raise ValueError("Максимальный размер загружаемого файла — 150 МБ.")
+        raise ValueError(f"Максимальный размер загружаемого файла — {MAX_UPLOAD_MB} МБ.")
     filename = document.file_name or "document"
     extension = Path(filename).suffix.lower()
     if extension not in SUPPORTED_FILE_EXTENSIONS:
@@ -464,7 +464,7 @@ async def _document_to_text(message: types.Message) -> str:
         logging.exception("Не удалось скачать документ Telegram")
         raise RuntimeError("Не удалось скачать файл из Telegram.") from exc
     if len(raw) > MAX_UPLOAD_BYTES:
-        raise ValueError("Максимальный размер загружаемого файла — 150 МБ.")
+        raise ValueError(f"Максимальный размер загружаемого файла — {MAX_UPLOAD_MB} МБ.")
     content = _extract_file_content(filename, raw).strip()
     if not content:
         raise ValueError("В файле не удалось найти текст для передачи модели.")
