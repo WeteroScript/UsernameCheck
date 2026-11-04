@@ -6,6 +6,8 @@ import re
 from datetime import datetime
 from typing import Dict, Optional, List, Any
 from aiogram import Bot, Dispatcher, types, BaseMiddleware
+from aiogram.client.session.aiohttp import AiohttpSession
+from aiogram.client.telegram import TelegramAPIServer
 from aiogram.filters import Command
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, FSInputFile
 from aiogram.enums import ParseMode, ButtonStyle
@@ -112,7 +114,16 @@ logging.basicConfig(
 )
 
 storage = MemoryStorage()
-bot = Bot(token=BOT_TOKEN)
+USE_LOCAL_BOT_API = os.getenv("USE_LOCAL_BOT_API", "false").strip().lower() in {"1", "true", "yes", "on"}
+if USE_LOCAL_BOT_API:
+    local_api_url = os.getenv("TELEGRAM_BOT_API_URL", "http://127.0.0.1:8081").strip()
+    bot_api_session = AiohttpSession(
+        api=TelegramAPIServer.from_base(local_api_url, is_local=True)
+    )
+    bot = Bot(token=BOT_TOKEN, session=bot_api_session)
+    logging.info("Используется локальный Telegram Bot API: %s", local_api_url)
+else:
+    bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=storage)
 
 
