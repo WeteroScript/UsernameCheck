@@ -13,6 +13,7 @@ import os
 import re
 import uuid
 import time
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -36,7 +37,7 @@ HISTORY_PATH = Path(os.getenv("AI_CHAT_HISTORY_FILE", "data/ai_chats.json"))
 
 MAX_CONTEXT_MESSAGES = 40
 TELEGRAM_TEXT_LIMIT = 4000
-MAX_UPLOAD_BYTES = 15 * 1024 * 1024
+MAX_UPLOAD_BYTES = int(os.getenv("AI_CHAT_MAX_UPLOAD_MB", "150")) * 1024 * 1024
 MAX_EXTRACTED_CHARS = 80000
 MAX_ARCHIVE_FILES = 40
 MAX_GENERATED_FILE_BYTES = 10 * 1024 * 1024
@@ -444,7 +445,7 @@ async def _document_to_text(message: types.Message) -> str:
     if not document:
         raise ValueError("Документ не найден.")
     if document.file_size and document.file_size > MAX_UPLOAD_BYTES:
-        raise ValueError("Максимальный размер загружаемого файла — 15 МБ.")
+        raise ValueError("Максимальный размер загружаемого файла — 150 МБ.")
     filename = document.file_name or "document"
     extension = Path(filename).suffix.lower()
     if extension not in SUPPORTED_FILE_EXTENSIONS:
@@ -453,15 +454,17 @@ async def _document_to_text(message: types.Message) -> str:
             "XML, код, PDF, DOCX, PPTX, XLSX и ZIP с такими файлами."
         )
 
-    buffer = io.BytesIO()
     try:
-        await message.bot.download(document, destination=buffer)
+        # Временный файл не держит ещё одну копию загрузки в оперативной памяти.
+        with tempfile.TemporaryFile(mode="w+b") as buffer:
+            await message.bot.download(document, destination=buffer)
+            buffer.seek(0)
+            raw = buffer.read(MAX_UPLOAD_BYTES + 1)
     except Exception as exc:
         logging.exception("Не удалось скачать документ Telegram")
         raise RuntimeError("Не удалось скачать файл из Telegram.") from exc
-    raw = buffer.getvalue()
     if len(raw) > MAX_UPLOAD_BYTES:
-        raise ValueError("Максимальный размер загружаемого файла — 15 МБ.")
+        raise ValueError("Максимальный размер загружаемого файла — 150 МБ.")
     content = _extract_file_content(filename, raw).strip()
     if not content:
         raise ValueError("В файле не удалось найти текст для передачи модели.")
