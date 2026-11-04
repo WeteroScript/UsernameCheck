@@ -412,7 +412,7 @@ async def sess_interval_prompt(callback: types.CallbackQuery, state: FSMContext)
         "Нажми <b>Назад</b> для отмены.",
         parse_mode=ParseMode.HTML,
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="⬅️ Назад", callback_data="main")]
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data="fsm_back")]
         ])
     )
 
@@ -1998,8 +1998,11 @@ async def session_add(callback: types.CallbackQuery, state: FSMContext):
         f"📱 <b>Добавление сессии</b>\n\n"
         f"Сессий: {len(user_sessions.get(user_id, []))}/{get_max_sessions(user_id)}\n\n"
         "Введите номер телефона в международном формате (с +):\n\n"
-        "Нажми ⬅️ <b>Назад</b> для отмены.",
-        parse_mode=ParseMode.HTML
+        "Введите номер телефона в международном формате (с +):",
+        parse_mode=ParseMode.HTML,
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data="fsm_back")]
+        ])
     )
 
 
@@ -2064,7 +2067,10 @@ async def session_phone(message: types.Message, state: FSMContext):
             "📲 Код придёт в системный чат Telegram\n\n"
             "Введите код подтверждения из Telegram в формате:\n"
             "<code>code12345</code> (префикс code + сам код)",
-            parse_mode=ParseMode.HTML
+            parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="⬅️ Назад", callback_data="fsm_back")]
+            ])
         )
     else:
         await message.answer(
@@ -2109,7 +2115,10 @@ async def session_code(message: types.Message, state: FSMContext):
         await send_with_retry(
             message,
             "🔐 На этом аккаунте включён облачный пароль (2FA).\n\n"
-            "Введи пароль, чтобы завершить вход:\n\nИли нажми ⬅️ Назад для отмены."
+            "Введи пароль, чтобы завершить вход.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="⬅️ Назад", callback_data="fsm_back")]
+            ])
         )
         return
     
@@ -2605,6 +2614,24 @@ class AccessMiddleware(BaseMiddleware):
                 return
 
         return await handler(event, data)
+
+
+@dp.callback_query(lambda c: c.data == "fsm_back")
+async def fsm_back_callback(callback: types.CallbackQuery, state: FSMContext):
+    await state.clear()
+    await callback.answer("Операция отменена")
+    try:
+        await callback.message.edit_text(
+            "Операция отменена.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🏠 Главное меню", callback_data="main")]
+            ])
+        )
+    except TelegramBadRequest:
+        await callback.message.answer(
+            "Операция отменена.",
+            reply_markup=get_main_keyboard(callback.from_user.id)
+        )
 
 
 @dp.callback_query(lambda c: c.data == "check_subscription")
