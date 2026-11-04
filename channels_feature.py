@@ -150,8 +150,8 @@ async def ch_connect(callback: types.CallbackQuery, state: FSMContext):
         "1. Добавь этого бота администратором в свой канал "
         "(нужны права: приглашение пользователей, публикация сообщений)\n"
         "2. Перешли сюда любой пост из канала, или пришли его @username\n\n"
-        "/cancel — отменить",
-        parse_mode=ParseMode.HTML
+        parse_mode=ParseMode.HTML,
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад", callback_data="fsm_back")]])
     )
 
 
@@ -323,8 +323,8 @@ async def ch_auto_count(callback: types.CallbackQuery, state: FSMContext):
     await state.set_state(ChannelStates.waiting_auto_accept_count)
     await callback.message.edit_text(
         f"🔢 Введи число от 0 до {MAX_AUTO_ACCEPT} — максимум заявок, которые бот примет автоматически.\n\n"
-        f"/cancel — отменить",
-        parse_mode=ParseMode.HTML
+        parse_mode=ParseMode.HTML,
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад", callback_data="fsm_back")]])
     )
 
 
@@ -407,7 +407,8 @@ async def ch_post_start(callback: types.CallbackQuery, state: FSMContext):
     post_drafts[user_id] = {"chat_id": chat_id, "text": None, "buttons": []}
     await state.set_state(ChannelStates.waiting_post_text)
     await callback.message.edit_text(
-        "📝 Введите текст для публикации поста\n\n/cancel — отменить"
+        "📝 Введите текст для публикации поста",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад", callback_data="fsm_back")]])
     )
 
 
