@@ -48,8 +48,8 @@ async def shakalizer_menu(callback: types.CallbackQuery, state: FSMContext):
     await callback.message.edit_text(
         "📉 <b>Шакализатор</b>\n\n"
         "Пришли фото — ухудшу его качество на выбор, от 240p и ниже.\n\n"
-        "/cancel — отменить",
-        parse_mode=ParseMode.HTML
+        parse_mode=ParseMode.HTML,
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад", callback_data="fsm_back")]])
     )
 
 
