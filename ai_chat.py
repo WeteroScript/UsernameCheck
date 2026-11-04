@@ -5,6 +5,9 @@
 
 import asyncio
 import json
+import io
+import zipfile
+import xml.etree.ElementTree as ET
 import logging
 import os
 import re
@@ -19,7 +22,7 @@ from aiogram import Router, types
 from aiogram.enums import ButtonStyle
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+from aiogram.types import BufferedInputFile, InlineKeyboardButton, InlineKeyboardMarkup
 from dotenv import load_dotenv
 from access_control import is_premium
 
@@ -33,6 +36,18 @@ HISTORY_PATH = Path(os.getenv("AI_CHAT_HISTORY_FILE", "data/ai_chats.json"))
 
 MAX_CONTEXT_MESSAGES = 40
 TELEGRAM_TEXT_LIMIT = 4000
+MAX_UPLOAD_BYTES = 15 * 1024 * 1024
+MAX_EXTRACTED_CHARS = 80000
+MAX_ARCHIVE_FILES = 40
+MAX_GENERATED_FILE_BYTES = 10 * 1024 * 1024
+TEXT_EXTENSIONS = {
+    ".txt", ".md", ".csv", ".tsv", ".json", ".xml", ".html", ".htm",
+    ".py", ".js", ".ts", ".jsx", ".tsx", ".css", ".scss", ".yaml", ".yml",
+    ".toml", ".ini", ".cfg", ".log", ".sql", ".sh", ".bat", ".ps1",
+    ".java", ".kt", ".go", ".rs", ".c", ".cpp", ".h", ".hpp", ".cs",
+    ".php", ".rb", ".swift", ".r", ".ipynb", ".env.example",
+}
+SUPPORTED_FILE_EXTENSIONS = TEXT_EXTENSIONS | {".zip", ".pdf", ".docx", ".pptx", ".xlsx"}
 REQUEST_COOLDOWN_SECONDS = 30
 _last_request_at: Dict[int, float] = {}
 _active_requests: set[int] = set()
@@ -40,7 +55,11 @@ _active_tasks: Dict[int, asyncio.Task] = {}
 _waiting_messages: Dict[int, types.Message] = {}
 SYSTEM_PROMPT = (
     "Ты — полезный ИИ-помощник. Отвечай на языке пользователя. "
-    "Если пользователь просит код, приводи полный и понятный пример."
+    "Если пользователь просит код, приводи полный и понятный пример. "
+    "Если пользователь просит создать файл для скачивания, возвращай содержимое "
+    "каждого файла строго в формате [[FILE: имя_файла.расширение]], затем новая строка, "
+    "содержимое файла, новая строка и [[/FILE]]. Не помещай содержимое файла вне маркеров. "
+    "Можно вернуть несколько таких блоков. Перед блоками кратко объясни результат."
 )
 
 MODELS = [
@@ -308,6 +327,170 @@ def _split_text(text: str, limit: int = TELEGRAM_TEXT_LIMIT) -> List[str]:
     return chunks
 
 
+
+
+def _decode_text(data: bytes) -> str:
+    for encoding in ("utf-8-sig", "cp1251", "latin-1"):
+        try:
+            return data.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+    raise ValueError("Не удалось определить кодировку текстового файла.")
+
+
+def _extract_office_xml(data: bytes, extension: str) -> str:
+    try:
+        with zipfile.ZipFile(io.BytesIO(data)) as archive:
+            names = sorted(
+                name for name in archive.namelist()
+                if name.endswith(".xml")
+                and (
+                    name.startswith("word/")
+                    or name.startswith("ppt/slides/")
+                    or name.startswith("xl/sharedStrings")
+                    or name.startswith("xl/worksheets/")
+                )
+            )
+            parts = []
+            for name in names:
+                try:
+                    root = ET.fromstring(archive.read(name))
+                except (ET.ParseError, KeyError):
+                    continue
+                values = [
+                    value.strip()
+                    for value in root.itertext()
+                    if value and value.strip()
+                ]
+                if values:
+                    parts.append("\n".join(values))
+            return "\n\n".join(parts)
+    except zipfile.BadZipFile as exc:
+        raise ValueError("Файл офисного формата повреждён.") from exc
+
+
+def _extract_file_content(filename: str, data: bytes, depth: int = 0) -> str:
+    extension = Path(filename).suffix.lower()
+    if extension in TEXT_EXTENSIONS:
+        return _decode_text(data)
+    if extension == ".pdf":
+        try:
+            from pypdf import PdfReader
+            reader = PdfReader(io.BytesIO(data))
+            return "\n".join(page.extract_text() or "" for page in reader.pages)
+        except ImportError as exc:
+            raise ValueError("Для чтения PDF установи зависимость pypdf.") from exc
+        except Exception as exc:
+            raise ValueError(f"Не удалось прочитать PDF: {exc}") from exc
+    if extension in {".docx", ".pptx", ".xlsx"}:
+        return _extract_office_xml(data, extension)
+    if extension == ".zip":
+        if depth >= 2:
+            raise ValueError("Слишком большая глубина вложенных ZIP-архивов.")
+        return _extract_zip_content(data, depth + 1)
+    raise ValueError(
+        f"Формат {extension or 'без расширения'} не поддерживается. "
+        "Поддерживаются текстовые файлы, PDF, DOCX, PPTX, XLSX и ZIP с такими файлами."
+    )
+
+
+def _extract_zip_content(data: bytes, depth: int = 0) -> str:
+    try:
+        with zipfile.ZipFile(io.BytesIO(data)) as archive:
+            files = [item for item in archive.infolist() if not item.is_dir()]
+            if len(files) > MAX_ARCHIVE_FILES:
+                raise ValueError(f"В архиве больше {MAX_ARCHIVE_FILES} файлов.")
+            total_size = sum(item.file_size for item in files)
+            if total_size > 30 * 1024 * 1024:
+                raise ValueError("Распакованный размер архива превышает 30 МБ.")
+
+            extracted = []
+            total_chars = 0
+            for item in files:
+                if item.file_size > MAX_UPLOAD_BYTES:
+                    continue
+                filename = Path(item.filename).name
+                if not filename:
+                    continue
+                extension = Path(filename).suffix.lower()
+                if extension not in SUPPORTED_FILE_EXTENSIONS:
+                    continue
+                try:
+                    content = _extract_file_content(
+                        filename, archive.read(item), depth=depth
+                    ).strip()
+                except (ValueError, RuntimeError) as exc:
+                    extracted.append(f"[Файл {filename}: {exc}]")
+                    continue
+                if not content:
+                    continue
+                remaining = MAX_EXTRACTED_CHARS - total_chars
+                if remaining <= 0:
+                    break
+                content = content[:remaining]
+                extracted.append(f"===== {filename} =====\n{content}")
+                total_chars += len(content)
+            if not extracted:
+                raise ValueError(
+                    "В ZIP не найдено поддерживаемых файлов с извлекаемым содержимым."
+                )
+            return "\n\n".join(extracted)
+    except zipfile.BadZipFile as exc:
+        raise ValueError("Файл не является корректным ZIP-архивом.") from exc
+
+
+async def _document_to_text(message: types.Message) -> str:
+    document = message.document
+    if not document:
+        raise ValueError("Документ не найден.")
+    if document.file_size and document.file_size > MAX_UPLOAD_BYTES:
+        raise ValueError("Максимальный размер загружаемого файла — 15 МБ.")
+    filename = document.file_name or "document"
+    extension = Path(filename).suffix.lower()
+    if extension not in SUPPORTED_FILE_EXTENSIONS:
+        raise ValueError(
+            "Этот формат не поддерживается. Принимаются TXT, MD, CSV, JSON, "
+            "XML, код, PDF, DOCX, PPTX, XLSX и ZIP с такими файлами."
+        )
+
+    buffer = io.BytesIO()
+    try:
+        await message.bot.download(document, destination=buffer)
+    except Exception as exc:
+        logging.exception("Не удалось скачать документ Telegram")
+        raise RuntimeError("Не удалось скачать файл из Telegram.") from exc
+    raw = buffer.getvalue()
+    if len(raw) > MAX_UPLOAD_BYTES:
+        raise ValueError("Максимальный размер загружаемого файла — 15 МБ.")
+    content = _extract_file_content(filename, raw).strip()
+    if not content:
+        raise ValueError("В файле не удалось найти текст для передачи модели.")
+    return (
+        f"Пользователь приложил файл: {filename}\n"
+        f"Извлечённое содержимое:\n{content[:MAX_EXTRACTED_CHARS]}"
+    )
+
+
+def _extract_generated_files(reply: str):
+    pattern = re.compile(
+        r"\[\[FILE:\s*([^\]\r\n]+)\]\]\s*\n(.*?)\n\[\[/FILE\]\]",
+        re.DOTALL | re.IGNORECASE,
+    )
+    files = []
+    for match in pattern.finditer(reply):
+        filename = Path(match.group(1).strip().replace("\\", "/")).name
+        filename = re.sub(r"[^A-Za-z0-9А-Яа-яёЁ._-]", "_", filename)
+        content = match.group(2)
+        if not filename or filename in {".", ".."}:
+            filename = f"generated_{len(files) + 1}.txt"
+        encoded = content.encode("utf-8")
+        if len(encoded) > MAX_GENERATED_FILE_BYTES:
+            raise ValueError(f"Сгенерированный файл {filename} превышает 10 МБ.")
+        files.append((filename, encoded))
+    visible_reply = pattern.sub("", reply).strip()
+    return visible_reply, files
+
+
 def _extract_reply(data: Dict[str, Any]) -> str:
     choices = data.get("choices")
     if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
@@ -497,9 +680,19 @@ async def ai_open_chat(callback: types.CallbackQuery, state: FSMContext):
 
 @router.message(AIChatStates.chatting)
 async def ai_chat_message(message: types.Message, state: FSMContext):
-    user_text = (message.text or "").strip()
-    if not user_text:
-        await message.answer("Отправь текстовое сообщение. Файлы и голосовые сообщения пока не поддерживаются.")
+    user_text = (message.text or message.caption or "").strip()
+    if message.document:
+        try:
+            document_text = await _document_to_text(message)
+        except (ValueError, RuntimeError) as exc:
+            await message.answer(f"Не удалось обработать файл: {exc}")
+            return
+        user_text = f"{user_text}\n\n{document_text}".strip()
+    elif not user_text:
+        await message.answer(
+            "Отправь текст или документ. Поддерживаются TXT, MD, CSV, JSON, XML, "
+            "файлы с кодом, PDF, DOCX, PPTX, XLSX и ZIP-архивы с такими файлами."
+        )
         return
     if user_text.lower() in ("/cancel", "отмена"):
         await state.clear()
@@ -549,7 +742,9 @@ async def ai_chat_message(message: types.Message, state: FSMContext):
         if not _save_history():
             logging.error("Ответ ИИ получен, но историю диалога не удалось сохранить.")
 
-        chunks = _split_text(f'"{model}" - {reply}')
+        visible_reply, generated_files = _extract_generated_files(reply)
+        display_text = f'"{model}" - {visible_reply}' if visible_reply else f'"{model}" - Файл готов.'
+        chunks = _split_text(display_text)
         try:
             if waiting:
                 await waiting.edit_text(chunks[0])
@@ -558,6 +753,11 @@ async def ai_chat_message(message: types.Message, state: FSMContext):
             await message.answer(chunks[0])
         for chunk in chunks[1:]:
             await message.answer(chunk)
+        for filename, file_content in generated_files:
+            await message.answer_document(
+                BufferedInputFile(file_content, filename=filename),
+                caption=f"Файл от модели {model}",
+            )
     except RuntimeError as exc:
         if waiting:
             await waiting.edit_text(f'"{model}" - Ошибка запроса: {exc}')
