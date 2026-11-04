@@ -15,7 +15,7 @@ Telegram-бот на Python 3.10+ и aiogram 3.x.
 | `API_HASH` | Да | Telegram API Hash |
 | `TOKENPLAN_API_KEY` | Для чата с ИИ | Ключ TokenPlan |
 | `TOKENPLAN_BASE_URL` | Нет | URL Chat Completions API; по умолчанию используется TokenPlan |
-| `AI_CHAT_HISTORY_FILE` | Нет | Путь к файлу истории; по умолчанию `data/ai_chats.json` |
+| `AI_CHAT_HISTORY_FILE` | Нет | Путь к файлу истории; по умолчанию `data/ai_chats.json` |\n| `USE_LOCAL_BOT_API` | Нет | Использовать локальный Bot API; в Docker включён по умолчанию |\n| `TELEGRAM_BOT_API_URL` | Нет | Адрес локального Bot API; по умолчанию `http://127.0.0.1:8081` |\n| `AI_CHAT_MAX_UPLOAD_MB` | Нет | Лимит файла для ИИ-чата в МБ; по умолчанию `150` |
 
 Значения `BOT_TOKEN`, `API_HASH` и `TOKENPLAN_API_KEY` храни только в настройках хостинга,
 не добавляй их в GitHub. Для `AI_CHAT_HISTORY_FILE` используй путь внутри постоянного
@@ -59,6 +59,6 @@ docker build -t username-check .
 Запуск с локальным файлом окружения и отдельным томом для истории:
 
 ```bash
-docker run --env-file .env -v username-check-data:/app/data username-check
+docker run --env-file .env -p 3000:3000 -v username-check-data:/app/data username-check
 ```
 
