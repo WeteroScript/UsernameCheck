@@ -2581,9 +2581,14 @@ class AccessMiddleware(BaseMiddleware):
                     try:
                         chat = await self.bot_ref.get_chat(chat_id)
                         title = chat.title or "Канал"
-                        url = f"https://t.me/{chat.username}" if chat.username else None
-                    except Exception:
-                        title, url = "Канал", None
+                        url = (
+                            MANDATORY_CHANNEL_LINKS.get(int(chat_id))
+                            or (f"https://t.me/{chat.username}" if chat.username else None)
+                        )
+                    except Exception as e:
+                        logging.error("Не удалось получить данные обязательного канала %s: %s", chat_id, e)
+                        title = "Канал"
+                        url = MANDATORY_CHANNEL_LINKS.get(int(chat_id))
                     if url:
                         buttons.append([InlineKeyboardButton(text=f"📢 {title}", url=url)])
                 buttons.append([InlineKeyboardButton(text="✅ Я подписался", callback_data="check_subscription")])
