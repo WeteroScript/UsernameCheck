@@ -1997,7 +1997,6 @@ async def session_add(callback: types.CallbackQuery, state: FSMContext):
         callback.message,
         f"📱 <b>Добавление сессии</b>\n\n"
         f"Сессий: {len(user_sessions.get(user_id, []))}/{get_max_sessions(user_id)}\n\n"
-        "Введите номер телефона в международном формате (с +):\n\n"
         "Введите номер телефона в международном формате (с +):",
         parse_mode=ParseMode.HTML,
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
