@@ -93,7 +93,7 @@ async def github_menu(callback: types.CallbackQuery, state: FSMContext):
     await state.set_state(ExtraStates.waiting_github_query)
     await callback.message.edit_text(
         "🐙 <b>Поиск репозиториев GitHub</b>\n\n"
-        "Введи ключевые слова для поиска:\n\n"
+        "Введи ключевые слова для поиска:",
         parse_mode=ParseMode.HTML,
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад", callback_data="fsm_back")]])
     )
