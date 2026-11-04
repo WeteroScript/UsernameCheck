@@ -58,9 +58,13 @@ _waiting_messages: Dict[int, types.Message] = {}
 SYSTEM_PROMPT = (
     "Ты — полезный ИИ-помощник. Отвечай на языке пользователя. "
     "Если пользователь просит код, приводи полный и понятный пример. "
-    "Если пользователь просит создать файл для скачивания, возвращай содержимое "
-    "каждого файла строго в формате [[FILE: имя_файла.расширение]], затем новая строка, "
-    "содержимое файла, новая строка и [[/FILE]]. Не помещай содержимое файла вне маркеров. "
+    "Ты не имеешь доступа к файловой системе сервера, локальным папкам или инструментам "
+    "работы с файлами. Но бот умеет создавать и отправлять файлы из текста твоего ответа. "
+    "Поэтому на любую просьбу создать, подготовить или сохранить файл для пользователя "
+    "верни его полное содержимое строго в формате [[FILE: имя_файла.расширение]], "
+    "затем новая строка, содержимое файла, новая строка и [[/FILE]]. "
+    "Не утверждай, что файл создан в рабочей папке или что у тебя нет инструментов: "
+    "сформируй содержимое внутри маркеров. Не помещай содержимое файла вне маркеров. "
     "Можно вернуть несколько таких блоков. Перед блоками кратко объясни результат."
 )
 
@@ -495,6 +499,21 @@ def _extract_generated_files(reply: str):
     return visible_reply, files
 
 
+def _is_file_creation_request(user_text: str) -> bool:
+    """Определяет явные просьбы пользователя создать файл для отправки."""
+    patterns = (
+        r"\\bсозда(?:й|ть|йте)\\s+(?:мне\\s+)?(?:файл|документ|текстовый файл)\\b",
+        r"\\bсдела(?:й|ть|йте)\\s+(?:мне\\s+)?(?:файл|\\.txt|\\.md|\\.pdf|\\.docx)\\b",
+        r"\\bсохрани(?:ть)?\\s+.{0,40}\\bв\\s+файл\\b",
+        r"\\bподготов(?:ь|ить|ьте)\\s+.{0,40}\\bфайл\\b",
+        r"\\bфайл\\s+(?:для\\s+)?скачивания\\b",
+        r"\\bcreate\\s+(?:a\\s+)?(?:file|document)\\b",
+        r"\\bmake\\s+(?:me\\s+)?(?:a\\s+)?file\\b",
+        r"\\bexport\\s+(?:this|it|as)\\b",
+    )
+    return any(re.search(pattern, user_text, re.IGNORECASE) for pattern in patterns)
+
+
 def _extract_reply(data: Dict[str, Any]) -> str:
     choices = data.get("choices")
     if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
@@ -735,6 +754,46 @@ async def ai_chat_message(message: types.Message, state: FSMContext):
         waiting = await message.answer("👀 Ии готовит ответ")
         _waiting_messages[user_id] = waiting
         reply = await _request_model(model, chat.get("messages", []), user_text)
+        visible_reply, generated_files = _extract_generated_files(reply)
+
+        # Если пользователь явно запросил файл, а модель проигнорировала формат,
+        # делаем один уточняющий запрос с исходным ответом в контексте.
+        if _is_file_creation_request(user_text) and not generated_files:
+            retry_context = [
+                *chat.get("messages", [])[-MAX_CONTEXT_MESSAGES:],
+                {"role": "user", "content": user_text},
+                {"role": "assistant", "content": reply},
+            ]
+            retry_instruction = (
+                "Твой предыдущий ответ не создал файл: в нём отсутствует блок "
+                "[[FILE: имя_файла.расширение]] ... [[/FILE]]. "
+                "Сейчас выполни исходную просьбу пользователя. Верни полное содержимое "
+                "каждого нужного файла строго внутри такого блока. Не описывай инструменты "
+                "и не заявляй, что не можешь работать с файлами."
+            )
+            try:
+                retry_reply = await _request_model(model, retry_context, retry_instruction)
+                retry_visible, retry_files = _extract_generated_files(retry_reply)
+                if retry_files:
+                    reply = retry_reply
+                    visible_reply, generated_files = retry_visible, retry_files
+                else:
+                    logging.warning(
+                        "Модель %s не вернула блок файла после повторного запроса", model
+                    )
+                    reply = (
+                        "Не удалось получить файл от модели: она не вернула содержимое "
+                        "в требуемом формате. Повтори запрос, указав имя и формат файла."
+                    )
+                    visible_reply, generated_files = reply, []
+            except RuntimeError:
+                logging.exception("Повторный запрос для генерации файла завершился ошибкой")
+                reply = (
+                    "Не удалось создать файл: повторный запрос к модели завершился ошибкой. "
+                    "Попробуй ещё раз позже."
+                )
+                visible_reply, generated_files = reply, []
+
         messages = chat.setdefault("messages", [])
         messages.extend([
             {"role": "user", "content": user_text},
@@ -746,7 +805,6 @@ async def ai_chat_message(message: types.Message, state: FSMContext):
         if not _save_history():
             logging.error("Ответ ИИ получен, но историю диалога не удалось сохранить.")
 
-        visible_reply, generated_files = _extract_generated_files(reply)
         display_text = f'"{model}" - {visible_reply}' if visible_reply else f'"{model}" - Файл готов.'
         chunks = _split_text(display_text)
         try:
