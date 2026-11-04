@@ -1010,8 +1010,8 @@ async def change_length(callback: types.CallbackQuery, state: FSMContext):
         f"это максимальная длина для создаваемого юзернейма.\n\n"
         f"<i>Чем больше длина, тем больше одинаковых букв/цифр подряд можно "
         f"будет настроить.</i>\n\n"
-        f"/cancel — отменить",
-        parse_mode=ParseMode.HTML
+        parse_mode=ParseMode.HTML,
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад", callback_data="fsm_back")]])
     )
 
 @router.message(UsernameSettingsStates.waiting_length)
@@ -1109,8 +1109,9 @@ async def watch_add(callback: types.CallbackQuery, state: FSMContext):
     await callback.answer()
     await state.set_state(UsernameSettingsStates.waiting_watch_username)
     await callback.message.edit_text(
-        "✏️ Введи юзернейм для отслеживания (без @):\n\n/cancel — отменить",
-        parse_mode=ParseMode.HTML
+        "✏️ Введи юзернейм для отслеживания (без @):",
+        parse_mode=ParseMode.HTML,
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад", callback_data="fsm_back")]])
     )
 
 
@@ -1123,7 +1124,7 @@ async def watch_add_input(message: types.Message, state: FSMContext):
         await message.answer("❌ Отменено", reply_markup=get_check_menu_keyboard())
         return
     if not re.match(r'^[a-zA-Z][a-zA-Z0-9_]{4,31}$', text):
-        await message.answer("❌ Неверный формат юзернейма. Попробуй снова, или /cancel.")
+        await message.answer("❌ Неверный формат юзернейма. Попробуй снова или нажми «Назад».")
         return
     await state.clear()
     watched_usernames.setdefault(user_id, [])
