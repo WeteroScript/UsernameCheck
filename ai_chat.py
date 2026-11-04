@@ -485,17 +485,28 @@ def _extract_generated_files(reply: str):
         re.DOTALL | re.IGNORECASE,
     )
     files = []
+    empty_files = 0
     for match in pattern.finditer(reply):
         filename = Path(match.group(1).strip().replace("\\", "/")).name
         filename = re.sub(r"[^A-Za-z0-9А-Яа-яёЁ._-]", "_", filename)
         content = match.group(2)
         if not filename or filename in {".", ".."}:
-            filename = f"generated_{len(files) + 1}.txt"
+            filename = f"generated_{len(files) + empty_files + 1}.txt"
         encoded = content.encode("utf-8")
+        if not encoded.strip():
+            empty_files += 1
+            logging.warning("Модель вернула пустой файл %s; файл пропущен.", filename)
+            continue
         if len(encoded) > MAX_GENERATED_FILE_BYTES:
             raise ValueError(f"Сгенерированный файл {filename} превышает 10 МБ.")
         files.append((filename, encoded))
     visible_reply = pattern.sub("", reply).strip()
+    if empty_files:
+        warning = (
+            f"Пустых файлов от модели: {empty_files}. "
+            "Они пропущены, поскольку Telegram не принимает файлы нулевого размера."
+        )
+        visible_reply = f"{visible_reply}\n\n{warning}".strip()
     return visible_reply, files
 
 
