@@ -502,14 +502,14 @@ def _extract_generated_files(reply: str):
 def _is_file_creation_request(user_text: str) -> bool:
     """Определяет явные просьбы пользователя создать файл для отправки."""
     patterns = (
-        r"\\bсозда(?:й|ть|йте)\\s+(?:мне\\s+)?(?:файл|документ|текстовый файл)\\b",
-        r"\\bсдела(?:й|ть|йте)\\s+(?:мне\\s+)?(?:файл|\\.txt|\\.md|\\.pdf|\\.docx)\\b",
-        r"\\bсохрани(?:ть)?\\s+.{0,40}\\bв\\s+файл\\b",
-        r"\\bподготов(?:ь|ить|ьте)\\s+.{0,40}\\bфайл\\b",
-        r"\\bфайл\\s+(?:для\\s+)?скачивания\\b",
-        r"\\bcreate\\s+(?:a\\s+)?(?:file|document)\\b",
-        r"\\bmake\\s+(?:me\\s+)?(?:a\\s+)?file\\b",
-        r"\\bexport\\s+(?:this|it|as)\\b",
+        r"\bсозда(?:й|ть|йте)\s+(?:мне\s+)?(?:файл|документ|текстовый файл)\b",
+        r"\bсдела(?:й|ть|йте)\s+(?:мне\s+)?(?:файл|\.txt|\.md|\.pdf|\.docx)\b",
+        r"\bсохрани(?:ть)?\s+.{0,40}\bв\s+файл\b",
+        r"\bподготов(?:ь|ить|ьте)\s+.{0,40}\bфайл\b",
+        r"\bфайл\s+(?:для\s+)?скачивания\b",
+        r"\bcreate\s+(?:a\s+)?(?:file|document)\b",
+        r"\bmake\s+(?:me\s+)?(?:a\s+)?file\b",
+        r"\bexport\s+(?:this|it|as)\b",
     )
     return any(re.search(pattern, user_text, re.IGNORECASE) for pattern in patterns)
 
