@@ -499,6 +499,33 @@ def _extract_generated_files(reply: str):
     return visible_reply, files
 
 
+def _build_generated_zip(files: List[tuple]) -> bytes:
+    """Упаковывает несколько сгенерированных файлов в один ZIP-архив."""
+    if len(files) > MAX_ARCHIVE_FILES:
+        raise ValueError(f"Модель вернула больше {MAX_ARCHIVE_FILES} файлов за один ответ.")
+    total_size = sum(len(file_content) for _, file_content in files)
+    if total_size > MAX_UPLOAD_BYTES:
+        raise ValueError(
+            f"Общий размер сгенерированных файлов превышает лимит {MAX_UPLOAD_MB} МБ."
+        )
+
+    output = io.BytesIO()
+    used_names = set()
+    with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        for index, (filename, file_content) in enumerate(files, start=1):
+            safe_name = Path(filename).name or f"generated_{index}.txt"
+            candidate = safe_name
+            stem = Path(safe_name).stem
+            suffix = Path(safe_name).suffix
+            counter = 2
+            while candidate.casefold() in used_names:
+                candidate = f"{stem}_{counter}{suffix}"
+                counter += 1
+            used_names.add(candidate.casefold())
+            archive.writestr(candidate, file_content)
+    return output.getvalue()
+
+
 def _is_file_creation_request(user_text: str) -> bool:
     """Определяет явные просьбы пользователя создать файл для отправки."""
     patterns = (
@@ -814,7 +841,14 @@ async def ai_chat_message(message: types.Message, state: FSMContext):
             await message.answer(chunks[0])
         for chunk in chunks[1:]:
             await message.answer(chunk)
-        for filename, file_content in generated_files:
+        if len(generated_files) >= 2:
+            archive_content = _build_generated_zip(generated_files)
+            await message.answer_document(
+                BufferedInputFile(archive_content, filename="generated_files.zip"),
+                caption=f'Архив с {len(generated_files)} файлами от модели {model}',
+            )
+        elif generated_files:
+            filename, file_content = generated_files[0]
             await message.answer_document(
                 BufferedInputFile(file_content, filename=filename),
                 caption=f"Файл от модели {model}",
