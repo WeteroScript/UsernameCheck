@@ -408,7 +408,7 @@ async def ch_post_start(callback: types.CallbackQuery, state: FSMContext):
     await state.set_state(ChannelStates.waiting_post_text)
     await callback.message.edit_text(
         "📝 Введите текст для публикации поста",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад", callback_data="fsm_back")]])
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад", callback_data="post_cancel")]])
     )
 
 
@@ -461,7 +461,7 @@ async def post_add_btn(callback: types.CallbackQuery, state: FSMContext):
         "<code>Название|ссылка</code>\n\n"
         "После этого предложу выбрать цвет кнопки.",
         parse_mode=ParseMode.HTML,
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад", callback_data="fsm_back")]])
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад", callback_data="post_cancel")]])
     )
 
 
