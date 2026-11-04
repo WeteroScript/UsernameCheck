@@ -50,7 +50,7 @@ TEXT_EXTENSIONS = {
     ".php", ".rb", ".swift", ".r", ".ipynb", ".env.example",
 }
 SUPPORTED_FILE_EXTENSIONS = TEXT_EXTENSIONS | {".zip", ".pdf", ".docx", ".pptx", ".xlsx"}
-REQUEST_COOLDOWN_SECONDS = 30
+REQUEST_COOLDOWN_SECONDS = 5
 _last_request_at: Dict[int, float] = {}
 _active_requests: set[int] = set()
 _active_tasks: Dict[int, asyncio.Task] = {}
