@@ -179,6 +179,7 @@ async def premium_menu(callback: types.CallbackQuery):
 
 def get_getid_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🆔 Мой ID", callback_data="getid_me", style=ButtonStyle.SUCCESS)],
         [InlineKeyboardButton(text="📢 Каналы", callback_data="getid_channel")],
         [InlineKeyboardButton(text="👥 Группы", callback_data="getid_group")],
         [InlineKeyboardButton(text="👤 Пользователи", callback_data="getid_user")],
@@ -193,6 +194,26 @@ GETID_PROMPTS = {
     "user": ("👤 Пришли @username пользователя, или перешли сюда любое его сообщение.", ExtraStates.waiting_id_user),
     "bot": ("🤖 Пришли @username бота.", ExtraStates.waiting_id_bot),
 }
+
+
+@router.callback_query(lambda c: c.data == "getid_me")
+async def getid_me(callback: types.CallbackQuery):
+    await callback.answer()
+    await callback.message.edit_text(
+        "🆔 <b>Твой Telegram ID</b>\n\n<code>" + str(callback.from_user.id) + "</code>\n\n"
+        "Этот номер можно передать администратору для настройки доступа.",
+        parse_mode=ParseMode.HTML,
+        reply_markup=get_getid_keyboard(),
+    )
+
+
+@router.message(Command("id", "myid"))
+async def getid_self_command(message: types.Message):
+    await message.answer(
+        "🆔 Твой Telegram ID: <code>" + str(message.from_user.id) + "</code>",
+        parse_mode=ParseMode.HTML,
+        reply_markup=get_getid_keyboard(),
+    )
 
 
 @router.callback_query(lambda c: c.data == "getid_menu")
@@ -247,9 +268,32 @@ async def _resolve_and_reply_id(message: types.Message, state: FSMContext, label
         await message.answer("❌ Пришли ссылку/юзернейм, или перешли сообщение.")
         return
 
+    if text.lower() in {"me", "я", "мой id", "мой айди"}:
+        await message.answer(
+            "🆔 <b>Твой Telegram ID</b>\n\n<code>" + str(message.from_user.id) + "</code>",
+            parse_mode=ParseMode.HTML,
+            reply_markup=get_getid_keyboard(),
+        )
+        return
+    if text.lstrip("-").isdigit():
+        await message.answer(
+            f"🆔 <b>{label}</b>\n\nID: <code>{text}</code>",
+            parse_mode=ParseMode.HTML,
+            reply_markup=get_getid_keyboard(),
+        )
+        return
+
     username = text.lstrip('@')
     if "t.me/" in username:
         username = username.split("t.me/")[-1].split("/")[0].split("?")[0]
+    username = username.strip().lstrip("@")
+    if username and username.lower() == (message.from_user.username or "").lower():
+        await message.answer(
+            "🆔 <b>Твой Telegram ID</b>\n\n<code>" + str(message.from_user.id) + "</code>",
+            parse_mode=ParseMode.HTML,
+            reply_markup=get_getid_keyboard(),
+        )
+        return
 
     # Попытка 1: Bot API (работает для каналов, групп, ботов и пользователей которых бот знает)
     try:
