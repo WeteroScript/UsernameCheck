@@ -919,7 +919,6 @@ async def dodeeper_work_toggle(callback: types.CallbackQuery):
 
 async def _run_dodeeper_loader(user_id: int, phone: str, notify_chat_id: int):
     """Механика грузчика для бота @Dodeperplaybot."""
-    from Bot import active_clients, _get_connected_client
     client = await _get_connected_client(phone)
     if not client:
         dodeeper_active.discard(phone)
@@ -3533,7 +3532,6 @@ async def _run_crypto_autotrader(user_id: int, phone: str, notify_chat_id: int):
 
     База сбрасывается при каждой продаже — цикл начинается заново.
     """
-    from Bot import _get_connected_client
     client = await _get_connected_client(phone)
     if not client:
         crypto_trader_active.discard(phone)
