@@ -133,7 +133,10 @@ SYSTEM_PROMPT += (
     "полностью в отдельном блоке формата [[GITHUB_FILE: путь/от/корня/репозитория]] затем перевод "
     "строки, полное содержимое файла, затем перевод строки и [[/GITHUB_FILE]]. Не используй "
     "абсолютные пути и .. в путях. Не возвращай блоки для файлов, которые менять не нужно. "
-    "Бот создаст отдельную ветку и Pull Request; он не будет напрямую изменять основную ветку. "
+    "Если пользователь дал ссылку вида /tree/ИМЯ_ВЕТКИ или явно выбрал ветку, бот коммитит изменения " +
+    "непосредственно только в эту ветку: без новой AI-ветки и без Pull Request. Не переключайся на main " +
+    "и не записывай в другие ветки. Если конкретная ветка не указана, используй безопасный режим " +
+    "с отдельной AI-веткой и Pull Request. "
     "Если пользователь просит только анализ или объяснение, не создавай GITHUB_FILE-блоки. "
     "Не помещай секреты, токены, пароли или содержимое .env в новые файлы и не копируй их из контекста. "
     "ИНСТРУКЦИЯ ПО ИСПОЛЬЗОВАНИЮ GITHUB: перед изменением репозитория определи owner/name, "
@@ -143,7 +146,8 @@ SYSTEM_PROMPT += (
     "версию, а не diff или отдельный фрагмент. Не изменяй файл, которого нет в снимке, если "
     "не уверен в его назначении: запроси его у пользователя. Для GitHub используй только "
     "GITHUB_FILE-блоки, не FILE-блоки и не локальный ZIP. После отправки изменений бот создаёт "
-    "отдельную ветку, коммит и Pull Request; сообщай ссылку на PR, но не утверждай, что PR слит. "
+    "если пользователь выбрал ветку — коммит в эту ветку напрямую; если ветка не выбрана — отдельную " +
+    "AI-ветку и Pull Request. Никогда не изменяй другие ветки и не утверждай, что PR слит. "
     "Порядок: изучить репозиторий, определить минимальный набор файлов, подготовить полные файлы, "
     "проверить импорты, пути и зависимости, затем вернуть GITHUB_FILE-блоки. Если репозиторий "
     "не подключён или недоступен, объясни, что сначала нужно подключить GitHub в меню бота и "
@@ -152,7 +156,8 @@ SYSTEM_PROMPT += (
     "терминал, файловую систему или GitHub API. Это выполняет оркестратор Telegram-бота. "
     "Если в сообщении присутствует снимок репозитория и пользователь просит внести изменение, "
     "не отвечай, что у тебя нет доступа к GitHub: верни точные GITHUB_FILE-блоки, после чего "
-    "бот сам создаст ветку, коммит и Pull Request. Для создания ZIP верни все файлы в FILE-блоках; "
+    "бот применит их строго к выбранной ветке либо создаст отдельную AI-ветку и Pull Request, " +
+    "если ветка не выбрана. Для создания ZIP верни все файлы в FILE-блоках; "
     "бот соберёт настоящий архив и сохранит относительные пути. Не заявляй, что операция завершена, "
     "пока бот не подтвердил её результат."
 )
@@ -974,6 +979,31 @@ def _extract_github_reference(user_text: str) -> Optional[str]:
     if not match:
         return None
     return match.group(0).rstrip(".,;:!?)\\]}>")
+
+
+
+def _github_reference_has_branch(reference: Optional[str]) -> bool:
+    if not reference:
+        return False
+    return bool(re.search(
+        r"github\\.com/[^/\\s]+/[^/\\s]+/(?:tree|blob)/",
+        reference,
+        re.IGNORECASE,
+    ))
+
+
+def _extract_github_branch_name(user_text: str) -> Optional[str]:
+    """Read an explicitly labelled branch name, e.g. 'ветка: feature/api'."""
+    patterns = (
+        r"\\bветк(?:а|у|е)\\s*[:=]\\s*[`\"]?([A-Za-z0-9][A-Za-z0-9._/-]*)",
+        r"\\bв\\s+ветке\\s+[`\"]?([A-Za-z0-9][A-Za-z0-9._/-]*)",
+        r"\\bbranch\\s*[:=]\\s*[`\"]?([A-Za-z0-9][A-Za-z0-9._/-]*)",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, user_text, re.IGNORECASE)
+        if match:
+            return match.group(1).rstrip(".,;:!?)\\]}>")
+    return None
 
 
 
@@ -1955,12 +1985,36 @@ async def ai_chat_message(message: types.Message, state: FSMContext):
                 )
         _save_history()
         model_history = _history_without_old_files(stored_messages)
-        repository_reference = _extract_github_reference(user_text) or chat.get("github_repo")
+        repository_url = _extract_github_reference(user_text)
+        repository_reference = repository_url or chat.get("github_repo")
+        explicit_branch_name = _extract_github_branch_name(user_text)
+        if explicit_branch_name:
+            chat["github_target_branch"] = explicit_branch_name
+
         repository_snapshot = None
         request_text = user_text
         if repository_reference:
-            repository_snapshot = await fetch_repository_context(user_id, repository_reference, chat.get("github_branch"))
+            if _github_reference_has_branch(repository_url):
+                branch_override = None
+            else:
+                branch_override = (
+                    explicit_branch_name
+                    or chat.get("github_target_branch")
+                    or chat.get("github_branch")
+                )
+            repository_snapshot = await fetch_repository_context(
+                user_id, repository_reference, branch_override
+            )
             chat["github_repo"] = repository_snapshot["html_url"]
+            if repository_snapshot.get("branch_from_reference") or explicit_branch_name:
+                chat["github_target_branch"] = repository_snapshot["branch"]
+            request_text += (
+                "\n\n[ЦЕЛЕВАЯ ВЕТКА GITHUB]\n"
+                + repository_snapshot["branch"]
+                + (" (из ссылки пользователя; изменения должны идти только сюда)"
+                   if repository_snapshot.get("branch_from_reference") or explicit_branch_name
+                   else "")
+            )
             request_text += "\n\n[СНИМОК GITHUB-РЕПОЗИТОРИЯ]\n" + repository_snapshot["context"]
         reply = await _request_model(model, model_history, request_text, user_id=user_id)
         reply_without_github_files, github_files = _extract_github_files(reply)
@@ -2026,22 +2080,32 @@ async def ai_chat_message(message: types.Message, state: FSMContext):
         if github_files:
             if not repository_snapshot:
                 raise RuntimeError("Для отправки изменений в GitHub сначала пришли ссылку на репозиторий.")
-            pull_request = await create_repository_pull_request(
+            target_branch = chat.get("github_target_branch")
+            github_result = await create_repository_pull_request(
                 user_id,
                 repository_snapshot["full_name"],
                 github_files,
                 title="AI changes: " + _short_title(str(chat.get("title") or user_text), 70),
                 body=visible_reply,
-                base_branch_override=chat.get("github_branch"),
+                base_branch_override=target_branch or chat.get("github_branch"),
+                commit_to_target_branch=bool(target_branch),
             )
-            chat["github_branch"] = pull_request["branch"]
-            changed_paths = pull_request.get("changed_files", [])
-            success_details = (
-                f"Изменения отправлены в GitHub. Обновлено файлов: {len(changed_paths)}."
-            )
+            changed_paths = github_result.get("changed_files", [])
+            if github_result.get("direct_commit"):
+                success_details = (
+                    f"Изменения записаны непосредственно в ветку {target_branch}. "
+                    f"Коммит: {github_result['commit'][:7]}. Изменено файлов: {len(changed_paths)}."
+                )
+                result_link_label = "Ветка"
+            else:
+                chat["github_branch"] = github_result["branch"]
+                success_details = (
+                    f"Изменения отправлены в GitHub. Обновлено файлов: {len(changed_paths)}."
+                )
+                result_link_label = "Pull Request"
             visible_reply = (
                 (visible_reply + "\n\n" if visible_reply else "")
-                + success_details + " Pull Request: " + pull_request["url"]
+                + success_details + " " + result_link_label + ": " + github_result["url"]
             )
 
         # Если пользователь явно запросил файл, но модель не создала ни одного
