@@ -3,6 +3,7 @@
 вступление, создание постов с кнопками.
 """
 
+import asyncio
 import json
 import os
 import logging
@@ -18,6 +19,9 @@ router = Router()
 CHANNELS_FILE = "connected_channels.json"
 MAX_CHANNELS = 10
 MAX_AUTO_ACCEPT = 10_000_000
+DEFAULT_AUTO_ACCEPT_CHANNEL_ID = -1004447078589
+DEFAULT_AUTO_ACCEPT_DELAY_SECONDS = 90
+_pending_default_accepts: set[tuple[int, int]] = set()
 
 # user_id -> [{"chat_id", "title", "username", "auto_accept_enabled",
 #              "auto_accept_max", "auto_accept_done"}]
@@ -357,9 +361,39 @@ async def ch_auto_count_input(message: types.Message, state: FSMContext):
     )
 
 
+async def _approve_default_join_request(bot, chat_id: int, applicant_id: int):
+    """Принимает заявки в заданный приватный канал через 90 секунд."""
+    key = (chat_id, applicant_id)
+    try:
+        await asyncio.sleep(DEFAULT_AUTO_ACCEPT_DELAY_SECONDS)
+        await bot.approve_chat_join_request(chat_id, applicant_id)
+        logging.info(
+            "Авто-приём: заявка пользователя %s в канал %s принята через %s сек.",
+            applicant_id, chat_id, DEFAULT_AUTO_ACCEPT_DELAY_SECONDS,
+        )
+    except Exception as e:
+        logging.error(
+            "Ошибка авто-приёма заявки пользователя %s в канал %s: %s",
+            applicant_id, chat_id, e,
+        )
+    finally:
+        _pending_default_accepts.discard(key)
+
+
 async def handle_chat_join_request(update: types.ChatJoinRequest, bot):
     """Вызывается из главного обработчика chat_join_request в Bot.py."""
     chat_id = update.chat.id
+
+    # Для указанного приватного канала действует автоматический приём
+    # через 90 секунд после поступления заявки, независимо от настроек UI.
+    if chat_id == DEFAULT_AUTO_ACCEPT_CHANNEL_ID:
+        applicant_id = update.from_user.id
+        key = (chat_id, applicant_id)
+        if key not in _pending_default_accepts:
+            _pending_default_accepts.add(key)
+            asyncio.create_task(_approve_default_join_request(bot, chat_id, applicant_id))
+        return
+
     for user_id, chans in channels_data.items():
         ch = _find_channel(user_id, chat_id)
         if not ch or not ch.get("auto_accept_enabled"):
