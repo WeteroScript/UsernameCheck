@@ -996,7 +996,7 @@ def _extract_github_branch_name(user_text: str) -> Optional[str]:
     """Read an explicitly labelled branch name, e.g. 'ветка: feature/api'."""
     patterns = (
         r"\bветк(?:а|у|е)\s*[:=]\s*[`\"]?([A-Za-z0-9][A-Za-z0-9._/-]*)",
-        r"\\bв\\s+ветке\\s+[`\"]?([A-Za-z0-9][A-Za-z0-9._/-]*)",
+        r"\bв\s+ветке\s+[`\"]?([A-Za-z0-9][A-Za-z0-9._/-]*)",
         r"\bbranch\s*[:=]\s*[`\"]?([A-Za-z0-9][A-Za-z0-9._/-]*)",
     )
     for pattern in patterns:
