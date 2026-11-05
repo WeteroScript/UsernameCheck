@@ -48,7 +48,7 @@ MAX_CONTEXT_MESSAGES = 40
 TELEGRAM_TEXT_LIMIT = 4000
 MAX_UPLOAD_MB = max(1, int(os.getenv("AI_CHAT_MAX_UPLOAD_MB", "200")))
 MAX_UPLOAD_BYTES = MAX_UPLOAD_MB * 1024 * 1024
-MAX_ARCHIVE_FILES = 40
+MAX_ARCHIVE_FILES = 500
 MAX_GENERATED_FILE_BYTES = 10 * 1024 * 1024
 TEXT_EXTENSIONS = {
     ".txt", ".md", ".csv", ".tsv", ".json", ".xml", ".html", ".htm",
@@ -946,8 +946,7 @@ def _extract_github_files(reply: str):
         content = match.group(2)
         if not path or path.startswith("/") or any(part in ("", ".", "..") for part in path.split("/")):
             raise ValueError("Модель вернула недопустимый путь GitHub-файла: " + path[:120])
-        if not content.strip():
-            raise ValueError("Модель вернула пустой GitHub-файл: " + path[:120])
+        # Пустые файлы допустимы в GitHub (например, пустой __init__.py).
         files.append((path, content))
     return pattern.sub("", reply).strip(), files
 
