@@ -2550,10 +2550,11 @@ async def adm_group_callback(callback: types.CallbackQuery, state: FSMContext):
 
 
 @dp.callback_query(lambda c: c.data == "adm_buttons")
-async def adm_buttons_callback(callback: types.CallbackQuery):
+async def adm_buttons_callback(callback: types.CallbackQuery, state: FSMContext):
     if not is_admin(callback.from_user.id):
         await callback.answer("Недостаточно прав.", show_alert=True)
         return
+    await state.clear()
     await callback.answer()
     await safe_edit_message(
         callback.message,
@@ -2565,7 +2566,7 @@ async def adm_buttons_callback(callback: types.CallbackQuery):
 
 
 @dp.callback_query(lambda c: c.data and c.data.startswith("adm_buttons_section_"))
-async def adm_buttons_section_callback(callback: types.CallbackQuery):
+async def adm_buttons_section_callback(callback: types.CallbackQuery, state: FSMContext):
     if not is_admin(callback.from_user.id):
         await callback.answer("Недостаточно прав.", show_alert=True)
         return
@@ -2573,6 +2574,7 @@ async def adm_buttons_section_callback(callback: types.CallbackQuery):
     if section not in BUTTON_CONTROL_SECTIONS:
         await callback.answer("Раздел не найден.", show_alert=True)
         return
+    await state.clear()
     await callback.answer()
     title = BUTTON_CONTROL_SECTIONS[section][0]
     await safe_edit_message(
@@ -2585,7 +2587,7 @@ async def adm_buttons_section_callback(callback: types.CallbackQuery):
 
 
 @dp.callback_query(lambda c: c.data and c.data.startswith("adm_buttons_toggle_"))
-async def adm_buttons_toggle_callback(callback: types.CallbackQuery):
+async def adm_buttons_toggle_callback(callback: types.CallbackQuery, state: FSMContext):
     if not is_admin(callback.from_user.id):
         await callback.answer("Недостаточно прав.", show_alert=True)
         return
@@ -2594,6 +2596,7 @@ async def adm_buttons_toggle_callback(callback: types.CallbackQuery):
     if not item:
         await callback.answer("Кнопка не найдена.", show_alert=True)
         return
+    await state.clear()
     callback_data = item["callback_data"]
     if callback_data in DISABLED_MENU_BUTTONS:
         DISABLED_MENU_BUTTONS.remove(callback_data)
@@ -3106,7 +3109,7 @@ class AccessMiddleware(BaseMiddleware):
                 "shakalizer_menu", "github_menu", "adm_help", "adm_buttons",
                 "adm_group_tools", "adm_group_sessions",
             }
-            is_navigation = (
+            is_navigation = isinstance(cb_data, str) and (
                 cb_data in navigation_targets
                 or (
                     cb_data.startswith(("bots_sess_", "sess_item_", "ch_auto_"))
