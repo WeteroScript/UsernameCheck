@@ -14,6 +14,8 @@ import re
 import uuid
 import time
 import tempfile
+import html
+from urllib.parse import urlsplit, urlunsplit
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -35,6 +37,9 @@ router = Router(name="ai_chat")
 DEFAULT_API_URL = "https://tokenplan.lat/v1/chat/completions"
 API_KEY_ENV = "TOKENPLAN_API_KEY"
 HISTORY_PATH = Path(os.getenv("AI_CHAT_HISTORY_FILE", "data/ai_chats.json"))
+SETTINGS_PATH = Path(os.getenv("AI_CHAT_SETTINGS_FILE", "data/ai_chat_settings.json"))
+MAX_CUSTOM_PROMPT_CHARS = 20000
+MAX_CUSTOM_PROMPT_FILE_BYTES = 64 * 1024
 
 MAX_CONTEXT_MESSAGES = 40
 TELEGRAM_TEXT_LIMIT = 4000
@@ -120,7 +125,19 @@ SYSTEM_PROMPT += (
     "абсолютные пути и .. в путях. Не возвращай блоки для файлов, которые менять не нужно. "
     "Бот создаст отдельную ветку и Pull Request; он не будет напрямую изменять основную ветку. "
     "Если пользователь просит только анализ или объяснение, не создавай GITHUB_FILE-блоки. "
-    "Не помещай секреты, токены, пароли или содержимое .env в новые файлы и не копируй их из контекста."
+    "Не помещай секреты, токены, пароли или содержимое .env в новые файлы и не копируй их из контекста. "
+    "ИНСТРУКЦИЯ ПО ИСПОЛЬЗОВАНИЮ GITHUB: перед изменением репозитория определи owner/name, "
+    "основную ветку и назначение файлов по переданному снимку. Сохраняй текущую структуру, "
+    "стиль, зависимости и соглашения проекта. Для добавления файла верни полный путь от корня "
+    "репозитория и полное содержимое через GITHUB_FILE; для изменения верни полную обновлённую "
+    "версию, а не diff или отдельный фрагмент. Не изменяй файл, которого нет в снимке, если "
+    "не уверен в его назначении: запроси его у пользователя. Для GitHub используй только "
+    "GITHUB_FILE-блоки, не FILE-блоки и не локальный ZIP. После отправки изменений бот создаёт "
+    "отдельную ветку, коммит и Pull Request; сообщай ссылку на PR, но не утверждай, что PR слит. "
+    "Порядок: изучить репозиторий, определить минимальный набор файлов, подготовить полные файлы, "
+    "проверить импорты, пути и зависимости, затем вернуть GITHUB_FILE-блоки. Если репозиторий "
+    "не подключён или недоступен, объясни, что сначала нужно подключить GitHub в меню бота и "
+    "установить приложение с доступом к нужному репозиторию."
 )
 
 MODELS = [
@@ -147,10 +164,14 @@ MODELS = [
 ]
 
 chat_history: Dict[str, List[Dict[str, Any]]] = {}
+user_settings: Dict[str, Dict[str, Any]] = {}
 
 
 class AIChatStates(StatesGroup):
     chatting = State()
+    waiting_prompt = State()
+    waiting_api_key = State()
+    waiting_api_url = State()
 
 
 def _now() -> str:
@@ -224,6 +245,88 @@ def _save_history() -> bool:
             pass
         return False
 
+def _load_user_settings() -> Dict[str, Dict[str, Any]]:
+    if not SETTINGS_PATH.exists():
+        return {}
+    try:
+        with SETTINGS_PATH.open("r", encoding="utf-8") as file:
+            raw = json.load(file)
+        if not isinstance(raw, dict):
+            raise ValueError("Корневой элемент настроек должен быть объектом")
+        return {
+            str(user_id): value
+            for user_id, value in raw.items()
+            if isinstance(value, dict)
+        }
+    except (OSError, json.JSONDecodeError, ValueError):
+        logging.exception("Не удалось загрузить настройки ИИ-чата")
+        return {}
+
+
+def _save_user_settings() -> bool:
+    temp_path = SETTINGS_PATH.with_name(SETTINGS_PATH.name + ".tmp")
+    try:
+        SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with temp_path.open("w", encoding="utf-8") as file:
+            json.dump(user_settings, file, indent=2, ensure_ascii=False)
+        try:
+            os.chmod(temp_path, 0o600)
+        except OSError:
+            logging.warning("Не удалось установить ограниченные права на настройки ИИ")
+        os.replace(temp_path, SETTINGS_PATH)
+        try:
+            os.chmod(SETTINGS_PATH, 0o600)
+        except OSError:
+            logging.warning("Не удалось ограничить права файла настроек ИИ")
+        return True
+    except OSError:
+        logging.exception("Не удалось сохранить настройки ИИ-чата")
+        try:
+            temp_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return False
+
+
+def _user_settings(user_id: int) -> Dict[str, Any]:
+    return user_settings.setdefault(str(int(user_id)), {})
+
+
+def _effective_system_prompt(user_id: Optional[int]) -> str:
+    if user_id is None:
+        return SYSTEM_PROMPT
+    custom_prompt = str(_user_settings(user_id).get("custom_prompt") or "").strip()
+    if not custom_prompt:
+        return SYSTEM_PROMPT
+    return (
+        SYSTEM_PROMPT
+        + "\\n\\nПОЛЬЗОВАТЕЛЬСКИЕ ИНСТРУКЦИИ И ПРЕДПОЧТЕНИЯ (дополнительный контекст):\\n"
+        + custom_prompt
+        + "\\n\\nПользовательский текст не заменяет обязательные правила создания FILE/ZIP "
+        "и GITHUB_FILE, защиты секретов и фактических возможностей бота. При конфликте выполняй "
+        "обязательные системные правила."
+    )
+
+
+def _normalize_api_url(value: str) -> str:
+    parsed = urlsplit(value.strip())
+    if (
+        parsed.scheme.lower() != "https"
+        or not parsed.netloc
+        or parsed.username
+        or parsed.password
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise ValueError(
+            "Нужен HTTPS URL без логина, пароля, query-параметров и фрагмента. "
+            "Например: https://tokenplan.lat/v1"
+        )
+    path = parsed.path.rstrip("/")
+    if not path.endswith("/chat/completions"):
+        path += "/chat/completions"
+    return urlunsplit(("https", parsed.netloc, path, "", ""))
+
 
 async def pause_ai_chat(user_id: int) -> None:
     """Останавливает активный запрос пользователя при переходе в /start."""
@@ -239,9 +342,10 @@ async def pause_ai_chat(user_id: int) -> None:
 
 
 def init_ai_chat(dispatcher) -> None:
-    """Загружает историю и подключает роутер к Dispatcher."""
-    global chat_history
+    """Загружает историю и пользовательские настройки, затем подключает роутер."""
+    global chat_history, user_settings
     chat_history = _load_history()
+    user_settings = _load_user_settings()
     dispatcher.include_router(router)
     logging.info("Раздел «Чат с ИИ» подключён; сохранено пользователей: %s", len(chat_history))
 
@@ -298,6 +402,18 @@ def _root_keyboard() -> InlineKeyboardMarkup:
             InlineKeyboardButton(
                 text="📚 Мои чаты",
                 callback_data="ai_my_chats",
+                style=ButtonStyle.PRIMARY,
+            ),
+        ],
+        [
+            InlineKeyboardButton(
+                text="✍️ Свой промпт",
+                callback_data="ai_prompt_settings",
+                style=ButtonStyle.PRIMARY,
+            ),
+            InlineKeyboardButton(
+                text="🔑 Свой API key",
+                callback_data="ai_api_settings",
                 style=ButtonStyle.PRIMARY,
             ),
         ],
@@ -385,14 +501,17 @@ def _my_chats_keyboard(user_id: int) -> InlineKeyboardMarkup:
     )
     for chat in chats[:30]:
         title = _short_title(str(chat.get("title", "Новый чат")), 27)
-        model = str(chat.get("model", ""))
-        model_label = model[:18]
         rows.append([
             InlineKeyboardButton(
-                text=f"💬 {title} · {model_label}",
+                text=f"💬 {title}",
                 callback_data=f"ai_open_{chat['id']}",
                 style=ButtonStyle.PRIMARY,
-            )
+            ),
+            InlineKeyboardButton(
+                text="⚙️",
+                callback_data=f"ai_chat_settings_{chat['id']}",
+                style=ButtonStyle.SUCCESS,
+            ),
         ])
     rows.extend([
         [
@@ -411,6 +530,49 @@ def _my_chats_keyboard(user_id: int) -> InlineKeyboardMarkup:
         ],
     ])
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+def _chat_settings_keyboard(chat_id: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🗑 Удалить чат", callback_data=f"ai_chat_delete_{chat_id}", style=ButtonStyle.DANGER)],
+        [InlineKeyboardButton(text="🎛 Поменять модель", callback_data=f"ai_chat_change_model_{chat_id}", style=ButtonStyle.SUCCESS)],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="ai_my_chats", style=ButtonStyle.PRIMARY)],
+    ])
+
+
+def _chat_model_keyboard(chat_id: str) -> InlineKeyboardMarkup:
+    buttons = [
+        InlineKeyboardButton(
+            text=f"🔒 {model}" if _is_paid_model(model) else model,
+            callback_data=f"ai_chat_set_model_{chat_id}_{model}",
+            style=_model_style(model),
+        )
+        for model in MODELS
+    ]
+    rows = [buttons[index:index + 2] for index in range(0, len(buttons), 2)]
+    rows.append([InlineKeyboardButton(
+        text="⬅️ Назад к настройкам",
+        callback_data=f"ai_chat_settings_{chat_id}",
+        style=ButtonStyle.PRIMARY,
+    )])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def _prompt_settings_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✏️ Изменить промпт", callback_data="ai_prompt_edit", style=ButtonStyle.SUCCESS)],
+        [InlineKeyboardButton(text="🗑 Сбросить промпт", callback_data="ai_prompt_reset", style=ButtonStyle.DANGER)],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="ai_menu", style=ButtonStyle.PRIMARY)],
+    ])
+
+
+def _api_settings_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔑 Установить API key", callback_data="ai_api_set_key", style=ButtonStyle.SUCCESS)],
+        [InlineKeyboardButton(text="🌐 Установить API URL", callback_data="ai_api_set_url", style=ButtonStyle.PRIMARY)],
+        [InlineKeyboardButton(text="♻️ Сбросить свой API", callback_data="ai_api_reset", style=ButtonStyle.DANGER)],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="ai_menu", style=ButtonStyle.PRIMARY)],
+    ])
+
 
 
 def _chat_transcript(chat: Dict[str, Any]) -> str:
@@ -738,9 +900,11 @@ async def _request_model(
     model: str,
     previous_messages: List[Dict[str, str]],
     user_text: str,
+    user_id: Optional[int] = None,
 ) -> str:
-    api_key = os.getenv(API_KEY_ENV, "").strip()
-    api_url = (os.getenv("TOKENPLAN_BASE_URL") or DEFAULT_API_URL).strip()
+    settings = _user_settings(user_id) if user_id is not None else {}
+    api_key = str(settings.get("api_key") or os.getenv(API_KEY_ENV, "")).strip()
+    api_url = str(settings.get("api_url") or os.getenv("TOKENPLAN_BASE_URL") or DEFAULT_API_URL).strip()
     if not api_key:
         raise RuntimeError(
             "Не задан TOKENPLAN_API_KEY. Добавь API-ключ TokenPlan в переменные "
@@ -751,39 +915,124 @@ async def _request_model(
 
     payload = {
         "model": model,
+        "stream": True,
         "messages": [
-            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "system", "content": _effective_system_prompt(user_id)},
             *previous_messages[-MAX_CONTEXT_MESSAGES:],
             {"role": "user", "content": user_text},
         ],
     }
+    # Общий timeout и sock_read отключены: долгий поток не должен обрываться клиентом.
     timeout = aiohttp.ClientTimeout(total=None, connect=30, sock_read=None)
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
     }
 
+    started_at = time.monotonic()
+    logging.info("TokenPlan request started: model=%s user_id=%s stream=true", model, user_id)
     try:
         async with aiohttp.ClientSession(timeout=timeout) as session:
             async with session.post(api_url, headers=headers, json=payload) as response:
-                raw_body = await response.text()
-                try:
-                    data = json.loads(raw_body)
-                except json.JSONDecodeError:
-                    data = {}
-
+                content_type = response.headers.get("Content-Type", "").lower()
+                request_id = (
+                    response.headers.get("x-request-id")
+                    or response.headers.get("cf-ray")
+                    or response.headers.get("x-correlation-id")
+                )
+                logging.info(
+                    "TokenPlan response headers: status=%s content_type=%s request_id=%s elapsed=%.1fs",
+                    response.status, content_type, request_id or "-", time.monotonic() - started_at,
+                )
                 if response.status != 200:
+                    raw_body = await response.text()
+                    try:
+                        data = json.loads(raw_body)
+                    except json.JSONDecodeError:
+                        data = {}
                     error = data.get("error", {}) if isinstance(data, dict) else {}
                     if isinstance(error, dict):
                         detail = error.get("message") or error.get("type")
                     else:
                         detail = str(error) if error else ""
                     detail = detail or raw_body[:500] or "Нет подробностей от сервера"
-                    raise RuntimeError(f"TokenPlan HTTP {response.status}: {detail}")
+                    request_suffix = f"; request_id={request_id}" if request_id else ""
+                    if response.status == 502:
+                        detail = (
+                            f"{detail}. HTTP 502 вернул API-шлюз или вышестоящий провайдер; "
+                            "общий timeout HTTP-клиента бота отключён."
+                        )
+                    raise RuntimeError(f"TokenPlan HTTP {response.status}: {detail}{request_suffix}")
 
+                if "text/event-stream" in content_type:
+                    chunks: List[str] = []
+                    stream_finished = False
+                    async for raw_line in response.content:
+                        line = raw_line.decode("utf-8", errors="replace").strip()
+                        if not line.startswith("data:"):
+                            continue
+                        event_data = line[5:].strip()
+                        if event_data == "[DONE]":
+                            stream_finished = True
+                            break
+                        if not event_data:
+                            continue
+                        try:
+                            event = json.loads(event_data)
+                        except json.JSONDecodeError:
+                            logging.debug("Пропущено не-JSON SSE-событие TokenPlan")
+                            continue
+                        if isinstance(event, dict) and event.get("error"):
+                            raise RuntimeError("TokenPlan stream error: " + str(event["error"])[:500])
+                        choices = event.get("choices", []) if isinstance(event, dict) else []
+                        if not isinstance(choices, list):
+                            continue
+                        for choice in choices:
+                            if not isinstance(choice, dict):
+                                continue
+                            delta = choice.get("delta") or {}
+                            piece = delta.get("content") if isinstance(delta, dict) else None
+                            if isinstance(piece, list):
+                                piece = "".join(
+                                    part.get("text", "")
+                                    for part in piece
+                                    if isinstance(part, dict) and isinstance(part.get("text"), str)
+                                )
+                            if isinstance(piece, str) and piece:
+                                chunks.append(piece)
+                            if choice.get("finish_reason") is not None:
+                                stream_finished = True
+                    result = "".join(chunks).strip()
+                    if not result:
+                        raise RuntimeError(
+                            "TokenPlan включил потоковый режим, но не передал текст ответа. "
+                            "Проверь поддержку streaming у API."
+                        )
+                    if not stream_finished:
+                        logging.warning(
+                            "TokenPlan SSE stream closed without [DONE]: model=%s elapsed=%.1fs",
+                            model, time.monotonic() - started_at,
+                        )
+                    logging.info(
+                        "TokenPlan stream completed: model=%s chars=%s elapsed=%.1fs",
+                        model, len(result), time.monotonic() - started_at,
+                    )
+                    return result
+
+                # Некоторые OpenAI-совместимые шлюзы игнорируют stream=true и возвращают JSON.
+                raw_body = await response.text()
+                try:
+                    data = json.loads(raw_body)
+                except json.JSONDecodeError:
+                    data = {}
                 if not isinstance(data, dict):
                     raise RuntimeError("TokenPlan вернул ответ в неизвестном формате")
-                return _extract_reply(data)
+                result = _extract_reply(data)
+                logging.info(
+                    "TokenPlan non-stream response completed: model=%s chars=%s elapsed=%.1fs",
+                    model, len(result), time.monotonic() - started_at,
+                )
+                return result
     except asyncio.TimeoutError as exc:
         raise RuntimeError("Истекло время ожидания ответа TokenPlan (10 минут).") from exc
     except aiohttp.ClientError as exc:
@@ -801,6 +1050,206 @@ async def ai_menu(callback: types.CallbackQuery, state: FSMContext):
         "💬 <b>Чат с ИИ</b>\n\nСоздавай отдельные диалоги. Контекст диалогов сохраняется.",
         parse_mode="HTML",
         reply_markup=_root_keyboard(),
+    )
+
+
+
+@router.callback_query(lambda callback: callback.data == "ai_prompt_settings")
+async def ai_prompt_settings(callback: types.CallbackQuery, state: FSMContext):
+    await callback.answer()
+    await state.clear()
+    prompt = str(_user_settings(callback.from_user.id).get("custom_prompt") or "")
+    status = f"Установлен, {len(prompt)} символов." if prompt else "Не установлен."
+    await callback.message.edit_text(
+        "<b>✍️ Свой промпт</b>\\n\\n"
+        f"Текущий статус: {status}\\n\\n"
+        "Можно отправить текстом или прикрепить TXT-файл. Промпт будет добавляться "
+        "к каждому запросу. Обязательные инструкции по созданию файлов, ZIP и GitHub сохраняются.",
+        parse_mode="HTML",
+        reply_markup=_prompt_settings_keyboard(),
+    )
+
+
+@router.callback_query(lambda callback: callback.data == "ai_prompt_edit")
+async def ai_prompt_edit(callback: types.CallbackQuery, state: FSMContext):
+    await callback.answer()
+    await state.set_state(AIChatStates.waiting_prompt)
+    await callback.message.edit_text(
+        "Отправь промпт обычным текстом или TXT-файлом (до 64 КБ). "
+        f"Максимальная длина — {MAX_CUSTOM_PROMPT_CHARS} символов. Для отмены отправь /cancel."
+    )
+
+
+@router.callback_query(lambda callback: callback.data == "ai_prompt_reset")
+async def ai_prompt_reset(callback: types.CallbackQuery, state: FSMContext):
+    settings = _user_settings(callback.from_user.id)
+    old = settings.pop("custom_prompt", None)
+    if not _save_user_settings():
+        if old is not None:
+            settings["custom_prompt"] = old
+        await callback.answer("Не удалось сохранить настройки.", show_alert=True)
+        return
+    await callback.answer("Промпт сброшен.")
+    await callback.message.edit_text(
+        "<b>✍️ Свой промпт</b>\\n\\nПользовательский промпт сброшен.",
+        parse_mode="HTML",
+        reply_markup=_prompt_settings_keyboard(),
+    )
+
+
+@router.callback_query(lambda callback: callback.data == "ai_api_settings")
+async def ai_api_settings(callback: types.CallbackQuery, state: FSMContext):
+    await callback.answer()
+    await state.clear()
+    settings = _user_settings(callback.from_user.id)
+    key_status = "установлен" if settings.get("api_key") else "не установлен"
+    custom_url = str(settings.get("api_url") or "")
+    if custom_url:
+        parsed = urlsplit(custom_url)
+        url_status = html.escape(parsed.netloc + parsed.path)
+    else:
+        url_status = "используется адрес из настроек бота"
+    await callback.message.edit_text(
+        "<b>🔑 Свой API key</b>\\n\\n"
+        f"API key: <b>{key_status}</b>\\n"
+        f"API URL: <code>{url_status}</code>\\n\\n"
+        "Свой ключ и адрес применяются только к твоим запросам. Ключ не показывается "
+        "в меню и не записывается в историю переписки. Для TokenPlan обычно подходит "
+        "<code>https://tokenplan.lat/v1</code>.",
+        parse_mode="HTML",
+        reply_markup=_api_settings_keyboard(),
+    )
+
+
+@router.callback_query(lambda callback: callback.data == "ai_api_set_key")
+async def ai_api_set_key(callback: types.CallbackQuery, state: FSMContext):
+    await callback.answer()
+    await state.set_state(AIChatStates.waiting_api_key)
+    await callback.message.edit_text(
+        "Отправь API key одним текстовым сообщением. Ключ не будет повторён в ответе. "
+        "Для отмены отправь /cancel."
+    )
+
+
+@router.callback_query(lambda callback: callback.data == "ai_api_set_url")
+async def ai_api_set_url(callback: types.CallbackQuery, state: FSMContext):
+    await callback.answer()
+    await state.set_state(AIChatStates.waiting_api_url)
+    await callback.message.edit_text(
+        "Отправь HTTPS Base URL, например https://tokenplan.lat/v1. "
+        "Путь /chat/completions бот добавит автоматически. Для отмены отправь /cancel."
+    )
+
+
+@router.callback_query(lambda callback: callback.data == "ai_api_reset")
+async def ai_api_reset(callback: types.CallbackQuery, state: FSMContext):
+    settings = _user_settings(callback.from_user.id)
+    old_key = settings.pop("api_key", None)
+    old_url = settings.pop("api_url", None)
+    if not _save_user_settings():
+        if old_key is not None:
+            settings["api_key"] = old_key
+        if old_url is not None:
+            settings["api_url"] = old_url
+        await callback.answer("Не удалось сохранить настройки.", show_alert=True)
+        return
+    await callback.answer("Свой API сброшен.")
+    await callback.message.edit_text(
+        "<b>🔑 Свой API key</b>\\n\\nБудут использоваться настройки API из окружения бота.",
+        parse_mode="HTML",
+        reply_markup=_api_settings_keyboard(),
+    )
+
+
+@router.callback_query(lambda callback: callback.data and callback.data.startswith("ai_chat_settings_"))
+async def ai_chat_settings(callback: types.CallbackQuery, state: FSMContext):
+    chat_id = callback.data[len("ai_chat_settings_"):]
+    chat = _find_chat(callback.from_user.id, chat_id)
+    if not chat:
+        await callback.answer("Чат не найден.", show_alert=True)
+        return
+    await callback.answer()
+    await callback.message.edit_text(
+        "<b>⚙️ Настройки чата</b>\\n\\n"
+        f"Имя: <b>{html.escape(str(chat.get('title') or 'Новый чат'))}</b>\\n"
+        f"Модель: <code>{html.escape(str(chat.get('model') or 'неизвестна'))}</code>",
+        parse_mode="HTML",
+        reply_markup=_chat_settings_keyboard(chat_id),
+    )
+
+
+@router.callback_query(lambda callback: callback.data and callback.data.startswith("ai_chat_change_model_"))
+async def ai_chat_change_model(callback: types.CallbackQuery, state: FSMContext):
+    chat_id = callback.data[len("ai_chat_change_model_"):]
+    chat = _find_chat(callback.from_user.id, chat_id)
+    if not chat:
+        await callback.answer("Чат не найден.", show_alert=True)
+        return
+    await callback.answer()
+    await callback.message.edit_text(
+        f"Выбери новую модель для чата «{html.escape(str(chat.get('title') or 'Новый чат'))}»:",
+        parse_mode="HTML",
+        reply_markup=_chat_model_keyboard(chat_id),
+    )
+
+
+@router.callback_query(lambda callback: callback.data and callback.data.startswith("ai_chat_set_model_"))
+async def ai_chat_set_model(callback: types.CallbackQuery, state: FSMContext):
+    payload = callback.data[len("ai_chat_set_model_"):]
+    chat_id, separator, model = payload.partition("_")
+    if not separator or model not in MODELS:
+        await callback.answer("Некорректный выбор модели.", show_alert=True)
+        return
+    if _is_paid_model(model) and not is_premium(callback.from_user.id):
+        await callback.answer("Эта модель доступна только с премиум-доступом.", show_alert=True)
+        return
+    chat = _find_chat(callback.from_user.id, chat_id)
+    if not chat:
+        await callback.answer("Чат не найден.", show_alert=True)
+        return
+    previous_model = chat.get("model")
+    chat["model"] = model
+    chat["updated_at"] = _now()
+    if not _save_history():
+        chat["model"] = previous_model
+        await callback.answer("Не удалось сохранить модель.", show_alert=True)
+        return
+    await callback.answer("Модель изменена.")
+    await callback.message.edit_text(
+        "<b>⚙️ Настройки чата</b>\\n\\n"
+        f"Имя: <b>{html.escape(str(chat.get('title') or 'Новый чат'))}</b>\\n"
+        f"Модель: <code>{html.escape(model)}</code>",
+        parse_mode="HTML",
+        reply_markup=_chat_settings_keyboard(chat_id),
+    )
+
+
+@router.callback_query(lambda callback: callback.data and callback.data.startswith("ai_chat_delete_"))
+async def ai_chat_delete(callback: types.CallbackQuery, state: FSMContext):
+    chat_id = callback.data[len("ai_chat_delete_"):]
+    chats = _user_chats(callback.from_user.id)
+    target = next((item for item in chats if item.get("id") == chat_id), None)
+    if target is None:
+        await callback.answer("Чат не найден.", show_alert=True)
+        return
+    chats.remove(target)
+    if not _save_history():
+        chats.append(target)
+        await callback.answer("Не удалось удалить чат.", show_alert=True)
+        return
+    active_data = await state.get_data()
+    if active_data.get("ai_chat_id") == chat_id:
+        await state.clear()
+    await callback.answer("Чат удалён.")
+    remaining = _user_chats(callback.from_user.id)
+    text_value = (
+        f"<b>📚 Мои чаты</b>\\n\\nСохранено диалогов: {len(remaining)}."
+        if remaining else "<b>📚 Мои чаты</b>\\n\\nСохранённых диалогов пока нет."
+    )
+    await callback.message.edit_text(
+        text_value,
+        parse_mode="HTML",
+        reply_markup=_my_chats_keyboard(callback.from_user.id),
     )
 
 
@@ -904,6 +1353,110 @@ async def ai_open_chat(callback: types.CallbackQuery, state: FSMContext):
     )
 
 
+
+@router.message(AIChatStates.waiting_prompt)
+async def ai_save_custom_prompt(message: types.Message, state: FSMContext):
+    text_value = (message.text or "").strip()
+    if text_value.lower() in {"/cancel", "отмена"}:
+        await state.clear()
+        await message.answer("Изменение промпта отменено.", reply_markup=_root_keyboard())
+        return
+    if message.document:
+        filename = message.document.file_name or ""
+        if Path(filename).suffix.lower() != ".txt":
+            await message.answer("Для промпта принимаются только TXT-файлы.")
+            return
+        if message.document.file_size and message.document.file_size > MAX_CUSTOM_PROMPT_FILE_BYTES:
+            await message.answer("TXT-файл превышает лимит 64 КБ.")
+            return
+        try:
+            with tempfile.TemporaryFile(mode="w+b") as buffer:
+                await message.bot.download(message.document, destination=buffer)
+                buffer.seek(0)
+                raw = buffer.read(MAX_CUSTOM_PROMPT_FILE_BYTES + 1)
+            if len(raw) > MAX_CUSTOM_PROMPT_FILE_BYTES:
+                raise ValueError("TXT-файл превышает лимит 64 КБ.")
+            text_value = _decode_text(raw).strip()
+        except Exception as exc:
+            logging.exception("Не удалось прочитать пользовательский TXT-промпт")
+            await message.answer(f"Не удалось прочитать TXT-файл: {exc}")
+            return
+    if not text_value:
+        await message.answer("Отправь непустой текст или TXT-файл.")
+        return
+    if len(text_value) > MAX_CUSTOM_PROMPT_CHARS:
+        await message.answer(f"Промпт слишком длинный. Максимум — {MAX_CUSTOM_PROMPT_CHARS} символов.")
+        return
+    settings = _user_settings(message.from_user.id)
+    previous = settings.get("custom_prompt")
+    settings["custom_prompt"] = text_value
+    if not _save_user_settings():
+        if previous is None:
+            settings.pop("custom_prompt", None)
+        else:
+            settings["custom_prompt"] = previous
+        await message.answer("Не удалось сохранить промпт. Проверь постоянное хранилище Bothost.")
+        return
+    await state.clear()
+    await message.answer(
+        f"Пользовательский промпт сохранён ({len(text_value)} символов).",
+        reply_markup=_prompt_settings_keyboard(),
+    )
+
+
+@router.message(AIChatStates.waiting_api_key)
+async def ai_save_custom_api_key(message: types.Message, state: FSMContext):
+    text_value = (message.text or "").strip()
+    if text_value.lower() in {"/cancel", "отмена"}:
+        await state.clear()
+        await message.answer("Настройка API key отменена.", reply_markup=_root_keyboard())
+        return
+    if message.document or not text_value or len(text_value) > 1024 or "\\n" in text_value:
+        await message.answer("Отправь API key одним текстовым сообщением без переносов строк.")
+        return
+    settings = _user_settings(message.from_user.id)
+    previous = settings.get("api_key")
+    settings["api_key"] = text_value
+    if not _save_user_settings():
+        if previous is None:
+            settings.pop("api_key", None)
+        else:
+            settings["api_key"] = previous
+        await message.answer("Не удалось сохранить API key. Проверь постоянное хранилище Bothost.")
+        return
+    await state.clear()
+    await message.answer(
+        "Свой API key сохранён. Значение ключа не показывается в меню.",
+        reply_markup=_api_settings_keyboard(),
+    )
+
+
+@router.message(AIChatStates.waiting_api_url)
+async def ai_save_custom_api_url(message: types.Message, state: FSMContext):
+    text_value = (message.text or "").strip()
+    if text_value.lower() in {"/cancel", "отмена"}:
+        await state.clear()
+        await message.answer("Настройка API URL отменена.", reply_markup=_root_keyboard())
+        return
+    try:
+        normalized_url = _normalize_api_url(text_value)
+    except ValueError as exc:
+        await message.answer(str(exc))
+        return
+    settings = _user_settings(message.from_user.id)
+    previous = settings.get("api_url")
+    settings["api_url"] = normalized_url
+    if not _save_user_settings():
+        if previous is None:
+            settings.pop("api_url", None)
+        else:
+            settings["api_url"] = previous
+        await message.answer("Не удалось сохранить API URL. Проверь постоянное хранилище Bothost.")
+        return
+    await state.clear()
+    await message.answer("Свой API URL сохранён.", reply_markup=_api_settings_keyboard())
+
+
 @router.message(AIChatStates.chatting)
 async def ai_chat_message(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
@@ -991,7 +1544,7 @@ async def ai_chat_message(message: types.Message, state: FSMContext):
             repository_snapshot = await fetch_repository_context(user_id, repository_reference, chat.get("github_branch"))
             chat["github_repo"] = repository_snapshot["html_url"]
             request_text += "\n\n[СНИМОК GITHUB-РЕПОЗИТОРИЯ]\n" + repository_snapshot["context"]
-        reply = await _request_model(model, model_history, request_text)
+        reply = await _request_model(model, model_history, request_text, user_id=user_id)
         reply_without_github_files, github_files = _extract_github_files(reply)
         visible_reply, generated_files, empty_files = _extract_generated_files(reply_without_github_files)
         if github_files:
@@ -1037,7 +1590,7 @@ async def ai_chat_message(message: types.Message, state: FSMContext):
                 "Бот сам отправит это содержимое как вложение."
             )
             try:
-                retry_reply = await _request_model(model, retry_context, retry_instruction)
+                retry_reply = await _request_model(model, retry_context, retry_instruction, user_id=user_id)
                 retry_visible, retry_files, retry_empty_files = _extract_generated_files(retry_reply)
                 if retry_files:
                     reply = retry_reply
