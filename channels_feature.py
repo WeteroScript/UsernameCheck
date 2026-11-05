@@ -89,7 +89,7 @@ def _find_channel_owner(chat_id: int) -> Optional[int]:
 def get_channels_root_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📢 Каналы", callback_data="ch_list")],
-        [InlineKeyboardButton(text="⬅️ Назад", callback_data="main")],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="home_automation")],
     ])
 
 
@@ -155,7 +155,7 @@ async def ch_connect(callback: types.CallbackQuery, state: FSMContext):
         "(нужны права: приглашение пользователей, публикация сообщений)\n"
         "2. Перешли сюда любой пост из канала, или пришли его @username\n\n",
         parse_mode=ParseMode.HTML,
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад", callback_data="fsm_back")]])
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад", callback_data="ch_list")]])
     )
 
 
@@ -328,7 +328,7 @@ async def ch_auto_count(callback: types.CallbackQuery, state: FSMContext):
     await callback.message.edit_text(
         f"🔢 Введи число от 0 до {MAX_AUTO_ACCEPT} — максимум заявок, которые бот примет автоматически.\n\n",
         parse_mode=ParseMode.HTML,
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад", callback_data="fsm_back")]])
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад", callback_data=f"ch_auto_{chat_id}")]])
     )
 
 
