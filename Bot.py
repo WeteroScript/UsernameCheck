@@ -695,7 +695,7 @@ async def github_menu(callback: types.CallbackQuery):
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="📁 Мои репозитории", callback_data="github_repos")],
             [InlineKeyboardButton(text="🔌 Отключить GitHub", callback_data="github_disconnect")],
-            [InlineKeyboardButton(text="⬅️ Назад", callback_data="ai_menu")],
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data="home_ai")],
         ])
     else:
         text = "🐙 <b>Подключение GitHub</b>\n\nПодключи аккаунт и выбери репозитории, к которым бот получит доступ.\n\nПри отправке ссылки в чат содержимое доступных исходников передаётся выбранной ИИ-модели через TokenPlan."
