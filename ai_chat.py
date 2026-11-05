@@ -571,7 +571,7 @@ def _root_keyboard() -> InlineKeyboardMarkup:
         [
             InlineKeyboardButton(
                 text="🏠 Главное меню",
-                callback_data="main",
+                callback_data="home_ai",
                 style=ButtonStyle.DANGER,
             )
         ],
