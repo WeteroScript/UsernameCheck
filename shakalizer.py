@@ -47,7 +47,7 @@ async def shakalizer_menu(callback: types.CallbackQuery, state: FSMContext):
     await state.set_state(ShakalStates.waiting_photo)
     await callback.message.edit_text(
         "📉 <b>Шакализатор</b>\n\n"
-        "Пришли фото — ухудшу его качество на выбор, от 240p и ниже.\n\n",
+        "Пришли фото и выбери, насколько снизить качество.\n\n",
         parse_mode=ParseMode.HTML,
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад", callback_data="home_tools")]])
     )
