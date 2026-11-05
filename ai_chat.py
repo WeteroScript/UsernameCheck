@@ -666,7 +666,7 @@ async def _request_model(
             {"role": "user", "content": user_text},
         ],
     }
-    timeout = aiohttp.ClientTimeout(total=600, connect=30, sock_read=600)
+    timeout = aiohttp.ClientTimeout(total=None, connect=30, sock_read=None)
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
