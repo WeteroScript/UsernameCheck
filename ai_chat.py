@@ -303,6 +303,13 @@ def _root_keyboard() -> InlineKeyboardMarkup:
         ],
         [
             InlineKeyboardButton(
+                text="🐙 GitHub",
+                callback_data="github_menu",
+                style=ButtonStyle.PRIMARY,
+            )
+        ],
+        [
+            InlineKeyboardButton(
                 text="🏠 Главное меню",
                 callback_data="main",
                 style=ButtonStyle.DANGER,
