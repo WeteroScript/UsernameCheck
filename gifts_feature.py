@@ -85,7 +85,7 @@ def get_gifts_accounts_keyboard(user_id: int) -> InlineKeyboardMarkup:
     ]
     if not buttons:
         buttons.append([InlineKeyboardButton(text="❌ Нет подключённых аккаунтов", callback_data="no_action")])
-    buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="main")])
+    buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="home_tools")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
