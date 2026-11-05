@@ -48,7 +48,7 @@ MAX_CONTEXT_MESSAGES = 40
 TELEGRAM_TEXT_LIMIT = 4000
 MAX_UPLOAD_MB = max(1, int(os.getenv("AI_CHAT_MAX_UPLOAD_MB", "200")))
 MAX_UPLOAD_BYTES = MAX_UPLOAD_MB * 1024 * 1024
-MAX_ARCHIVE_FILES = 500
+MAX_ARCHIVE_FILES = 2000
 MAX_GENERATED_FILE_BYTES = 10 * 1024 * 1024
 TEXT_EXTENSIONS = {
     ".txt", ".md", ".csv", ".tsv", ".json", ".xml", ".html", ".htm",
@@ -140,7 +140,14 @@ SYSTEM_PROMPT += (
     "Порядок: изучить репозиторий, определить минимальный набор файлов, подготовить полные файлы, "
     "проверить импорты, пути и зависимости, затем вернуть GITHUB_FILE-блоки. Если репозиторий "
     "не подключён или недоступен, объясни, что сначала нужно подключить GitHub в меню бота и "
-    "установить приложение с доступом к нужному репозиторию."
+    "установить приложение с доступом к нужному репозиторию. "
+    "ВАЖНО О РАЗДЕЛЕНИИ ОТВЕТСТВЕННОСТИ: тебе не требуется самостоятельно иметь интернет, "
+    "терминал, файловую систему или GitHub API. Это выполняет оркестратор Telegram-бота. "
+    "Если в сообщении присутствует снимок репозитория и пользователь просит внести изменение, "
+    "не отвечай, что у тебя нет доступа к GitHub: верни точные GITHUB_FILE-блоки, после чего "
+    "бот сам создаст ветку, коммит и Pull Request. Для создания ZIP верни все файлы в FILE-блоках; "
+    "бот соберёт настоящий архив и сохранит относительные пути. Не заявляй, что операция завершена, "
+    "пока бот не подтвердил её результат."
 )
 
 MODELS = [
@@ -951,6 +958,28 @@ def _extract_github_files(reply: str):
     return pattern.sub("", reply).strip(), files
 
 
+def _normalize_generated_path(raw_path: str, fallback: str) -> str:
+    """Validate a relative path and preserve nested project folders."""
+    path = str(raw_path or "").strip().replace("\\", "/")
+    if not path:
+        path = fallback
+    if path.startswith("/") or re.match(r"^[A-Za-z]:", path):
+        raise ValueError("Модель вернула абсолютный путь файла: " + path[:120])
+    parts = path.split("/")
+    if any(part in {"", ".", ".."} for part in parts):
+        raise ValueError("Модель вернула небезопасный путь файла: " + path[:120])
+    safe_parts = []
+    for part in parts:
+        clean = re.sub(r"[^A-Za-z0-9А-Яа-яёЁ._-]", "_", part)
+        if clean in {"", ".", ".."}:
+            raise ValueError("Модель вернула недопустимый путь файла: " + path[:120])
+        safe_parts.append(clean)
+    normalized = "/".join(safe_parts)
+    if len(normalized) > 240:
+        raise ValueError("Путь файла слишком длинный: " + normalized[:120])
+    return normalized
+
+
 def _extract_generated_files(reply: str):
     pattern = re.compile(
         r"\[\[FILE:\s*([^\]\r\n]+)\]\][ \t]*\r?\n(.*?)\r?\n?\[\[/FILE\]\]",
@@ -959,33 +988,31 @@ def _extract_generated_files(reply: str):
     files = []
     empty_files = 0
     for match in pattern.finditer(reply):
-        filename = Path(match.group(1).strip().replace("\\", "/")).name
-        filename = re.sub(r"[^A-Za-z0-9А-Яа-яёЁ._-]", "_", filename)
+        raw_path = match.group(1).strip().replace("\\", "/")
+        filename = _normalize_generated_path(raw_path, f"generated_{len(files) + 1}.txt")
         file_content = match.group(2)
-        if not filename or filename in {".", ".."}:
-            filename = f"generated_{len(files) + empty_files + 1}.txt"
         if not file_content.strip():
             empty_files += 1
-            logging.warning("Модель вернула пустой файл %s; файл пропущен.", filename)
-            continue
+            logging.info("Пустой файл %s сохранён: ZIP поддерживает файлы нулевого размера.", filename)
         encoded = file_content.encode("utf-8")
         if len(encoded) > MAX_GENERATED_FILE_BYTES:
             raise ValueError(f"Сгенерированный файл {filename} превышает 10 МБ.")
         files.append((filename, encoded))
+        if len(files) > MAX_ARCHIVE_FILES:
+            raise ValueError(f"Модель вернула больше {MAX_ARCHIVE_FILES} файлов за один ответ.")
     visible_reply = pattern.sub("", reply).strip()
     if empty_files:
         warning = (
-            f"Модель вернула пустых файлов: {empty_files}. "
-            "Пустые вложения пропущены: Telegram не принимает файлы нулевого размера."
+            f"Пустых файлов: {empty_files}. Они сохранены в ZIP: архив допускает файлы нулевого размера."
         )
-        visible_reply = f"{visible_reply}\n\n⚠️ {warning}".strip()
+        visible_reply = f"{visible_reply}\n\nℹ️ {warning}".strip()
     return visible_reply, files, empty_files
 
 
 def _build_generated_zip(files: List[tuple]) -> bytes:
-    """Упаковывает несколько сгенерированных файлов в один ZIP-архив."""
+    """Create a ZIP while preserving the project's relative directory structure."""
     if len(files) > MAX_ARCHIVE_FILES:
-        raise ValueError(f"Модель вернула больше {MAX_ARCHIVE_FILES} файлов за один ответ.")
+        raise ValueError(f"В архиве больше {MAX_ARCHIVE_FILES} файлов.")
     total_size = sum(len(file_content) for _, file_content in files)
     if total_size > MAX_UPLOAD_BYTES:
         raise ValueError(
@@ -996,17 +1023,23 @@ def _build_generated_zip(files: List[tuple]) -> bytes:
     used_names = set()
     with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED) as archive:
         for index, (filename, file_content) in enumerate(files, start=1):
-            safe_name = Path(filename).name or f"generated_{index}.txt"
+            safe_name = _normalize_generated_path(filename, f"generated_{index}.txt")
             candidate = safe_name
-            stem = Path(safe_name).stem
-            suffix = Path(safe_name).suffix
+            path_obj = Path(safe_name)
+            parent = path_obj.parent.as_posix()
+            stem = path_obj.stem
+            suffix = path_obj.suffix
             counter = 2
             while candidate.casefold() in used_names:
-                candidate = f"{stem}_{counter}{suffix}"
+                renamed = f"{stem}_{counter}{suffix}"
+                candidate = f"{parent}/{renamed}" if parent != "." else renamed
                 counter += 1
             used_names.add(candidate.casefold())
             archive.writestr(candidate, file_content)
-    return output.getvalue()
+    archive_bytes = output.getvalue()
+    if len(archive_bytes) > MAX_UPLOAD_BYTES:
+        raise ValueError(f"Собранный ZIP превышает лимит отправки {MAX_UPLOAD_MB} МБ.")
+    return archive_bytes
 
 
 def _is_file_creation_request(user_text: str) -> bool:
@@ -1990,7 +2023,9 @@ async def ai_chat_message(message: types.Message, state: FSMContext):
             await message.answer(chunks[0])
         for chunk in chunks[1:]:
             await message.answer(chunk)
-        if len(generated_files) >= 2:
+        if len(generated_files) >= 2 or _is_archive_request(user_text) or any(
+            not file_content for _, file_content in generated_files
+        ):
             try:
                 archive_content = _build_generated_zip(generated_files)
             except ValueError as exc:
