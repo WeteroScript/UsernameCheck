@@ -26,6 +26,7 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import BufferedInputFile, InlineKeyboardButton, InlineKeyboardMarkup
 from dotenv import load_dotenv
 from access_control import is_premium
+from github_integration import fetch_repository_context, create_repository_pull_request
 
 load_dotenv()
 
@@ -104,6 +105,19 @@ SYSTEM_PROMPT = (
     "DOCX, XLSX или PPTX. Если нужен такой формат, объясни именно это ограничение, "
     "но всё равно создай доступные исходники отдельными блоками FILE. "
     "Не заявляй, что вложение готово, пока не вернул его полное содержимое в блоке FILE."
+)
+SYSTEM_PROMPT += (
+    "РАБОТА С GITHUB: если пользователь прислал ссылку на репозиторий GitHub, бот может передать тебе "
+    "снимок доступных текстовых файлов этого репозитория. Изучи структуру и существующий код до "
+    "предложения изменений. Не утверждай, что видишь файлы, которых нет в переданном снимке. "
+    "Если нужного файла не хватает, попроси пользователя указать его путь или прислать файл. "
+    "Когда пользователь просит изменить репозиторий, верни каждый новый или изменённый файл "
+    "полностью в отдельном блоке формата [[GITHUB_FILE: путь/от/корня/репозитория]] затем перевод "
+    "строки, полное содержимое файла, затем перевод строки и [[/GITHUB_FILE]]. Не используй "
+    "абсолютные пути и .. в путях. Не возвращай блоки для файлов, которые менять не нужно. "
+    "Бот создаст отдельную ветку и Pull Request; он не будет напрямую изменять основную ветку. "
+    "Если пользователь просит только анализ или объяснение, не создавай GITHUB_FILE-блоки. "
+    "Не помещай секреты, токены, пароли или содержимое .env в новые файлы и не копируй их из контекста."
 )
 
 MODELS = [
@@ -568,6 +582,37 @@ async def _document_to_text(message: types.Message) -> str:
     )
 
 
+
+
+def _extract_github_reference(user_text: str) -> Optional[str]:
+    match = re.search(
+        r"https?://(?:www\\.)?github\\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:\\.git)?(?:/[^\\s]*)?",
+        user_text,
+        re.IGNORECASE,
+    )
+    if not match:
+        return None
+    return match.group(0).rstrip(".,;:!?)\\]}>")
+
+
+
+def _extract_github_files(reply: str):
+    pattern = re.compile(
+        r"\\[\\[GITHUB_FILE:\\s*([^\\]\\r\\n]+)\\]\\][ \\t]*\\r?\\n(.*?)\\r?\\n?\\[\\[/GITHUB_FILE\\]\\]",
+        re.DOTALL | re.IGNORECASE,
+    )
+    files = []
+    for match in pattern.finditer(reply):
+        path = match.group(1).strip().replace("\\\\", "/")
+        content = match.group(2)
+        if not path or path.startswith("/") or any(part in ("", ".", "..") for part in path.split("/")):
+            raise ValueError("Модель вернула недопустимый путь GitHub-файла: " + path[:120])
+        if not content.strip():
+            raise ValueError("Модель вернула пустой GitHub-файл: " + path[:120])
+        files.append((path, content))
+    return pattern.sub("", reply).strip(), files
+
+
 def _extract_generated_files(reply: str):
     pattern = re.compile(
         r"\[\[FILE:\s*([^\]\r\n]+)\]\][ \t]*\r?\n(.*?)\r?\n?\[\[/FILE\]\]",
@@ -924,8 +969,30 @@ async def ai_chat_message(message: types.Message, state: FSMContext):
                 )
         _save_history()
         model_history = _history_without_old_files(stored_messages)
-        reply = await _request_model(model, model_history, user_text)
-        visible_reply, generated_files, empty_files = _extract_generated_files(reply)
+        repository_reference = _extract_github_reference(user_text) or chat.get("github_repo")
+        repository_snapshot = None
+        request_text = user_text
+        if repository_reference:
+            repository_snapshot = await fetch_repository_context(user_id, repository_reference)
+            chat["github_repo"] = repository_snapshot["html_url"]
+            request_text += "\n\n[СНИМОК GITHUB-РЕПОЗИТОРИЯ]\n" + repository_snapshot["context"]
+        reply = await _request_model(model, model_history, request_text)
+        reply_without_github_files, github_files = _extract_github_files(reply)
+        visible_reply, generated_files, empty_files = _extract_generated_files(reply_without_github_files)
+        if github_files:
+            if not repository_snapshot:
+                raise RuntimeError("Для отправки изменений в GitHub сначала пришли ссылку на репозиторий.")
+            pull_request = await create_repository_pull_request(
+                user_id,
+                repository_snapshot["full_name"],
+                github_files,
+                title="AI changes: " + _short_title(user_text, 70),
+                body=visible_reply,
+            )
+            visible_reply = (
+                (visible_reply + "\n\n" if visible_reply else "")
+                + "Изменения отправлены в отдельную ветку. Pull Request: " + pull_request["url"]
+            )
 
         # Если пользователь явно запросил файл, но модель не создала ни одного
         # непустого вложения, один раз просим её повторить генерацию.
