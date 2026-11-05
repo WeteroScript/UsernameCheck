@@ -2514,10 +2514,11 @@ def get_button_control_section_keyboard(section: str) -> InlineKeyboardMarkup:
 
 
 @dp.callback_query(lambda c: c.data in ("adm_help", "adm_panel"))
-async def adm_help_callback(callback: types.CallbackQuery):
+async def adm_help_callback(callback: types.CallbackQuery, state: FSMContext):
     if not is_admin(callback.from_user.id):
         await callback.answer("Недостаточно прав.", show_alert=True)
         return
+    await state.clear()
     await callback.answer()
     await safe_edit_message(
         callback.message,
