@@ -291,12 +291,13 @@ def save_known_users():
 
 
 def register_known_user(user: types.User):
-    is_new = user.id not in known_users
-    known_users[user.id] = {
+    previous = known_users.get(user.id, {})
+    current = {
         "username": user.username,
-        "registered_at": known_users.get(user.id, {}).get("registered_at") or datetime.now().isoformat(),
+        "registered_at": previous.get("registered_at") or datetime.now().isoformat(),
     }
-    if is_new:
+    if previous != current:
+        known_users[user.id] = current
         save_known_users()
 
 def set_session_config(user_id: int, phone: str, key: str, value: Any):
@@ -492,33 +493,49 @@ def get_session_settings_keyboard(user_id: int, phone: str, back_to: str = None)
 
 
 def get_main_keyboard(user_id: Optional[int] = None) -> InlineKeyboardMarkup:
-    # SUCCESS=зелёный  — доход / активное (Боты, Шакализатор)
-    # PRIMARY=синий    — данные / информация (Аккаунты, Юзернеймы, Каналы)
-    # DANGER=красный   — особые / премиум (Подарки)
+    """Главное меню-каталог: функции разнесены по тематическим разделам."""
     rows = [
         [
-            InlineKeyboardButton(text="🤖 Боты",        callback_data="bots",          style=ButtonStyle.SUCCESS),
-            InlineKeyboardButton(text="👤 Юзернеймы",  callback_data="users",         style=ButtonStyle.PRIMARY),
+            InlineKeyboardButton(text="🤖 Автоматизация", callback_data="home_automation", style=ButtonStyle.SUCCESS),
+            InlineKeyboardButton(text="🧰 Инструменты", callback_data="home_tools", style=ButtonStyle.PRIMARY),
         ],
         [
-            InlineKeyboardButton(text="📱 Аккаунты",   callback_data="accounts",      style=ButtonStyle.PRIMARY),
-            InlineKeyboardButton(text="📢 Каналы",     callback_data="channels_menu", style=ButtonStyle.PRIMARY),
+            InlineKeyboardButton(text="🧠 ИИ и GitHub", callback_data="home_ai", style=ButtonStyle.SUCCESS),
+            InlineKeyboardButton(text="👤 Профиль и помощь", callback_data="home_profile", style=ButtonStyle.PRIMARY),
         ],
-        [
-            InlineKeyboardButton(text="📉 Шакализатор",callback_data="shakalizer_menu",style=ButtonStyle.SUCCESS),
-            InlineKeyboardButton(text="🎁 Подарки",    callback_data="gifts_menu",    style=ButtonStyle.DANGER),
-        ],
-        [
-            InlineKeyboardButton(text="💬 Чат с ИИ", callback_data="ai_menu", style=ButtonStyle.SUCCESS),
-        ],
+        [InlineKeyboardButton(text="⚙️ Настройки", callback_data="bot_settings_menu", style=ButtonStyle.PRIMARY)],
     ]
-    extra = get_extra_main_buttons()
-    if extra:
-        for i in range(0, len(extra), 2):
-            rows.append(extra[i:i+2])
-    rows.append([InlineKeyboardButton(text="⚙️ Настройки", callback_data="bot_settings_menu", style=ButtonStyle.PRIMARY)])
     if user_id is not None and is_admin(user_id):
         rows.append([InlineKeyboardButton(text="🛠 Адм. панель", callback_data="adm_help", style=ButtonStyle.DANGER)])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def get_home_category_keyboard(category: str) -> InlineKeyboardMarkup:
+    categories = {
+        "automation": [
+            [InlineKeyboardButton(text="🤖 Боты", callback_data="bots", style=ButtonStyle.SUCCESS),
+             InlineKeyboardButton(text="📣 Gram-бот", callback_data="bot_prgramm", style=ButtonStyle.SUCCESS)],
+            [InlineKeyboardButton(text="📱 Аккаунты", callback_data="accounts", style=ButtonStyle.PRIMARY),
+             InlineKeyboardButton(text="📢 Каналы", callback_data="channels_menu", style=ButtonStyle.PRIMARY)],
+        ],
+        "tools": [
+            [InlineKeyboardButton(text="👤 Юзернеймы", callback_data="users", style=ButtonStyle.PRIMARY),
+             InlineKeyboardButton(text="📉 Шакализатор", callback_data="shakalizer_menu", style=ButtonStyle.SUCCESS)],
+            [InlineKeyboardButton(text="🎁 Подарки", callback_data="gifts_menu", style=ButtonStyle.DANGER),
+             InlineKeyboardButton(text="🎥 Скачать видео", callback_data="video_menu", style=ButtonStyle.PRIMARY)],
+        ],
+        "ai": [
+            [InlineKeyboardButton(text="💬 Чат с ИИ", callback_data="ai_menu", style=ButtonStyle.SUCCESS),
+             InlineKeyboardButton(text="🐙 GitHub", callback_data="github_menu", style=ButtonStyle.PRIMARY)],
+        ],
+        "profile": [
+            [InlineKeyboardButton(text="🆔 Получить ID", callback_data="getid_menu", style=ButtonStyle.PRIMARY),
+             InlineKeyboardButton(text="💎 Премиум", callback_data="premium_menu", style=ButtonStyle.DANGER)],
+            [InlineKeyboardButton(text="🐛 Сообщить о баге", callback_data="bugreport_menu", style=ButtonStyle.PRIMARY)],
+        ],
+    }
+    rows = categories.get(category, [])
+    rows.append([InlineKeyboardButton(text="⬅️ Главное меню", callback_data="main", style=ButtonStyle.DANGER)])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -585,6 +602,15 @@ def get_accounts_keyboard(user_id: int) -> InlineKeyboardMarkup:
 
 # ============ ОБРАБОТЧИКИ ============
 
+@dp.message(Command("id", "myid"))
+async def my_id_command(message: types.Message):
+    register_known_user(message.from_user)
+    await message.answer(
+        "🆔 Твой Telegram ID: <code>" + str(message.from_user.id) + "</code>",
+        parse_mode=ParseMode.HTML,
+    )
+
+
 @dp.message(Command("start"))
 async def start_command(message: types.Message, state: FSMContext):
     # /start приостанавливает активный диалог и отменяет незавершённый запрос ИИ.
@@ -630,9 +656,28 @@ async def main_menu(callback: types.CallbackQuery, state: FSMContext):
     await callback.answer()
     await safe_edit_message(
         callback.message,
-        "🏠 <b>Главное меню</b>\n\nВыбери раздел:",
+        "🏠 <b>Главное меню</b>\n\n"
+        "Разделы сгруппированы по назначению. Выбери нужную вкладку:",
         parse_mode=ParseMode.HTML,
         reply_markup=get_main_keyboard(callback.from_user.id)
+    )
+
+
+@dp.callback_query(lambda c: c.data in {"home_automation", "home_tools", "home_ai", "home_profile"})
+async def home_category_menu(callback: types.CallbackQuery):
+    await callback.answer()
+    pages = {
+        "home_automation": ("🤖 <b>Автоматизация</b>\n\nБоты, аккаунты и каналы.", "automation"),
+        "home_tools": ("🧰 <b>Инструменты</b>\n\nЮзернеймы, проверки и дополнительные функции.", "tools"),
+        "home_ai": ("🧠 <b>ИИ и разработка</b>\n\nЧат с ИИ и работа с GitHub-репозиториями.", "ai"),
+        "home_profile": ("👤 <b>Профиль и помощь</b>\n\nТвой Telegram ID, премиум и обратная связь.", "profile"),
+    }
+    page_text, category = pages[callback.data]
+    await safe_edit_message(
+        callback.message,
+        page_text,
+        parse_mode=ParseMode.HTML,
+        reply_markup=get_home_category_keyboard(category),
     )
 
 
