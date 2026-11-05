@@ -1009,7 +1009,7 @@ async def change_length(callback: types.CallbackQuery, state: FSMContext):
         f"Введи число от {MIN_USERNAME_LENGTH} до {MAX_USERNAME_LENGTH} — "
         f"это максимальная длина для создаваемого юзернейма.\n\n"
         f"<i>Чем больше длина, тем больше одинаковых букв/цифр подряд можно "
-        f"будет настроить.</i>\n\n"
+        f"будет настроить.</i>\n\n",
         parse_mode=ParseMode.HTML,
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад", callback_data="fsm_back")]])
     )
