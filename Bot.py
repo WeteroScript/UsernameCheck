@@ -29,6 +29,7 @@ from username_bot import (
     init_username_bot,
     set_username_bot,
     start_username_watcher,
+    export_username_database,
 )
 from gram_bot import (
     router as gram_router,
@@ -2396,7 +2397,8 @@ ADMIN_COMMAND_GROUPS = {
         ("📦 Скачать архив сессий", "downloadsessions"),
         ("📂 Загрузить файл сессии", "loadfilesession"),
     ]),
-    "tools": ("🧾 Чеки", [
+    "tools": ("🧾 Базы и чеки", [
+        ("📊 Скачать базу юзернеймов", "getdb"),
         ("🔗 Создать чек", "createcheck"),
     ]),
 }
@@ -2691,6 +2693,11 @@ async def adm_action_callback(callback: types.CallbackQuery, state: FSMContext):
                 types.BufferedInputFile(buffer.read(), filename="sessions.zip"),
                 caption=f"Архив: {count} файлов сессий",
             )
+        return
+
+    if action == "getdb":
+        await callback.answer("Готовлю файлы базы…")
+        await export_username_database(bot, callback.message.chat.id, callback.from_user.id)
         return
 
     if action == "loadfilesession":
@@ -3406,7 +3413,8 @@ def get_admin_users_keyboard() -> InlineKeyboardMarkup:
             callback_data=f"adm_user_sess_{owner_id}"
         )])
     if not buttons:
-        buttons.append([InlineKeyboardButton(text="❌ Нет пользователей с сессиями", callback_data="no_action")])
+        buttons.append([InlineKeyboardButton(text="Пока нет пользователей с сессиями", callback_data="no_action")])
+    buttons.append([InlineKeyboardButton(text="⬅️ К админ-панели", callback_data="adm_help")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
