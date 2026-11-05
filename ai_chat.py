@@ -64,6 +64,12 @@ SYSTEM_PROMPT = (
     "затем новая строка, содержимое файла, новая строка и [[/FILE]]. "
     "Не утверждай, что файл создан в рабочей папке или что у тебя нет инструментов: "
     "сформируй содержимое внутри маркеров. Не помещай содержимое файла вне маркеров. "
+    "Если пользователь просит ZIP или архив с проектом, верни каждый исходный файл отдельным "
+    "блоком [[FILE: имя_файла.расширение]] ... [[/FILE]]. Бот автоматически упакует "
+    "два или более файлов из одного ответа в ZIP и отправит архив пользователю. "
+    "Поэтому для ZIP просто выдай несколько отдельных файлов; не пытайся создавать "
+    "архив самостоятельно и не заявляй, что не можешь создать или прикрепить ZIP. "
+    "Если нужен только один файл, бот отправит его отдельно. "
     "Можно вернуть несколько таких блоков. Перед блоками кратко объясни результат."
 )
 
@@ -99,6 +105,29 @@ class AIChatStates(StatesGroup):
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+
+async def _animate_waiting_message(message: types.Message) -> None:
+    """Показывает фактическое время ожидания ответа модели."""
+    elapsed = 0
+    while True:
+        await asyncio.sleep(1)
+        elapsed += 1
+        try:
+            await message.edit_text(f"👀 Ии готовит ответ. {elapsed}s.")
+        except Exception:
+            # Ошибка редактирования не должна прерывать запрос к модели.
+            logging.debug("Не удалось обновить таймер ожидания ИИ", exc_info=True)
+
+
+async def _stop_waiting_timer(task: Optional[asyncio.Task]) -> None:
+    if task and not task.done():
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
 
 
 def _load_history() -> Dict[str, List[Dict[str, Any]]]:
@@ -168,8 +197,12 @@ def _user_chats(user_id: int) -> List[Dict[str, Any]]:
 
 
 def _find_chat(user_id: int, chat_id: str) -> Optional[Dict[str, Any]]:
+    # Каждый chat_id хранит собственные model и messages. Не объединять историю
+    # по имени модели: два чата одной модели должны оставаться независимыми.
     for chat in _user_chats(user_id):
         if chat.get("id") == chat_id:
+            if not isinstance(chat.get("messages"), list):
+                chat["messages"] = []
             return chat
     return None
 
@@ -780,9 +813,13 @@ async def ai_chat_message(message: types.Message, state: FSMContext):
     _active_requests.add(user_id)
     _active_tasks[user_id] = asyncio.current_task()
     waiting = None
+    waiting_timer = None
     try:
-        waiting = await message.answer("👀 Ии готовит ответ")
+        waiting = await message.answer("👀 Ии готовит ответ. 0s.")
         _waiting_messages[user_id] = waiting
+        waiting_timer = asyncio.create_task(_animate_waiting_message(waiting))
+        # Контекст берётся только из выбранного chat_id, не из других чатов
+        # этой же модели или других моделей.
         reply = await _request_model(model, chat.get("messages", []), user_text)
         visible_reply, generated_files = _extract_generated_files(reply)
 
@@ -835,6 +872,8 @@ async def ai_chat_message(message: types.Message, state: FSMContext):
         if not _save_history():
             logging.error("Ответ ИИ получен, но историю диалога не удалось сохранить.")
 
+        await _stop_waiting_timer(waiting_timer)
+        waiting_timer = None
         display_text = f'"{model}" - {visible_reply}' if visible_reply else f'"{model}" - Файл готов.'
         chunks = _split_text(display_text)
         try:
@@ -862,6 +901,8 @@ async def ai_chat_message(message: types.Message, state: FSMContext):
                 caption=f"Файл от модели {model}",
             )
     except RuntimeError as exc:
+        await _stop_waiting_timer(waiting_timer)
+        waiting_timer = None
         if waiting:
             await waiting.edit_text(f'"{model}" - Ошибка запроса: {exc}')
     except asyncio.CancelledError:
@@ -871,6 +912,7 @@ async def ai_chat_message(message: types.Message, state: FSMContext):
         if waiting:
             await waiting.edit_text(f'"{model}" - Произошла внутренняя ошибка при обращении к API.')
     finally:
+        await _stop_waiting_timer(waiting_timer)
         _active_requests.discard(user_id)
         _active_tasks.pop(user_id, None)
         _waiting_messages.pop(user_id, None)
