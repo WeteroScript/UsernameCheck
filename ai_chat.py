@@ -870,33 +870,58 @@ def _extract_file_content(filename: str, data: bytes, depth: int = 0) -> str:
 
 
 def _extract_zip_content(data: bytes, depth: int = 0) -> str:
+    started_at = time.monotonic()
     try:
         with zipfile.ZipFile(io.BytesIO(data)) as archive:
-            files = [item for item in archive.infolist() if not item.is_dir()]
+            # Сохраняем путь внутри проекта: одинаковые имена в разных папках
+            # больше не смешиваются в контексте модели.
+            entries = []
+            for item in archive.infolist():
+                if item.is_dir():
+                    continue
+                relative_name = item.filename.replace("\\", "/").lstrip("/")
+                if not relative_name or any(part == ".." for part in relative_name.split("/")):
+                    continue
+                if Path(relative_name).suffix.lower() not in SUPPORTED_FILE_EXTENSIONS:
+                    continue
+                entries.append((relative_name, archive.read(item)))
 
-            extracted = []
-            for item in files:
-                filename = Path(item.filename).name
-                if not filename:
-                    continue
-                extension = Path(filename).suffix.lower()
-                if extension not in SUPPORTED_FILE_EXTENSIONS:
-                    continue
-                try:
-                    content = _extract_file_content(
-                        filename, archive.read(item), depth=depth
-                    ).strip()
-                except (ValueError, RuntimeError) as exc:
-                    extracted.append(f"[Файл {filename}: {exc}]")
-                    continue
+        if not entries:
+            raise ValueError(
+                "В ZIP не найдено поддерживаемых файлов с извлекаемым содержимым."
+            )
+
+        def extract_entry(entry):
+            filename, file_data = entry
+            try:
+                content = _extract_file_content(
+                    filename, file_data, depth=depth
+                ).strip()
                 if not content:
-                    continue
-                extracted.append(f"===== {filename} =====\n{content}")
-            if not extracted:
-                raise ValueError(
-                    "В ZIP не найдено поддерживаемых файлов с извлекаемым содержимым."
-                )
-            return "\n\n".join(extracted)
+                    return None
+                return f"===== {filename} =====\n{content}"
+            except (ValueError, RuntimeError) as exc:
+                return f"[Файл {filename}: {exc}]"
+
+        # Параллелим разбор уже прочитанных файлов. Вложенные архивы
+        # обрабатываются последовательно, чтобы не создавать каскад потоков.
+        if depth == 0 and len(entries) > 1:
+            from concurrent.futures import ThreadPoolExecutor
+            workers = min(8, len(entries), os.cpu_count() or 4)
+            with ThreadPoolExecutor(max_workers=workers) as executor:
+                extracted = [part for part in executor.map(extract_entry, entries) if part]
+        else:
+            extracted = [part for entry in entries if (part := extract_entry(entry))]
+
+        if not extracted:
+            raise ValueError(
+                "В ZIP не найдено поддерживаемых файлов с извлекаемым содержимым."
+            )
+        logging.info(
+            "ZIP extraction completed: files=%s depth=%s elapsed=%.2fs",
+            len(entries), depth, time.monotonic() - started_at,
+        )
+        return "\n\n".join(extracted)
     except zipfile.BadZipFile as exc:
         raise ValueError("Файл не является корректным ZIP-архивом.") from exc
 
@@ -922,7 +947,14 @@ async def _document_to_text(message: types.Message) -> str:
     except Exception as exc:
         logging.exception("Не удалось скачать документ Telegram")
         raise RuntimeError("Не удалось скачать файл из Telegram.") from exc
-    content = _extract_file_content(filename, raw).strip()
+    # Извлечение PDF/Office/ZIP может быть CPU- и I/O-затратным.
+    # Выполняем его в рабочем потоке, чтобы не блокировать обработку Telegram.
+    extraction_started_at = time.monotonic()
+    content = (await asyncio.to_thread(_extract_file_content, filename, raw)).strip()
+    logging.info(
+        "Document extraction completed: filename=%s bytes=%s chars=%s elapsed=%.2fs",
+        filename, len(raw), len(content), time.monotonic() - extraction_started_at,
+    )
     if not content:
         raise ValueError("В файле не удалось найти текст для передачи модели.")
     return (
