@@ -104,7 +104,7 @@ from ai_chat import init_ai_chat, pause_ai_chat
 
 load_dotenv()
 
-APP_VERSION = "v1.0.2"
+APP_VERSION = "v1.0.3"
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 if not BOT_TOKEN:
