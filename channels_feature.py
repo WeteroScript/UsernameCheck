@@ -153,7 +153,7 @@ async def ch_connect(callback: types.CallbackQuery, state: FSMContext):
         "➕ <b>Подключить канал</b>\n\n"
         "1. Добавь этого бота администратором в свой канал "
         "(нужны права: приглашение пользователей, публикация сообщений)\n"
-        "2. Перешли сюда любой пост из канала, или пришли его @username\n\n"
+        "2. Перешли сюда любой пост из канала, или пришли его @username\n\n",
         parse_mode=ParseMode.HTML,
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад", callback_data="fsm_back")]])
     )
