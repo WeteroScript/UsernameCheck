@@ -15,7 +15,7 @@ Configure:
   - Contents: Read and write
   - Pull requests: Read and write
   - Metadata: Read-only (required).
-- Allow installation on any account if users should connect personal accounts and organizations.
+- Use personal GitHub accounts for now. Organization-owned repositories are not supported by the current account-ownership check.
 
 Generate a private key. The Callback URL and Setup URL must match the corresponding Bothost variables exactly.
 
