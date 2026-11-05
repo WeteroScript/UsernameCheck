@@ -400,7 +400,8 @@ async def fetch_repository_context(telegram_user_id: int, reference: str) -> Dic
             extension = Path(lower).suffix
             if basename in excluded_names or basename.startswith(".env."):
                 return False
-            if lower.startswith(".git/") or any(part in lower for part in ("/.git/", "/node_modules/", "/vendor/", "/dist/", "/build/", "/.venv/")):
+            excluded_dirs = (".git/", "node_modules/", "vendor/", "dist/", "build/", ".venv/")
+            if any(lower.startswith(directory) or ("/" + directory) in lower for directory in excluded_dirs):
                 return False
             if any(term in basename for term in ("secret", "credential", "private_key", "token")):
                 return False
