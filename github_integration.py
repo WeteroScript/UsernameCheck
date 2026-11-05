@@ -38,9 +38,7 @@ def configuration_error() -> Optional[str]:
         "GITHUB_APP_SLUG": os.getenv("GITHUB_APP_SLUG", "").strip(),
         "GITHUB_APP_PRIVATE_KEY": _private_key(),
         "GITHUB_APP_CLIENT_ID": os.getenv("GITHUB_APP_CLIENT_ID", "").strip(),
-        "GITHUB_APP_CLIENT_SECRET": os.getenv("GITHUB_APP_CLIENT_SECRET", "").strip(),
         "GITHUB_STATE_SECRET": os.getenv("GITHUB_STATE_SECRET", "").strip(),
-        "GITHUB_OAUTH_CALLBACK_URL": os.getenv("GITHUB_OAUTH_CALLBACK_URL", "").strip(),
         "GITHUB_CALLBACK_URL": os.getenv("GITHUB_CALLBACK_URL", "").strip(),
     }
     missing = [name for name, value in required.items() if not value]
@@ -79,70 +77,108 @@ def _signed_state(payload: Dict[str, Any]) -> str:
     return encoded + "." + signature
 
 
-def create_install_url(telegram_user_id: int) -> str:
-    error = configuration_error()
-    if error:
-        raise RuntimeError(error)
-    state = _signed_state({
-        "uid": int(telegram_user_id),
-        "exp": int(time.time()) + 600,
-        "nonce": base64.urlsafe_b64encode(os.urandom(18)).decode("ascii").rstrip("="),
-    })
-    params = {
-        "client_id": os.getenv("GITHUB_APP_CLIENT_ID", "").strip(),
-        "redirect_uri": os.getenv("GITHUB_OAUTH_CALLBACK_URL", "").strip(),
-        "state": state,
+async def request_device_code() -> Dict[str, Any]:
+    """Start GitHub App Device Flow; no client secret is required."""
+    client_id = os.getenv("GITHUB_APP_CLIENT_ID", "").strip()
+    if not client_id:
+        raise RuntimeError("Не задан GITHUB_APP_CLIENT_ID")
+    url = "https://github.com/login/device/code"
+    headers = {
+        "Accept": "application/json",
+        "Content-Type": "application/x-www-form-urlencoded",
+        "User-Agent": "UsernameCheck-Telegram-Bot",
     }
-    return "https://github.com/login/oauth/authorize?" + urlencode(params)
+    timeout = aiohttp.ClientTimeout(total=20)
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        async with session.post(url, data={"client_id": client_id}, headers=headers) as response:
+            data = await response.json(content_type=None)
+            if response.status >= 400 or data.get("error"):
+                detail = data.get("error_description") or data.get("error") or str(data)
+                raise RuntimeError("GitHub не выдал код авторизации: " + str(detail)[:300])
+    required = ("device_code", "user_code", "verification_uri")
+    if any(not data.get(key) for key in required):
+        raise RuntimeError("GitHub вернул неполные данные Device Flow")
+    verification_uri = str(data["verification_uri"])
+    if not verification_uri.startswith("https://github.com/"):
+        raise RuntimeError("GitHub вернул неожиданный адрес подтверждения")
+    return {
+        "device_code": str(data["device_code"]),
+        "user_code": str(data["user_code"]),
+        "verification_uri": verification_uri,
+        "expires_in": max(60, int(data.get("expires_in", 900))),
+        "interval": max(5, int(data.get("interval", 5))),
+    }
 
 
-def complete_oauth_authorization(code: str, state: str) -> str:
-    payload = _decode_state_payload(state)
-    if not code:
-        raise ValueError("GitHub не передал OAuth code")
-    token_request = Request(
-        "https://github.com/login/oauth/access_token",
-        data=urlencode({
-            "client_id": os.getenv("GITHUB_APP_CLIENT_ID", "").strip(),
-            "client_secret": os.getenv("GITHUB_APP_CLIENT_SECRET", "").strip(),
-            "code": code,
-            "redirect_uri": os.getenv("GITHUB_OAUTH_CALLBACK_URL", "").strip(),
-        }).encode("utf-8"),
-        headers={
-            "Accept": "application/json",
-            "Content-Type": "application/x-www-form-urlencoded",
-            "User-Agent": "UsernameCheck-Telegram-Bot",
-        },
-        method="POST",
-    )
-    try:
-        with urlopen(token_request, timeout=20) as response:
-            token_data = json.loads(response.read().decode("utf-8"))
-    except (HTTPError, URLError, TimeoutError) as exc:
-        raise RuntimeError("Не удалось завершить OAuth-авторизацию GitHub") from exc
-    access_token = token_data.get("access_token")
+async def complete_device_flow(
+    telegram_user_id: int,
+    device_code: str,
+    interval: int = 5,
+    expires_in: int = 900,
+) -> str:
+    """Poll GitHub Device Flow, verify the user, then return the App install URL."""
+    client_id = os.getenv("GITHUB_APP_CLIENT_ID", "").strip()
+    if not client_id:
+        raise RuntimeError("Не задан GITHUB_APP_CLIENT_ID")
+    deadline = time.monotonic() + max(1, int(expires_in))
+    poll_interval = max(5, int(interval))
+    token_url = "https://github.com/login/oauth/access_token"
+    headers = {
+        "Accept": "application/json",
+        "Content-Type": "application/x-www-form-urlencoded",
+        "User-Agent": "UsernameCheck-Telegram-Bot",
+    }
+    timeout = aiohttp.ClientTimeout(total=20)
+    access_token = None
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        while time.monotonic() < deadline:
+            await asyncio.sleep(poll_interval)
+            if time.monotonic() >= deadline:
+                break
+            payload = {
+                "client_id": client_id,
+                "device_code": device_code,
+                "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
+            }
+            async with session.post(token_url, data=payload, headers=headers) as response:
+                token_data = await response.json(content_type=None)
+            error = str(token_data.get("error", ""))
+            if token_data.get("access_token"):
+                access_token = str(token_data["access_token"])
+                break
+            if error == "authorization_pending":
+                continue
+            if error == "slow_down":
+                poll_interval = max(poll_interval + 5, int(token_data.get("interval", poll_interval + 5)))
+                continue
+            if error in ("expired_token", "token_expired"):
+                raise RuntimeError("Срок действия кода GitHub истёк. Запусти подключение заново.")
+            if error == "access_denied":
+                raise RuntimeError("Авторизация GitHub отменена.")
+            detail = token_data.get("error_description") or error or str(token_data)
+            raise RuntimeError("GitHub отклонил авторизацию: " + str(detail)[:300])
     if not access_token:
-        raise RuntimeError("GitHub не выдал OAuth access token")
-    user_request = Request(
-        "https://api.github.com/user",
-        headers={
-            "Authorization": "Bearer " + access_token,
-            "Accept": "application/vnd.github+json",
-            "X-GitHub-Api-Version": "2022-11-28",
-            "User-Agent": "UsernameCheck-Telegram-Bot",
-        },
-    )
-    try:
-        with urlopen(user_request, timeout=20) as response:
-            github_user = json.loads(response.read().decode("utf-8"))
-    except (HTTPError, URLError, TimeoutError) as exc:
-        raise RuntimeError("Не удалось проверить GitHub-аккаунт пользователя") from exc
+        raise RuntimeError("Время ожидания авторизации GitHub истекло. Запусти подключение заново.")
+
+    user_headers = {
+        "Authorization": "Bearer " + access_token,
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+        "User-Agent": "UsernameCheck-Telegram-Bot",
+    }
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        async with session.get("https://api.github.com/user", headers=user_headers) as response:
+            github_user = await response.json(content_type=None)
+            if response.status >= 400:
+                detail = github_user.get("message", str(github_user))
+                raise RuntimeError("Не удалось проверить GitHub-аккаунт: " + str(detail)[:300])
+
     account_id = github_user.get("id")
     account_login = github_user.get("login")
     if not account_id or not account_login:
         raise RuntimeError("GitHub не вернул идентификатор аккаунта")
     install_state = _signed_state({
-        "uid": int(payload["uid"]),
+        "uid": int(telegram_user_id),
         "account_id": int(account_id),
         "account_login": str(account_login),
         "exp": int(time.time()) + 600,
