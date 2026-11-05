@@ -1927,9 +1927,9 @@ async def session_code(message: types.Message, state: FSMContext):
             save_sessions()
             get_session_config(user_id, phone)
         await message.answer(
-            f"✅ Сессия добавлена!\n"
+            f"✅Сессия добавлена!\n"
             f"{phone}\n"
-            f"Всего сессий: {len(user_sessions[user_id])}/{get_max_sessions(user_id)}",
+            f"Всего сессий: {len(user_sessions[user_id])}",
             parse_mode=ParseMode.HTML,
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="🏠 Главное меню", callback_data="main")]
@@ -1979,9 +1979,9 @@ async def session_2fa_password(message: types.Message, state: FSMContext):
             save_sessions()
             get_session_config(user_id, phone)
         await message.answer(
-            f"✅ Сессия добавлена!\n"
+            f"✅Сессия добавлена!\n"
             f"{phone}\n"
-            f"Всего сессий: {len(user_sessions[user_id])}/{get_max_sessions(user_id)}",
+            f"Всего сессий: {len(user_sessions[user_id])}",
             parse_mode=ParseMode.HTML,
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="🏠 Главное меню", callback_data="main")]
@@ -3822,9 +3822,9 @@ async def session_code(message: types.Message, state: FSMContext):
             save_sessions()
             get_session_config(user_id, phone)
         await message.answer(
-            f"✅ Сессия добавлена!\n"
+            f"✅Сессия добавлена!\n"
             f"{phone}\n"
-            f"Всего сессий: {len(user_sessions[user_id])}/{get_max_sessions(user_id)}",
+            f"Всего сессий: {len(user_sessions[user_id])}",
             parse_mode=ParseMode.HTML,
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="🏠 Главное меню", callback_data="main")]
@@ -3874,9 +3874,9 @@ async def session_2fa_password(message: types.Message, state: FSMContext):
             save_sessions()
             get_session_config(user_id, phone)
         await message.answer(
-            f"✅ Сессия добавлена!\n"
+            f"✅Сессия добавлена!\n"
             f"{phone}\n"
-            f"Всего сессий: {len(user_sessions[user_id])}/{get_max_sessions(user_id)}",
+            f"Всего сессий: {len(user_sessions[user_id])}",
             parse_mode=ParseMode.HTML,
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="🏠 Главное меню", callback_data="main")]
