@@ -168,6 +168,7 @@ MODELS = [
 
 chat_history: Dict[str, List[Dict[str, Any]]] = {}
 user_settings: Dict[str, Dict[str, Any]] = {}
+available_models: Dict[str, List[str]] = {}
 
 
 class AIChatStates(StatesGroup):
@@ -373,6 +374,90 @@ def _normalize_api_url(value: str) -> str:
     return urlunsplit(("https", parsed.netloc, path, "", ""))
 
 
+def _has_custom_api(user_id: int) -> bool:
+    settings = _user_settings(user_id)
+    return bool(settings.get("api_key") or settings.get("api_url"))
+
+
+def _custom_api_pair(user_id: int) -> Optional[tuple[str, str]]:
+    settings = _user_settings(user_id)
+    api_key = str(settings.get("api_key") or "").strip()
+    api_url = str(settings.get("api_url") or "").strip()
+    if not api_key and not api_url:
+        return None
+    if not api_key or not api_url:
+        raise RuntimeError(
+            "Личный API настроен не полностью. Укажи и API key, и API URL. "
+            "Системный API не будет подставляться вместо отсутствующего значения."
+        )
+    return api_key, api_url
+
+
+async def _fetch_user_models(user_id: int) -> List[str]:
+    """Получает список моделей у личного OpenAI-совместимого API."""
+    custom_api = _custom_api_pair(user_id)
+    if custom_api is None:
+        models = list(MODELS)
+    else:
+        api_key, api_url = custom_api
+        models_url = api_url.rsplit("/chat/completions", 1)[0] + "/models"
+        timeout = aiohttp.ClientTimeout(total=30, connect=10)
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Accept": "application/json",
+        }
+        try:
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.get(models_url, headers=headers) as response:
+                    body = await response.text()
+                    if response.status != 200:
+                        raise RuntimeError(
+                            f"Личный API не вернул список моделей: HTTP {response.status}. "
+                            f"{body[:300] or 'Нет подробностей от сервера'}"
+                        )
+                    try:
+                        payload = json.loads(body)
+                    except json.JSONDecodeError as exc:
+                        raise RuntimeError(
+                            "Личный API вернул некорректный JSON со списком моделей."
+                        ) from exc
+        except asyncio.TimeoutError as exc:
+            raise RuntimeError("Истекло время ожидания ответа личного API /models.") from exc
+        except aiohttp.ClientError as exc:
+            raise RuntimeError(f"Не удалось подключиться к личному API /models: {exc}") from exc
+
+        if isinstance(payload, list):
+            entries = payload
+        elif isinstance(payload, dict):
+            entries = payload.get("data") or payload.get("models") or payload.get("model_list") or []
+        else:
+            entries = []
+        models = []
+        seen = set()
+        if isinstance(entries, list):
+            for entry in entries:
+                model_id = entry.get("id") if isinstance(entry, dict) else entry
+                if not isinstance(model_id, str):
+                    continue
+                model_id = model_id.strip()
+                if model_id and len(model_id) <= 200 and model_id not in seen:
+                    seen.add(model_id)
+                    models.append(model_id)
+        if not models:
+            raise RuntimeError(
+                "Личный API вернул пустой или неподдерживаемый список моделей. "
+                "Проверь, что адрес /models поддерживается и ключ имеет доступ."
+            )
+
+    available_models[str(int(user_id))] = models
+    return models
+
+
+def _cached_user_models(user_id: int) -> Optional[List[str]]:
+    models = available_models.get(str(int(user_id)))
+    return list(models) if models else None
+
+
 async def pause_ai_chat(user_id: int) -> None:
     """Останавливает активный запрос пользователя при переходе в /start."""
     task = _active_tasks.get(user_id)
@@ -510,23 +595,59 @@ def _model_style(model: str) -> ButtonStyle:
     return ButtonStyle.PRIMARY
 
 
-def _models_keyboard() -> InlineKeyboardMarkup:
-    buttons = [
-        InlineKeyboardButton(
-            text=f"🔒 {model}" if _is_paid_model(model) else model,
-            callback_data=f"ai_model_{model}",
-            style=_model_style(model),
+def _models_keyboard(
+    models: List[str],
+    page: int = 0,
+    chat_id: Optional[str] = None,
+    custom_api: bool = False,
+) -> InlineKeyboardMarkup:
+    page_size = 40
+    page_count = max(1, (len(models) + page_size - 1) // page_size)
+    page = max(0, min(page, page_count - 1))
+    start = page * page_size
+    buttons = []
+    for index, model in enumerate(models[start:start + page_size], start=start):
+        label = model if len(model) <= 54 else model[:51] + "..."
+        if not custom_api and _is_paid_model(model):
+            label = f"🔒 {label}"
+        callback_data = (
+            f"ai_chat_set_model_{chat_id}_{index}" if chat_id
+            else f"ai_model_{index}"
         )
-        for model in MODELS
-    ]
+        buttons.append(InlineKeyboardButton(
+            text=label,
+            callback_data=callback_data,
+            style=ButtonStyle.PRIMARY if custom_api else _model_style(model),
+        ))
     rows = [buttons[index:index + 2] for index in range(0, len(buttons), 2)]
-    rows.append([
-        InlineKeyboardButton(
-            text="⬅️ Назад",
-            callback_data="ai_new",
-            style=ButtonStyle.DANGER,
-        )
-    ])
+    if page_count > 1:
+        navigation = []
+        if page > 0:
+            callback_data = (
+                f"ai_chat_models_page_{chat_id}_{page - 1}" if chat_id
+                else f"ai_models_page_{page - 1}"
+            )
+            navigation.append(InlineKeyboardButton(
+                text="◀️", callback_data=callback_data, style=ButtonStyle.PRIMARY
+            ))
+        navigation.append(InlineKeyboardButton(
+            text=f"{page + 1}/{page_count}", callback_data="ai_models_page_info",
+            style=ButtonStyle.PRIMARY,
+        ))
+        if page + 1 < page_count:
+            callback_data = (
+                f"ai_chat_models_page_{chat_id}_{page + 1}" if chat_id
+                else f"ai_models_page_{page + 1}"
+            )
+            navigation.append(InlineKeyboardButton(
+                text="▶️", callback_data=callback_data, style=ButtonStyle.PRIMARY
+            ))
+        rows.append(navigation)
+    rows.append([InlineKeyboardButton(
+        text="⬅️ Назад к настройкам" if chat_id else "⬅️ Назад",
+        callback_data=f"ai_chat_settings_{chat_id}" if chat_id else "ai_new",
+        style=ButtonStyle.DANGER,
+    )])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -614,6 +735,7 @@ def _api_settings_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🔑 Установить API key", callback_data="ai_api_set_key", style=ButtonStyle.SUCCESS)],
         [InlineKeyboardButton(text="🌐 Установить API URL", callback_data="ai_api_set_url", style=ButtonStyle.PRIMARY)],
+        [InlineKeyboardButton(text="🗑 Удалить ключ", callback_data="ai_api_delete_key", style=ButtonStyle.DANGER)],
         [InlineKeyboardButton(text="♻️ Сбросить свой API", callback_data="ai_api_reset", style=ButtonStyle.DANGER)],
         [InlineKeyboardButton(text="⬅️ Назад", callback_data="ai_menu", style=ButtonStyle.PRIMARY)],
     ])
@@ -947,9 +1069,13 @@ async def _request_model(
     user_text: str,
     user_id: Optional[int] = None,
 ) -> str:
-    settings = _user_settings(user_id) if user_id is not None else {}
-    api_key = str(settings.get("api_key") or os.getenv(API_KEY_ENV, "")).strip()
-    api_url = str(settings.get("api_url") or os.getenv("TOKENPLAN_BASE_URL") or DEFAULT_API_URL).strip()
+    custom_api = _custom_api_pair(user_id) if user_id is not None else None
+    if custom_api is not None:
+        # Личные реквизиты используются парой, без подстановки системных значений.
+        api_key, api_url = custom_api
+    else:
+        api_key = str(os.getenv(API_KEY_ENV, "")).strip()
+        api_url = str(os.getenv("TOKENPLAN_BASE_URL") or DEFAULT_API_URL).strip()
     if not api_url.rstrip("/").endswith("/chat/completions"):
         api_url = api_url.rstrip("/") + "/chat/completions"
     if not api_key:
@@ -1178,25 +1304,35 @@ async def ai_api_settings(callback: types.CallbackQuery, state: FSMContext):
     await callback.answer()
     await state.clear()
     settings = _user_settings(callback.from_user.id)
-    if settings.get("api_key"):
+    has_custom_key = bool(settings.get("api_key"))
+    custom_url = str(settings.get("api_url") or "")
+    if has_custom_key:
         key_status = "установлен"
-    elif os.getenv(API_KEY_ENV):
-        key_status = "свой не задан; используется ключ бота"
+    elif os.getenv(API_KEY_ENV) and not custom_url:
+        key_status = "не задан; доступен системный ключ бота"
     else:
         key_status = "не установлен"
-    custom_url = str(settings.get("api_url") or "")
     if custom_url:
         parsed = urlsplit(custom_url)
         url_status = html.escape(parsed.netloc + parsed.path)
     else:
         url_status = "используется адрес из настроек бота"
+    if has_custom_key and custom_url:
+        api_status = "Личный API активен: запросы и список моделей используют только твои key и URL."
+    elif has_custom_key or custom_url:
+        api_status = (
+            "Личный API настроен не полностью. Нужны одновременно API key и API URL; "
+            "системные значения не подставляются."
+        )
+    else:
+        api_status = "Используются настройки API из окружения бота."
     await callback.message.edit_text(
         "<b>🔑 Свой API key</b>\n\n"
         f"API key: <b>{key_status}</b>\n"
         f"API URL: <code>{url_status}</code>\n\n"
-        "Свой ключ и адрес применяются только к твоим запросам. Ключ не показывается "
-        "в меню и не записывается в историю переписки; на диске он хранится зашифрованно. "
-        "Для TokenPlan обычно подходит "
+        f"{html.escape(api_status)}\n\n"
+        "Ключ не показывается в меню и не записывается в историю переписки; на диске он хранится зашифрованно. "
+        "Модели загружаются с endpoint /models твоего API. Для TokenPlan обычно подходит "
         "<code>https://tokenplan.lat/v1</code>.",
         parse_mode="HTML",
         reply_markup=_api_settings_keyboard(),
@@ -1235,12 +1371,43 @@ async def ai_api_reset(callback: types.CallbackQuery, state: FSMContext):
             settings["api_url"] = old_url
         await callback.answer("Не удалось сохранить настройки.", show_alert=True)
         return
+    available_models.pop(str(callback.from_user.id), None)
     await callback.answer("Свой API сброшен.")
     await callback.message.edit_text(
         "<b>🔑 Свой API key</b>\n\nБудут использоваться настройки API из окружения бота.",
         parse_mode="HTML",
         reply_markup=_api_settings_keyboard(),
     )
+
+
+@router.callback_query(lambda callback: callback.data == "ai_api_delete_key")
+async def ai_api_delete_key(callback: types.CallbackQuery, state: FSMContext):
+    settings = _user_settings(callback.from_user.id)
+    old_key = settings.pop("api_key", None)
+    if old_key is None:
+        await callback.answer("Пользовательский ключ не задан.", show_alert=True)
+        return
+    if not _save_user_settings():
+        settings["api_key"] = old_key
+        await callback.answer("Не удалось удалить ключ.", show_alert=True)
+        return
+    available_models.pop(str(callback.from_user.id), None)
+    await callback.answer("Ключ удалён.")
+    message_text = "<b>🔑 Свой API key</b>\n\nКлюч удалён."
+    if settings.get("api_url"):
+        message_text += " Сохранённый API URL оставлен. Чтобы снова использовать личный API, задай новый ключ."
+    else:
+        message_text += " Теперь используются настройки API из окружения бота."
+    await callback.message.edit_text(
+        message_text,
+        parse_mode="HTML",
+        reply_markup=_api_settings_keyboard(),
+    )
+
+
+@router.callback_query(lambda callback: callback.data == "ai_models_page_info")
+async def ai_models_page_info(callback: types.CallbackQuery):
+    await callback.answer()
 
 
 @router.callback_query(lambda callback: callback.data and callback.data.startswith("ai_chat_settings_"))
@@ -1268,26 +1435,49 @@ async def ai_chat_change_model(callback: types.CallbackQuery, state: FSMContext)
         await callback.answer("Чат не найден.", show_alert=True)
         return
     await callback.answer()
+    try:
+        models = _cached_user_models(callback.from_user.id) or await _fetch_user_models(callback.from_user.id)
+    except RuntimeError as exc:
+        await callback.message.edit_text(
+            f"Не удалось загрузить модели: {html.escape(str(exc))}",
+            parse_mode="HTML",
+            reply_markup=_chat_settings_keyboard(chat_id),
+        )
+        return
     await callback.message.edit_text(
         f"Выбери новую модель для чата «{html.escape(str(chat.get('title') or 'Новый чат'))}»:",
         parse_mode="HTML",
-        reply_markup=_chat_model_keyboard(chat_id),
+        reply_markup=_models_keyboard(
+            models, chat_id=chat_id, custom_api=_has_custom_api(callback.from_user.id)
+        ),
     )
 
 
 @router.callback_query(lambda callback: callback.data and callback.data.startswith("ai_chat_set_model_"))
 async def ai_chat_set_model(callback: types.CallbackQuery, state: FSMContext):
     payload = callback.data[len("ai_chat_set_model_"):]
-    chat_id, separator, model = payload.partition("_")
-    if not separator or model not in MODELS:
+    chat_id, separator, model_index = payload.partition("_")
+    if not separator or not model_index.isdigit():
         await callback.answer("Некорректный выбор модели.", show_alert=True)
-        return
-    if _is_paid_model(model) and not is_premium(callback.from_user.id):
-        await callback.answer("Эта модель доступна только с премиум-доступом.", show_alert=True)
         return
     chat = _find_chat(callback.from_user.id, chat_id)
     if not chat:
         await callback.answer("Чат не найден.", show_alert=True)
+        return
+    models = _cached_user_models(callback.from_user.id)
+    if models is None:
+        try:
+            models = await _fetch_user_models(callback.from_user.id)
+        except RuntimeError as exc:
+            await callback.answer(str(exc)[:180], show_alert=True)
+            return
+    index = int(model_index)
+    if index < 0 or index >= len(models):
+        await callback.answer("Список моделей устарел. Открой выбор модели ещё раз.", show_alert=True)
+        return
+    model = models[index]
+    if not _has_custom_api(callback.from_user.id) and _is_paid_model(model) and not is_premium(callback.from_user.id):
+        await callback.answer("Эта модель доступна только с премиум-доступом.", show_alert=True)
         return
     previous_model = chat.get("model")
     chat["model"] = model
@@ -1350,10 +1540,60 @@ async def ai_new_chat(callback: types.CallbackQuery, state: FSMContext):
 async def ai_choose_model(callback: types.CallbackQuery, state: FSMContext):
     await callback.answer()
     await state.clear()
+    try:
+        models = await _fetch_user_models(callback.from_user.id)
+    except RuntimeError as exc:
+        await callback.message.edit_text(
+            f"Не удалось загрузить модели: {html.escape(str(exc))}",
+            parse_mode="HTML",
+            reply_markup=_new_chat_keyboard(),
+        )
+        return
+    custom_api = _has_custom_api(callback.from_user.id)
     await callback.message.edit_text(
-        "🎛 <b>Выбор модели</b>\n\nВыбери модель для нового диалога:",
+        "🎛 <b>Выбор модели</b>\n\n"
+        + ("Модели получены из твоего API:" if custom_api else "Выбери модель для нового диалога:"),
         parse_mode="HTML",
-        reply_markup=_models_keyboard(),
+        reply_markup=_models_keyboard(models, custom_api=custom_api),
+    )
+
+
+@router.callback_query(lambda callback: callback.data and callback.data.startswith("ai_models_page_")
+                       and callback.data != "ai_models_page_info")
+async def ai_models_page(callback: types.CallbackQuery):
+    try:
+        page = int(callback.data[len("ai_models_page_"):])
+        models = _cached_user_models(callback.from_user.id) or await _fetch_user_models(callback.from_user.id)
+    except (ValueError, RuntimeError) as exc:
+        await callback.answer(str(exc)[:180], show_alert=True)
+        return
+    await callback.answer()
+    await callback.message.edit_reply_markup(
+        reply_markup=_models_keyboard(
+            models, page=page, custom_api=_has_custom_api(callback.from_user.id)
+        )
+    )
+
+
+@router.callback_query(lambda callback: callback.data and callback.data.startswith("ai_chat_models_page_"))
+async def ai_chat_models_page(callback: types.CallbackQuery):
+    payload = callback.data[len("ai_chat_models_page_"):]
+    chat_id, separator, page_text = payload.rpartition("_")
+    chat = _find_chat(callback.from_user.id, chat_id)
+    if not separator or not page_text.isdigit() or not chat:
+        await callback.answer("Не удалось открыть страницу моделей.", show_alert=True)
+        return
+    try:
+        models = _cached_user_models(callback.from_user.id) or await _fetch_user_models(callback.from_user.id)
+    except RuntimeError as exc:
+        await callback.answer(str(exc)[:180], show_alert=True)
+        return
+    await callback.answer()
+    await callback.message.edit_reply_markup(
+        reply_markup=_models_keyboard(
+            models, page=int(page_text), chat_id=chat_id,
+            custom_api=_has_custom_api(callback.from_user.id),
+        )
     )
 
 
@@ -1378,11 +1618,23 @@ async def ai_my_chats(callback: types.CallbackQuery, state: FSMContext):
 
 @router.callback_query(lambda callback: callback.data and callback.data.startswith("ai_model_"))
 async def ai_model_selected(callback: types.CallbackQuery, state: FSMContext):
-    model = callback.data[len("ai_model_"):]
-    if model not in MODELS:
-        await callback.answer("Неизвестная модель.", show_alert=True)
+    index_text = callback.data[len("ai_model_"):]
+    if not index_text.isdigit():
+        await callback.answer("Некорректный выбор модели.", show_alert=True)
         return
-    if _is_paid_model(model) and not is_premium(callback.from_user.id):
+    models = _cached_user_models(callback.from_user.id)
+    if models is None:
+        try:
+            models = await _fetch_user_models(callback.from_user.id)
+        except RuntimeError as exc:
+            await callback.answer(str(exc)[:180], show_alert=True)
+            return
+    index = int(index_text)
+    if index < 0 or index >= len(models):
+        await callback.answer("Список моделей устарел. Открой выбор модели ещё раз.", show_alert=True)
+        return
+    model = models[index]
+    if not _has_custom_api(callback.from_user.id) and _is_paid_model(model) and not is_premium(callback.from_user.id):
         await callback.answer("Эта модель доступна только с премиум-доступом.", show_alert=True)
         return
 
@@ -1512,6 +1764,7 @@ async def ai_save_custom_api_key(message: types.Message, state: FSMContext):
             settings["api_key"] = previous
         await message.answer("Не удалось сохранить API key. Проверь постоянное хранилище Bothost.")
         return
+    available_models.pop(str(message.from_user.id), None)
     try:
         await message.delete()
     except Exception:
@@ -1545,6 +1798,7 @@ async def ai_save_custom_api_url(message: types.Message, state: FSMContext):
             settings["api_url"] = previous
         await message.answer("Не удалось сохранить API URL. Проверь постоянное хранилище Bothost.")
         return
+    available_models.pop(str(message.from_user.id), None)
     await state.clear()
     await message.answer("Свой API URL сохранён.", reply_markup=_api_settings_keyboard())
 
