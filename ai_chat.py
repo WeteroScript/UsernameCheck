@@ -56,9 +56,10 @@ _active_tasks: Dict[int, asyncio.Task] = {}
 _waiting_messages: Dict[int, types.Message] = {}
 SYSTEM_PROMPT = (
     "Ты — ИИ-помощник внутри Telegram-бота. Отвечай на языке пользователя. "
-    "ВАЖНО: ты можешь создавать и отправлять пользователю файлы. У тебя нет доступа "
-    "к диску или папкам сервера, но это не мешает создавать вложения: бот превращает "
-    "текст, который ты поместишь в специальные блоки, в настоящие файлы и отправляет их. "
+    "ВАЖНО: ты можешь создавать и отправлять пользователю файлы и целые проекты. "
+    "Не пытайся обращаться к файловой системе или инструментам сервера самостоятельно: "
+    "бот создаёт реальные вложения из специальных блоков FILE. Отсутствие у тебя прямого "
+    "доступа к диску не является ограничением и не поводом отказываться от задачи. "
     "Когда пользователь просит создать, сделать, подготовить, сохранить, экспортировать "
     "или прислать файл, не ограничивайся инструкцией или примером в сообщении — создай "
     "сам файл и верни его полное содержимое в блоке. "
@@ -215,6 +216,32 @@ def init_ai_chat(dispatcher) -> None:
 
 def _user_chats(user_id: int) -> List[Dict[str, Any]]:
     return chat_history.setdefault(str(user_id), [])
+
+
+def _history_message_without_old_files(content: str) -> str:
+    """Не сохраняет и не передаёт модели содержимое файлов из прошлых сообщений."""
+    marker = "\\n\\nПользователь приложил файл:"
+    if marker in content:
+        return content.split(marker, 1)[0] + "\\n\\n[Содержимое ранее приложенного файла не хранится в истории.]"
+    if content.startswith("Пользователь приложил файл:"):
+        return "[Содержимое ранее приложенного файла не хранится в истории.]"
+    return content
+
+
+def _history_without_old_files(messages: List[Dict[str, Any]]) -> List[Dict[str, str]]:
+    cleaned = []
+    for item in messages:
+        if not isinstance(item, dict) or item.get("role") not in {"user", "assistant"}:
+            continue
+        content = item.get("content", "")
+        if not isinstance(content, str):
+            continue
+        cleaned.append({
+            "role": item["role"],
+            "content": _history_message_without_old_files(content)
+                if item["role"] == "user" else content,
+        })
+    return cleaned
 
 
 def _find_chat(user_id: int, chat_id: str) -> Optional[Dict[str, Any]]:
@@ -841,14 +868,17 @@ async def ai_chat_message(message: types.Message, state: FSMContext):
         waiting_timer = asyncio.create_task(_animate_waiting_message(waiting))
         # Контекст берётся только из выбранного chat_id, не из других чатов
         # этой же модели или других моделей.
-        reply = await _request_model(model, chat.get("messages", []), user_text)
+        # Модели получают историю только своего chat_id; содержимое старых
+        # вложений из этой истории удаляется перед каждым запросом.
+        model_history = _history_without_old_files(chat.get("messages", []))
+        reply = await _request_model(model, model_history, user_text)
         visible_reply, generated_files, empty_files = _extract_generated_files(reply)
 
         # Если пользователь явно запросил файл, но модель не создала ни одного
         # непустого вложения, один раз просим её повторить генерацию.
         if _is_file_creation_request(user_text) and not generated_files:
             retry_context = [
-                *chat.get("messages", [])[-MAX_CONTEXT_MESSAGES:],
+                *_history_without_old_files(chat.get("messages", []))[-MAX_CONTEXT_MESSAGES:],
                 {"role": "user", "content": user_text},
                 {"role": "assistant", "content": reply},
             ]
@@ -896,7 +926,7 @@ async def ai_chat_message(message: types.Message, state: FSMContext):
 
         messages = chat.setdefault("messages", [])
         messages.extend([
-            {"role": "user", "content": user_text},
+            {"role": "user", "content": _history_message_without_old_files(user_text)},
             {"role": "assistant", "content": reply},
         ])
         if chat.get("title") == "Новый чат":
