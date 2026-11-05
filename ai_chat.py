@@ -146,6 +146,9 @@ async def _stop_waiting_timer(task: Optional[asyncio.Task]) -> None:
             await task
         except asyncio.CancelledError:
             pass
+        except Exception:
+            # Ошибка таймера не должна мешать освобождению блокировки запроса.
+            logging.debug("Задача таймера завершилась с ошибкой", exc_info=True)
 
 
 def _load_history() -> Dict[str, List[Dict[str, Any]]]:
@@ -525,7 +528,7 @@ async def _document_to_text(message: types.Message) -> str:
 
 def _extract_generated_files(reply: str):
     pattern = re.compile(
-        r"\[\[FILE:\s*([^\]\r\n]+)\]\]\s*\n(.*?)\n\[\[/FILE\]\]",
+        r"\[\[FILE:\s*([^\]\r\n]+)\]\][ \t]*\r?\n(.*?)\r?\n?\[\[/FILE\]\]",
         re.DOTALL | re.IGNORECASE,
     )
     files = []
@@ -942,7 +945,12 @@ async def ai_chat_message(message: types.Message, state: FSMContext):
         if waiting:
             await waiting.edit_text(f'"{model}" - Произошла внутренняя ошибка при обращении к API.')
     finally:
-        await _stop_waiting_timer(waiting_timer)
-        _active_requests.discard(user_id)
-        _active_tasks.pop(user_id, None)
-        _waiting_messages.pop(user_id, None)
+        try:
+            await _stop_waiting_timer(waiting_timer)
+        except Exception:
+            logging.debug("Не удалось корректно остановить таймер ожидания", exc_info=True)
+        finally:
+            # Освобождаем блокировку даже при ошибке редактирования сообщения/таймера.
+            _active_requests.discard(user_id)
+            _active_tasks.pop(user_id, None)
+            _waiting_messages.pop(user_id, None)
