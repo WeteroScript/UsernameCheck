@@ -502,8 +502,8 @@ async def create_repository_pull_request(
     full_name = _repository_full_name(full_name)
     if not files:
         raise ValueError("Нет файлов для отправки в GitHub")
-    if len(files) > 40:
-        raise ValueError("За один этап можно изменить не более 40 файлов")
+    if len(files) > 100:
+        raise ValueError("За один Pull Request можно изменить не более 100 файлов. Разбей изменения на несколько этапов.")
     normalized = []
     total_size = 0
     for path, file_content in files:
