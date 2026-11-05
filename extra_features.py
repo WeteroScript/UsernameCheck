@@ -371,7 +371,7 @@ async def bugreport_menu(callback: types.CallbackQuery, state: FSMContext):
         "🐛 <b>Сообщить о баге</b>\n\n"
         "Что-то работает не так? Опиши, что произошло и как это повторить. "
         "Сообщение сразу уйдёт администраторам — разберёмся.\n\n"
-        "Напиши, в чём проблема:"
+        "Напиши, в чём проблема:",
         parse_mode=ParseMode.HTML,
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад", callback_data="home_profile")]])
     )
