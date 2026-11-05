@@ -145,8 +145,8 @@ SYSTEM_PROMPT += (
     "репозитория и полное содержимое через GITHUB_FILE; для изменения верни полную обновлённую "
     "версию, а не diff или отдельный фрагмент. Не изменяй файл, которого нет в снимке, если "
     "не уверен в его назначении: запроси его у пользователя. Для GitHub используй только "
-    "GITHUB_FILE-блоки, не FILE-блоки и не локальный ZIP. После отправки изменений бот создаёт "
-    "если пользователь выбрал ветку — коммит в эту ветку напрямую; если ветка не выбрана — отдельную " +
+    "GITHUB_FILE-блоки, не FILE-блоки и не локальный ZIP. После получения блоков бот " +
+    "записывает изменения напрямую в выбранную пользователем ветку; если ветка не выбрана — создаёт " +
     "AI-ветку и Pull Request. Никогда не изменяй другие ветки и не утверждай, что PR слит. "
     "Порядок: изучить репозиторий, определить минимальный набор файлов, подготовить полные файлы, "
     "проверить импорты, пути и зависимости, затем вернуть GITHUB_FILE-блоки. Если репозиторий "
@@ -986,7 +986,7 @@ def _github_reference_has_branch(reference: Optional[str]) -> bool:
     if not reference:
         return False
     return bool(re.search(
-        r"github\\.com/[^/\\s]+/[^/\\s]+/(?:tree|blob)/",
+        r"github\.com/[^/\s]+/[^/\s]+/(?:tree|blob)/",
         reference,
         re.IGNORECASE,
     ))
@@ -995,9 +995,9 @@ def _github_reference_has_branch(reference: Optional[str]) -> bool:
 def _extract_github_branch_name(user_text: str) -> Optional[str]:
     """Read an explicitly labelled branch name, e.g. 'ветка: feature/api'."""
     patterns = (
-        r"\\bветк(?:а|у|е)\\s*[:=]\\s*[`\"]?([A-Za-z0-9][A-Za-z0-9._/-]*)",
+        r"\bветк(?:а|у|е)\s*[:=]\s*[`\"]?([A-Za-z0-9][A-Za-z0-9._/-]*)",
         r"\\bв\\s+ветке\\s+[`\"]?([A-Za-z0-9][A-Za-z0-9._/-]*)",
-        r"\\bbranch\\s*[:=]\\s*[`\"]?([A-Za-z0-9][A-Za-z0-9._/-]*)",
+        r"\bbranch\s*[:=]\s*[`\"]?([A-Za-z0-9][A-Za-z0-9._/-]*)",
     )
     for pattern in patterns:
         match = re.search(pattern, user_text, re.IGNORECASE)
