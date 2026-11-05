@@ -37,7 +37,7 @@ def get_shakal_quality_keyboard(key: str) -> InlineKeyboardMarkup:
             row = []
     if row:
         buttons.append(row)
-    buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="main")])
+    buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="home_tools")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
@@ -49,7 +49,7 @@ async def shakalizer_menu(callback: types.CallbackQuery, state: FSMContext):
         "📉 <b>Шакализатор</b>\n\n"
         "Пришли фото — ухудшу его качество на выбор, от 240p и ниже.\n\n",
         parse_mode=ParseMode.HTML,
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад", callback_data="fsm_back")]])
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад", callback_data="home_tools")]])
     )
 
 
@@ -70,7 +70,7 @@ async def shakal_photo_wrong_input(message: types.Message, state: FSMContext):
     if text.lower() in ("/cancel", "отмена"):
         await state.clear()
         await message.answer("❌ Отменено", reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="⬅️ Назад", callback_data="main")]
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data="home_tools")]
         ]))
         return
     await message.answer("❌ Пришли именно фото (как изображение, не файлом).")
