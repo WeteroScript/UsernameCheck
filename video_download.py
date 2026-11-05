@@ -37,7 +37,7 @@ def get_video_menu_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="▶️ YouTube", callback_data="video_youtube")],
         [InlineKeyboardButton(text="🎵 TikTok", callback_data="video_tiktok")],
-        [InlineKeyboardButton(text="⬅️ Назад", callback_data="main")],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="home_tools")],
     ])
 
 
@@ -60,7 +60,7 @@ async def video_youtube_prompt(callback: types.CallbackQuery, state: FSMContext)
     await callback.message.edit_text(
         "▶️ Пришли ссылку на видео YouTube.",
         parse_mode=ParseMode.HTML,
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад", callback_data="fsm_back")]])
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад", callback_data="video_menu")]])
     )
 
 
@@ -233,7 +233,7 @@ async def video_tiktok_video_prompt(callback: types.CallbackQuery, state: FSMCon
     await callback.message.edit_text(
         "🎥 Пришли ссылку на видео TikTok.",
         parse_mode=ParseMode.HTML,
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад", callback_data="fsm_back")]])
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад", callback_data="video_tiktok")]])
     )
 
 
@@ -245,7 +245,7 @@ async def video_tiktok_photo_prompt(callback: types.CallbackQuery, state: FSMCon
     await callback.message.edit_text(
         "🖼 Пришли ссылку на фото-пост (слайд-шоу) TikTok.",
         parse_mode=ParseMode.HTML,
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад", callback_data="fsm_back")]])
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад", callback_data="video_tiktok")]])
     )
 
 
