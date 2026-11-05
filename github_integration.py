@@ -6,8 +6,10 @@ import hmac
 import json
 import logging
 import os
+import re
 import threading
 import time
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -326,3 +328,225 @@ async def list_user_repositories(telegram_user_id: int) -> List[Dict[str, Any]]:
         for item in payload.get("repositories", [])
         if item.get("full_name")
     ]
+
+
+def _repository_full_name(reference: str) -> str:
+    from urllib.parse import urlparse
+
+    value = reference.strip()
+    if value.startswith("https://") or value.startswith("http://"):
+        parsed = urlparse(value)
+        if parsed.netloc.lower() not in ("github.com", "www.github.com"):
+            raise ValueError("Поддерживаются только ссылки github.com")
+        parts = [part for part in parsed.path.split("/") if part]
+    else:
+        parts = [part for part in value.split("/") if part]
+    if len(parts) < 2:
+        raise ValueError("Укажи ссылку вида https://github.com/owner/repository")
+    owner, name = parts[0], parts[1]
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+", owner) or not re.fullmatch(r"[A-Za-z0-9_.-]+", name):
+        raise ValueError("Некорректное имя GitHub-репозитория")
+    return owner + "/" + name.removesuffix(".git")
+
+
+async def _api_json(
+    session: aiohttp.ClientSession,
+    method: str,
+    path: str,
+    token: str,
+    payload: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    url = "https://api.github.com" + path
+    headers = {
+        "Authorization": "Bearer " + token,
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+    async with session.request(method, url, headers=headers, json=payload) as response:
+        data = await response.json(content_type=None)
+        if response.status >= 400:
+            message = data.get("message", str(data)) if isinstance(data, dict) else str(data)
+            raise RuntimeError("GitHub API HTTP {}: {}".format(response.status, message[:500]))
+        return data
+
+
+async def fetch_repository_context(telegram_user_id: int, reference: str) -> Dict[str, str]:
+    full_name = _repository_full_name(reference)
+    record = get_user_installation(telegram_user_id)
+    if not record:
+        raise RuntimeError("Сначала подключи свой GitHub в меню бота.")
+    token = await _installation_token(int(record["installation_id"]))
+    timeout = aiohttp.ClientTimeout(total=60)
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        repo_data = await _api_json(session, "GET", "/repos/" + full_name, token)
+        branch = repo_data.get("default_branch") or "main"
+        encoded_branch = aiohttp.helpers.quote(branch, safe="")
+        tree_data = await _api_json(
+            session, "GET",
+            "/repos/{}/git/trees/{}?recursive=1".format(full_name, encoded_branch),
+            token,
+        )
+        entries = [
+            item for item in tree_data.get("tree", [])
+            if item.get("type") == "blob" and isinstance(item.get("path"), str)
+        ]
+        excluded_names = {
+            ".env", ".env.local", ".env.production", ".npmrc", ".pypirc",
+            ".netrc", "id_rsa", "id_ed25519", "credentials.json", "secrets.json",
+        }
+        allowed_extensions = {
+            ".py", ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".html", ".htm",
+            ".css", ".scss", ".json", ".md", ".txt", ".yml", ".yaml", ".toml",
+            ".ini", ".cfg", ".sh", ".sql", ".go", ".rs", ".java", ".kt", ".php",
+            ".rb", ".swift", ".c", ".cpp", ".h", ".hpp", ".cs", ".xml", ".vue",
+            ".svelte", ".gradle", ".properties",
+        }
+
+        def safe_entry(item: Dict[str, Any]) -> bool:
+            path = item["path"]
+            lower = path.lower()
+            basename = lower.rsplit("/", 1)[-1]
+            extension = Path(lower).suffix
+            if basename in excluded_names or basename.startswith(".env."):
+                return False
+            if any(part in lower for part in ("/.git/", "/node_modules/", "/vendor/", "/dist/", "/build/", "/.venv/")):
+                return False
+            if any(term in basename for term in ("secret", "credential", "private_key", "token")):
+                return False
+            return extension in allowed_extensions and int(item.get("size", 0)) <= 20000
+
+        candidates = [item for item in entries if safe_entry(item)]
+        priority_names = (
+            "readme", "pyproject.toml", "requirements.txt", "package.json",
+            "dockerfile", "compose.yaml", "compose.yml", "tsconfig.json",
+        )
+        candidates.sort(key=lambda item: (
+            0 if item["path"].lower().rsplit("/", 1)[-1] in priority_names else 1,
+            item["path"].count("/"),
+            item["path"],
+        ))
+        files = []
+        total_bytes = 0
+        for item in candidates:
+            if len(files) >= 30 or total_bytes >= 100000:
+                break
+            try:
+                blob = await _api_json(
+                    session, "GET",
+                    "/repos/{}/git/blobs/{}".format(full_name, item["sha"]),
+                    token,
+                )
+                raw = base64.b64decode(blob.get("content", ""))
+                text_content = raw.decode("utf-8")
+            except (UnicodeDecodeError, ValueError, RuntimeError):
+                continue
+            if total_bytes + len(raw) > 100000:
+                continue
+            files.append((item["path"], text_content))
+            total_bytes += len(raw)
+
+    if not files:
+        raise RuntimeError("В репозитории не найдено доступных текстовых исходников.")
+    sections = [
+        "GitHub repository: " + full_name,
+        "Default branch: " + branch,
+        "Repository URL: " + repo_data.get("html_url", "https://github.com/" + full_name),
+        "Файлы ниже — ограниченный снимок репозитория. Если нужного файла нет, попроси пользователя указать путь.",
+    ]
+    for path, file_content in files:
+        sections.append("\n--- FILE: " + path + " ---\n" + file_content)
+    return {
+        "full_name": full_name,
+        "branch": branch,
+        "html_url": repo_data.get("html_url", "https://github.com/" + full_name),
+        "context": "\n".join(sections),
+    }
+
+
+async def create_repository_pull_request(
+    telegram_user_id: int,
+    full_name: str,
+    files: List[tuple],
+    title: str,
+    body: str = "",
+) -> Dict[str, str]:
+    full_name = _repository_full_name(full_name)
+    if not files:
+        raise ValueError("Нет файлов для отправки в GitHub")
+    if len(files) > 40:
+        raise ValueError("За один этап можно изменить не более 40 файлов")
+    normalized = []
+    total_size = 0
+    for path, file_content in files:
+        clean_path = str(path).replace("\\", "/").strip()
+        pure_path = Path(clean_path)
+        if not clean_path or clean_path.startswith("/") or any(part in ("", ".", "..") for part in clean_path.split("/")):
+            raise ValueError("Недопустимый путь файла: " + clean_path[:120])
+        if pure_path.is_absolute() or len(clean_path) > 240:
+            raise ValueError("Недопустимый путь файла: " + clean_path[:120])
+        raw = file_content.encode("utf-8")
+        if len(raw) > 10 * 1024 * 1024:
+            raise ValueError("Файл {} превышает 10 МБ".format(clean_path))
+        total_size += len(raw)
+        normalized.append((clean_path, raw))
+    if total_size > 30 * 1024 * 1024:
+        raise ValueError("Общий размер изменений превышает 30 МБ")
+
+    record = get_user_installation(telegram_user_id)
+    if not record:
+        raise RuntimeError("GitHub-аккаунт не подключён")
+    token = await _installation_token(int(record["installation_id"]))
+    timeout = aiohttp.ClientTimeout(total=120)
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        repo_data = await _api_json(session, "GET", "/repos/" + full_name, token)
+        base_branch = repo_data.get("default_branch") or "main"
+        encoded_branch = aiohttp.helpers.quote(base_branch, safe="")
+        ref_data = await _api_json(
+            session, "GET", "/repos/{}/git/ref/heads/{}".format(full_name, encoded_branch), token
+        )
+        base_sha = ref_data["object"]["sha"]
+        base_commit = await _api_json(
+            session, "GET", "/repos/{}/git/commits/{}".format(full_name, base_sha), token
+        )
+        tree_entries = []
+        for path, raw in normalized:
+            blob = await _api_json(
+                session, "POST", "/repos/{}/git/blobs".format(full_name), token,
+                {"content": base64.b64encode(raw).decode("ascii"), "encoding": "base64"},
+            )
+            tree_entries.append({
+                "path": path,
+                "mode": "100644",
+                "type": "blob",
+                "sha": blob["sha"],
+            })
+        tree = await _api_json(
+            session, "POST", "/repos/{}/git/trees".format(full_name), token,
+            {"base_tree": base_commit["tree"]["sha"], "tree": tree_entries},
+        )
+        safe_title = (title or "AI project changes").strip().replace("\n", " ")[:120]
+        commit = await _api_json(
+            session, "POST", "/repos/{}/git/commits".format(full_name), token,
+            {"message": safe_title, "tree": tree["sha"], "parents": [base_sha]},
+        )
+        branch_name = "ai/telegram-" + uuid.uuid4().hex[:10]
+        await _api_json(
+            session, "POST", "/repos/{}/git/refs".format(full_name), token,
+            {"ref": "refs/heads/" + branch_name, "sha": commit["sha"]},
+        )
+        pull = await _api_json(
+            session, "POST", "/repos/{}/pulls".format(full_name), token,
+            {
+                "title": safe_title,
+                "head": branch_name,
+                "base": base_branch,
+                "body": (body or "Изменения подготовлены через Telegram-бота. Проверьте diff и тесты перед слиянием.")[:5000],
+            },
+        )
+    return {
+        "url": pull.get("html_url", ""),
+        "branch": branch_name,
+        "base_branch": base_branch,
+        "commit": commit["sha"],
+        "repository": full_name,
+    }
