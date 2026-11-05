@@ -598,12 +598,12 @@ def _extract_github_reference(user_text: str) -> Optional[str]:
 
 def _extract_github_files(reply: str):
     pattern = re.compile(
-        r"\\[\\[GITHUB_FILE:\\s*([^\\]\\r\\n]+)\\]\\][ \\t]*\\r?\\n(.*?)\\r?\\n?\\[\\[/GITHUB_FILE\\]\\]",
+        r"\[\[GITHUB_FILE:\s*([^\]\r\n]+)\]\][ \t]*\r?\n(.*?)\r?\n?\[\[/GITHUB_FILE\]\]",
         re.DOTALL | re.IGNORECASE,
     )
     files = []
     for match in pattern.finditer(reply):
-        path = match.group(1).strip().replace("\\\\", "/")
+        path = match.group(1).strip().replace("\\", "/")
         content = match.group(2)
         if not path or path.startswith("/") or any(part in ("", ".", "..") for part in path.split("/")):
             raise ValueError("Модель вернула недопустимый путь GitHub-файла: " + path[:120])
