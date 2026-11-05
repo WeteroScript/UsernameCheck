@@ -568,6 +568,25 @@ async def create_repository_pull_request(
             session, "POST", "/repos/{}/git/commits".format(full_name), token,
             {"message": safe_title, "tree": tree["sha"], "parents": [base_sha]},
         )
+        # Сверяем commit с базовой веткой до создания PR. Это исключает PR
+        # без реальных отличий (например, когда модель вернула прежний файл).
+        compare_data = await _api_json(
+            session,
+            "GET",
+            "/repos/{}/compare/{}...{}".format(full_name, base_sha, commit["sha"]),
+            token,
+        )
+        changed_files = [
+            item.get("filename")
+            for item in compare_data.get("files", [])
+            if isinstance(item, dict) and isinstance(item.get("filename"), str)
+        ]
+        if not changed_files:
+            raise RuntimeError(
+                "GitHub не обнаружил реальных отличий между подготовленным коммитом "
+                "и базовой веткой. Pull Request не создан."
+            )
+
         branch_name = "ai/telegram-" + uuid.uuid4().hex[:10]
         await _api_json(
             session, "POST", "/repos/{}/git/refs".format(full_name), token,
@@ -588,4 +607,5 @@ async def create_repository_pull_request(
         "base_branch": base_branch,
         "commit": commit["sha"],
         "repository": full_name,
+        "changed_files": changed_files,
     }
