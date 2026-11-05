@@ -644,12 +644,12 @@ def _is_file_creation_request(user_text: str) -> bool:
 def _is_large_project_request(user_text: str) -> bool:
     """Определяет запросы на создание крупных многофайловых проектов."""
     project_terms = (
-        r"\\b(?:приложени|проект|сайт|веб[- ]?приложени|бот|игр|клон|копи|"
-        r"application|website|webapp|project|clone|telegram)\\w*\\b"
+        r"\b(?:приложени|проект|сайт|веб[- ]?приложени|бот|игр|клон|копи|"
+        r"application|website|webapp|project|clone|telegram)\w*\b"
     )
     action_terms = (
-        r"\\b(?:созда(?:й|ть|йте)|собер(?:и|ите)|разработа(?:й|ть|йте)|"
-        r"сдела(?:й|ть|йте)|постро(?:й|ить|йте)|build|create|develop|make)\\b"
+        r"\b(?:созда(?:й|ть|йте)|собер(?:и|ите)|разработа(?:й|ть|йте)|"
+        r"сдела(?:й|ть|йте)|постро(?:й|ить|йте)|build|create|develop|make)\b"
     )
     return bool(
         re.search(project_terms, user_text, re.IGNORECASE)
