@@ -973,7 +973,7 @@ async def ai_chat_message(message: types.Message, state: FSMContext):
         repository_snapshot = None
         request_text = user_text
         if repository_reference:
-            repository_snapshot = await fetch_repository_context(user_id, repository_reference)
+            repository_snapshot = await fetch_repository_context(user_id, repository_reference, chat.get("github_branch"))
             chat["github_repo"] = repository_snapshot["html_url"]
             request_text += "\n\n[СНИМОК GITHUB-РЕПОЗИТОРИЯ]\n" + repository_snapshot["context"]
         reply = await _request_model(model, model_history, request_text)
@@ -988,7 +988,9 @@ async def ai_chat_message(message: types.Message, state: FSMContext):
                 github_files,
                 title="AI changes: " + _short_title(user_text, 70),
                 body=visible_reply,
+                base_branch_override=chat.get("github_branch"),
             )
+            chat["github_branch"] = pull_request["branch"]
             visible_reply = (
                 (visible_reply + "\n\n" if visible_reply else "")
                 + "Изменения отправлены в отдельную ветку. Pull Request: " + pull_request["url"]
