@@ -2,6 +2,7 @@ import logging
 import os
 import asyncio
 import json
+import html
 import re
 from datetime import datetime
 from typing import Dict, Optional, List, Any
@@ -101,10 +102,11 @@ from channels_feature import init_channels_feature
 from shakalizer import init_shakalizer
 from gifts_feature import init_gifts_feature, setup as setup_gifts_feature
 from ai_chat import init_ai_chat, pause_ai_chat
+from github_integration import configuration_error as github_configuration_error, create_install_url as github_create_install_url, get_user_installation as github_get_user_installation, list_user_repositories as github_list_user_repositories, remove_user_installation as github_remove_user_installation
 
 load_dotenv()
 
-APP_VERSION = "v1.0.5"
+APP_VERSION = "v1.0.6"
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 if not BOT_TOKEN:
@@ -507,6 +509,9 @@ def get_main_keyboard(user_id: Optional[int] = None) -> InlineKeyboardMarkup:
         ],
         [
             InlineKeyboardButton(text="💬 Чат с ИИ", callback_data="ai_menu", style=ButtonStyle.SUCCESS),
+        ],
+        [
+            InlineKeyboardButton(text="🐙 GitHub", callback_data="github_menu", style=ButtonStyle.PRIMARY),
         ],
     ]
     extra = get_extra_main_buttons()
