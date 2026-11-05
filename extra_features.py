@@ -333,7 +333,9 @@ async def _resolve_and_reply_id(message: types.Message, state: FSMContext, label
 
     logging.error(f"❌ _resolve_and_reply_id(@{username}): не найдено ни Bot API, ни Telethon")
     await message.answer(
-        f"❌ Не удалось найти «{text}». Убедись, что юзернейм правильный и аккаунт публичный.",
+        f"Не удалось получить ID для «{text}». Telegram не всегда раскрывает ботам ID произвольных пользователей по одному @username. "
+        "Для своего ID нажми «Мой ID» или отправь /id. Для другого пользователя перешли его сообщение "
+        "или попроси его открыть бота и отправить /start.",
         reply_markup=get_getid_keyboard()
     )
 
