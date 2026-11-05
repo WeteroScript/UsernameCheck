@@ -369,10 +369,9 @@ async def bugreport_menu(callback: types.CallbackQuery, state: FSMContext):
     await state.set_state(ExtraStates.waiting_bug_report)
     await callback.message.edit_text(
         "🐛 <b>Сообщить о баге</b>\n\n"
-        "В нашем боте достаточно большое количество багов, если вы найдёте "
-        "их, то мы сможем вас отблагодарить в качестве премиум подписки "
-        "на 1 день, за один найденный баг.\n\n"
-        "Опиши баг сообщением:",
+        "Что-то работает не так? Опиши, что произошло и как это повторить. "
+        "Сообщение сразу уйдёт администраторам — разберёмся.\n\n"
+        "Напиши, в чём проблема:"
         parse_mode=ParseMode.HTML,
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад", callback_data="home_profile")]])
     )
