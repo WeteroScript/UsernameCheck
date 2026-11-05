@@ -3096,7 +3096,10 @@ class AccessMiddleware(BaseMiddleware):
             return
 
         cb_data = getattr(event, "data", None)
-        if isinstance(event, types.CallbackQuery) and cb_data in DISABLED_MENU_BUTTONS:
+        if isinstance(event, types.CallbackQuery) and (
+            cb_data in DISABLED_MENU_BUTTONS
+            or (cb_data == "bot_prgramm_locked" and "bot_prgramm" in DISABLED_MENU_BUTTONS)
+        ):
             await event.answer("Данная кнопка ограничена администратором", show_alert=True)
             return
 
