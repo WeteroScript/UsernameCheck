@@ -35,7 +35,10 @@ def configuration_error() -> Optional[str]:
         "GITHUB_APP_ID": os.getenv("GITHUB_APP_ID", "").strip(),
         "GITHUB_APP_SLUG": os.getenv("GITHUB_APP_SLUG", "").strip(),
         "GITHUB_APP_PRIVATE_KEY": _private_key(),
+        "GITHUB_APP_CLIENT_ID": os.getenv("GITHUB_APP_CLIENT_ID", "").strip(),
+        "GITHUB_APP_CLIENT_SECRET": os.getenv("GITHUB_APP_CLIENT_SECRET", "").strip(),
         "GITHUB_STATE_SECRET": os.getenv("GITHUB_STATE_SECRET", "").strip(),
+        "GITHUB_OAUTH_CALLBACK_URL": os.getenv("GITHUB_OAUTH_CALLBACK_URL", "").strip(),
         "GITHUB_CALLBACK_URL": os.getenv("GITHUB_CALLBACK_URL", "").strip(),
     }
     missing = [name for name, value in required.items() if not value]
@@ -69,24 +72,104 @@ def create_install_url(telegram_user_id: int) -> str:
     )
 
 
-def _decode_state(state: str) -> int:
+def _decode_state_payload(state: str) -> Dict[str, Any]:
     try:
         encoded, supplied_signature = state.split(".", 1)
-        expected = hmac.new(
-            _state_secret(), encoded.encode("ascii"), hashlib.sha256
-        ).hexdigest()
+        expected = hmac.new(_state_secret(), encoded.encode("ascii"), hashlib.sha256).hexdigest()
         if not hmac.compare_digest(supplied_signature, expected):
             raise ValueError("Подпись state не совпадает")
         padding = "=" * (-len(encoded) % 4)
         payload = json.loads(base64.urlsafe_b64decode(encoded + padding).decode("utf-8"))
         if int(payload.get("exp", 0)) < int(time.time()):
             raise ValueError("Срок действия ссылки истёк")
-        user_id = int(payload["uid"])
-        if user_id <= 0:
+        if int(payload["uid"]) <= 0:
             raise ValueError("Некорректный Telegram user ID")
-        return user_id
+        return payload
     except Exception as exc:
         raise ValueError("Некорректный или просроченный параметр авторизации GitHub") from exc
+
+
+def _signed_state(payload: Dict[str, Any]) -> str:
+    encoded = base64.urlsafe_b64encode(
+        json.dumps(payload, separators=(",", ":")).encode("utf-8")
+    ).decode("ascii").rstrip("=")
+    signature = hmac.new(_state_secret(), encoded.encode("ascii"), hashlib.sha256).hexdigest()
+    return encoded + "." + signature
+
+
+def create_install_url(telegram_user_id: int) -> str:
+    error = configuration_error()
+    if error:
+        raise RuntimeError(error)
+    state = _signed_state({
+        "uid": int(telegram_user_id),
+        "exp": int(time.time()) + 600,
+        "nonce": base64.urlsafe_b64encode(os.urandom(18)).decode("ascii").rstrip("="),
+    })
+    params = {
+        "client_id": os.getenv("GITHUB_APP_CLIENT_ID", "").strip(),
+        "redirect_uri": os.getenv("GITHUB_OAUTH_CALLBACK_URL", "").strip(),
+        "state": state,
+    }
+    return "https://github.com/login/oauth/authorize?" + urlencode(params)
+
+
+def complete_oauth_authorization(code: str, state: str) -> str:
+    payload = _decode_state_payload(state)
+    if not code:
+        raise ValueError("GitHub не передал OAuth code")
+    token_request = Request(
+        "https://github.com/login/oauth/access_token",
+        data=urlencode({
+            "client_id": os.getenv("GITHUB_APP_CLIENT_ID", "").strip(),
+            "client_secret": os.getenv("GITHUB_APP_CLIENT_SECRET", "").strip(),
+            "code": code,
+            "redirect_uri": os.getenv("GITHUB_OAUTH_CALLBACK_URL", "").strip(),
+        }).encode("utf-8"),
+        headers={
+            "Accept": "application/json",
+            "Content-Type": "application/x-www-form-urlencoded",
+            "User-Agent": "UsernameCheck-Telegram-Bot",
+        },
+        method="POST",
+    )
+    try:
+        with urlopen(token_request, timeout=20) as response:
+            token_data = json.loads(response.read().decode("utf-8"))
+    except (HTTPError, URLError, TimeoutError) as exc:
+        raise RuntimeError("Не удалось завершить OAuth-авторизацию GitHub") from exc
+    access_token = token_data.get("access_token")
+    if not access_token:
+        raise RuntimeError("GitHub не выдал OAuth access token")
+    user_request = Request(
+        "https://api.github.com/user",
+        headers={
+            "Authorization": "Bearer " + access_token,
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+            "User-Agent": "UsernameCheck-Telegram-Bot",
+        },
+    )
+    try:
+        with urlopen(user_request, timeout=20) as response:
+            github_user = json.loads(response.read().decode("utf-8"))
+    except (HTTPError, URLError, TimeoutError) as exc:
+        raise RuntimeError("Не удалось проверить GitHub-аккаунт пользователя") from exc
+    account_id = github_user.get("id")
+    account_login = github_user.get("login")
+    if not account_id or not account_login:
+        raise RuntimeError("GitHub не вернул идентификатор аккаунта")
+    install_state = _signed_state({
+        "uid": int(payload["uid"]),
+        "account_id": int(account_id),
+        "account_login": str(account_login),
+        "exp": int(time.time()) + 600,
+        "nonce": base64.urlsafe_b64encode(os.urandom(18)).decode("ascii").rstrip("="),
+    })
+    slug = os.getenv("GITHUB_APP_SLUG", "").strip()
+    return "https://github.com/apps/{}/installations/new?{}".format(
+        slug, urlencode({"state": install_state})
+    )
 
 
 def _app_jwt() -> str:
@@ -147,7 +230,8 @@ def _save_installations(data: Dict[str, Dict[str, Any]]) -> None:
 
 
 def complete_installation(state: str, installation_id: str) -> Dict[str, Any]:
-    user_id = _decode_state(state)
+    state_payload = _decode_state_payload(state)
+    user_id = int(state_payload["uid"])
     if not str(installation_id).isdigit():
         raise ValueError("GitHub не передал корректный installation_id")
     installation = _github_api_request("/app/installations/{}".format(installation_id))
@@ -158,6 +242,8 @@ def complete_installation(state: str, installation_id: str) -> Dict[str, Any]:
     app_id = os.getenv("GITHUB_APP_ID", "").strip()
     if returned_app_id is not None and str(returned_app_id) != app_id:
         raise RuntimeError("Установка принадлежит другому GitHub App")
+    if int(account["id"]) != int(state_payload.get("account_id", -1)):
+        raise RuntimeError("Установка принадлежит другому GitHub-аккаунту")
     record = {
         "installation_id": int(installation_id),
         "account_login": str(account["login"]),
