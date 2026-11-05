@@ -3763,6 +3763,9 @@ async def loadfilesession_command(message: types.Message, state: FSMContext):
 
 @dp.message(SessionStates.waiting_session_file)
 async def load_session_file_input(message: types.Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        await state.clear()
+        return
     if not message.document:
         await message.answer("❌ Пришли файл документом (.session)")
         return
@@ -3931,7 +3934,8 @@ async def check_min_sessions_input(message: types.Message, state: FSMContext):
         f"🔑 Пароль: <code>{data.get('password')}</code>\n"
         f"📦 Мин. сессий: {min_sess}\n"
         f"🌐 Ссылки: {links_text}",
-        parse_mode=ParseMode.HTML
+        parse_mode=ParseMode.HTML,
+        reply_markup=get_admin_group_keyboard("tools"),
     )
 
 
