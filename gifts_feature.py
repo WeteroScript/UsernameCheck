@@ -93,7 +93,7 @@ def get_gifts_accounts_keyboard(user_id: int) -> InlineKeyboardMarkup:
 async def gifts_menu(callback: types.CallbackQuery):
     await callback.answer()
     await callback.message.edit_text(
-        "🎁 <b>Подарки</b>\n\nВыберите аккаунт:",
+        "🎁 <b>Подарки</b>\n\nС какого аккаунта отправляем подарок?",
         parse_mode=ParseMode.HTML,
         reply_markup=get_gifts_accounts_keyboard(callback.from_user.id)
     )
