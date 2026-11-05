@@ -657,7 +657,7 @@ async def github_menu(callback: types.CallbackQuery):
         setup_error = github_configuration_error()
         if setup_error:
             text += "\n\n⚠️ Администратору нужно настроить GitHub App в Bothost."
-            keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад", callback_data="main")]])
+            keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад", callback_data="ai_menu")]])
         else:
             keyboard = InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="🔗 Подключить GitHub", callback_data="github_connect")],
@@ -746,7 +746,7 @@ async def github_disconnect(callback: types.CallbackQuery):
         "Привязка GitHub в боте удалена. Установка приложения остаётся в GitHub, пока пользователь не удалит её в настройках GitHub.",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="🐙 GitHub", callback_data="github_menu")],
-            [InlineKeyboardButton(text="⬅️ Назад", callback_data="main")],
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data="ai_menu")],
         ]),
     )
 
