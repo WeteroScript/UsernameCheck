@@ -54,26 +54,6 @@ def _state_secret() -> bytes:
     return secret.encode("utf-8")
 
 
-def create_install_url(telegram_user_id: int) -> str:
-    error = configuration_error()
-    if error:
-        raise RuntimeError(error)
-    payload = {
-        "uid": int(telegram_user_id),
-        "exp": int(time.time()) + 600,
-        "nonce": base64.urlsafe_b64encode(os.urandom(18)).decode("ascii").rstrip("="),
-    }
-    encoded = base64.urlsafe_b64encode(
-        json.dumps(payload, separators=(",", ":")).encode("utf-8")
-    ).decode("ascii").rstrip("=")
-    signature = hmac.new(_state_secret(), encoded.encode("ascii"), hashlib.sha256).hexdigest()
-    state = encoded + "." + signature
-    slug = os.getenv("GITHUB_APP_SLUG", "").strip()
-    return "https://github.com/apps/{}/installations/new?{}".format(
-        slug, urlencode({"state": state})
-    )
-
-
 def _decode_state_payload(state: str) -> Dict[str, Any]:
     try:
         encoded, supplied_signature = state.split(".", 1)
@@ -404,6 +384,7 @@ async def fetch_repository_context(telegram_user_id: int, reference: str) -> Dic
             ".env", ".env.local", ".env.production", ".npmrc", ".pypirc",
             ".netrc", "id_rsa", "id_ed25519", "credentials.json", "secrets.json",
         }
+        allowed_names = {"dockerfile", "makefile", "procfile", ".gitignore", "license", "readme"}
         allowed_extensions = {
             ".py", ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".html", ".htm",
             ".css", ".scss", ".json", ".md", ".txt", ".yml", ".yaml", ".toml",
@@ -423,11 +404,11 @@ async def fetch_repository_context(telegram_user_id: int, reference: str) -> Dic
                 return False
             if any(term in basename for term in ("secret", "credential", "private_key", "token")):
                 return False
-            return extension in allowed_extensions and int(item.get("size", 0)) <= 20000
+            return (basename in allowed_names or extension in allowed_extensions) and int(item.get("size", 0)) <= 20000
 
         candidates = [item for item in entries if safe_entry(item)]
         priority_names = (
-            "readme", "pyproject.toml", "requirements.txt", "package.json",
+            "readme", "readme.md", "dockerfile", "makefile", "pyproject.toml", "requirements.txt", "package.json",
             "dockerfile", "compose.yaml", "compose.yml", "tsconfig.json",
         )
         candidates.sort(key=lambda item: (
@@ -510,7 +491,7 @@ async def create_repository_pull_request(
     async with aiohttp.ClientSession(timeout=timeout) as session:
         repo_data = await _api_json(session, "GET", "/repos/" + full_name, token)
         base_branch = repo_data.get("default_branch") or "main"
-        encoded_branch = aiohttp.helpers.quote(base_branch, safe="")
+        encoded_branch = quote(base_branch, safe="")
         ref_data = await _api_json(
             session, "GET", "/repos/{}/git/ref/heads/{}".format(full_name, encoded_branch), token
         )
