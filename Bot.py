@@ -656,7 +656,7 @@ async def github_menu(callback: types.CallbackQuery):
             [InlineKeyboardButton(text="⬅️ Назад", callback_data="main")],
         ])
     else:
-        text = "🐙 <b>Подключение GitHub</b>\n\nПодключи аккаунт и выбери репозитории, к которым бот получит доступ."
+        text = "🐙 <b>Подключение GitHub</b>\n\nПодключи аккаунт и выбери репозитории, к которым бот получит доступ.\n\nПри отправке ссылки в чат содержимое доступных исходников передаётся выбранной ИИ-модели через TokenPlan."
         setup_error = github_configuration_error()
         if setup_error:
             text += "\n\n⚠️ Администратору нужно настроить GitHub App в Bothost."
