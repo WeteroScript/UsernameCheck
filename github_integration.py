@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 from urllib.request import Request, urlopen
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlencode
+from urllib.parse import urlencode, quote
 
 import aiohttp
 import jwt
@@ -380,7 +380,7 @@ async def fetch_repository_context(telegram_user_id: int, reference: str) -> Dic
     async with aiohttp.ClientSession(timeout=timeout) as session:
         repo_data = await _api_json(session, "GET", "/repos/" + full_name, token)
         branch = repo_data.get("default_branch") or "main"
-        encoded_branch = aiohttp.helpers.quote(branch, safe="")
+        encoded_branch = quote(branch, safe="")
         tree_data = await _api_json(
             session, "GET",
             "/repos/{}/git/trees/{}?recursive=1".format(full_name, encoded_branch),
@@ -409,7 +409,7 @@ async def fetch_repository_context(telegram_user_id: int, reference: str) -> Dic
             extension = Path(lower).suffix
             if basename in excluded_names or basename.startswith(".env."):
                 return False
-            if any(part in lower for part in ("/.git/", "/node_modules/", "/vendor/", "/dist/", "/build/", "/.venv/")):
+            if lower.startswith(".git/") or any(part in lower for part in ("/.git/", "/node_modules/", "/vendor/", "/dist/", "/build/", "/.venv/")):
                 return False
             if any(term in basename for term in ("secret", "credential", "private_key", "token")):
                 return False
