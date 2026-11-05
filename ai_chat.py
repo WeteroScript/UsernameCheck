@@ -942,6 +942,26 @@ def _extract_github_reference(user_text: str) -> Optional[str]:
 
 
 
+def _is_github_change_request(user_text: str) -> bool:
+    """Detect explicit repository-edit requests, not analysis or review requests."""
+    negative = re.search(
+        r"\b(?:не|don't|do not)\s+(?:изменяй|изменять|исправляй|исправлять|меняй|менять|modify|change|edit)\b",
+        user_text,
+        re.IGNORECASE,
+    )
+    if negative:
+        return False
+    patterns = (
+        r"\b(?:исправ(?:ь|ить|ьте)|почини(?:ть)?|добав(?:ь|ить|ьте)|дополни(?:ть)?|"
+        r"встав(?:ь|ить|ьте)|измени(?:ть)?|поменя(?:й|ть|йте)|обнов(?:и|ить|ите)|"
+        r"удали(?:ть)?|созда(?:й|ть|йте)|реализу(?:й|йте|йте)|перепиши(?:ть)?|"
+        r"переработа(?:й|ть|йте)|рефактор(?:и|ить|ируй|ируйте))\b",
+        r"\b(?:внеси|внесите)\s+изменени",
+        r"\b(?:fix|patch|add|create|update|remove|delete|edit|modify|implement|refactor)\b",
+    )
+    return any(re.search(pattern, user_text, re.IGNORECASE) for pattern in patterns)
+
+
 def _extract_github_files(reply: str):
     pattern = re.compile(
         r"\[\[GITHUB_FILE:\s*([^\]\r\n]+)\]\][ \t]*\r?\n(.*?)\r?\n?\[\[/GITHUB_FILE\]\]",
@@ -1925,6 +1945,64 @@ async def ai_chat_message(message: types.Message, state: FSMContext):
         reply = await _request_model(model, model_history, request_text, user_id=user_id)
         reply_without_github_files, github_files = _extract_github_files(reply)
         visible_reply, generated_files, empty_files = _extract_generated_files(reply_without_github_files)
+
+        # Не доверяем текстовому заявлению модели о созданном PR: GitHub-операция
+        # выполняется только по разобранным GITHUB_FILE-блокам.
+        if repository_snapshot and _is_github_change_request(user_text) and not github_files:
+            logging.warning(
+                "Модель %s не вернула GITHUB_FILE для запроса изменения %s",
+                model, repository_snapshot["full_name"],
+            )
+            retry_context = [
+                *_history_without_old_files(chat.get("messages", []))[-MAX_CONTEXT_MESSAGES:],
+                {"role": "user", "content": user_text},
+                {"role": "assistant", "content": reply},
+            ]
+            retry_instruction = (
+                "Предыдущий ответ не содержит ни одного корректного блока GITHUB_FILE, поэтому "
+                "никакие изменения в GitHub ещё не выполнялись. Выполни исходную просьбу пользователя "
+                "по приложенному снимку репозитория. Верни каждый новый или изменённый файл целиком "
+                "в точном формате [[GITHUB_FILE: путь/от/корня/репозитория]] затем перевод строки, "
+                "полное содержимое файла, затем перевод строки и [[/GITHUB_FILE]]. "
+                "Не используй FILE-блоки, diff, Markdown-кодовые ограждения или ссылки на выдуманные PR. "
+                "Не утверждай, что создал ветку, коммит или Pull Request: это сделает бот только после "
+                "получения блоков. Не изменяй файлы, содержание которых отсутствует в снимке, если "
+                "их точное содержимое нельзя надёжно восстановить; в таком случае попроси путь/файл. "
+                "Верни только нужные GITHUB_FILE-блоки и краткое пояснение вне блоков."
+            )
+            try:
+                retry_reply = await _request_model(
+                    model, retry_context, retry_instruction, user_id=user_id
+                )
+                retry_without_github_files, retry_github_files = _extract_github_files(retry_reply)
+                if retry_github_files:
+                    reply = retry_reply
+                    github_files = retry_github_files
+                    visible_reply, generated_files, empty_files = _extract_generated_files(
+                        retry_without_github_files
+                    )
+                else:
+                    logging.error(
+                        "Модель %s повторно не вернула GITHUB_FILE; PR не создавался", model
+                    )
+                    reply = (
+                        "Изменения не отправлены в GitHub: модель дважды не вернула файлы "
+                        "в требуемом формате. Ветка, коммит и Pull Request не создавались. "
+                        "Повтори запрос, указав конкретные файлы и требуемые изменения."
+                    )
+                    visible_reply = reply
+                    generated_files = []
+                    github_files = []
+            except (RuntimeError, ValueError) as exc:
+                logging.exception("Не удалось получить корректные GITHUB_FILE-блоки при повторе")
+                reply = (
+                    "Изменения не отправлены в GitHub: повторная генерация файлов завершилась "
+                    "ошибкой (" + str(exc)[:300] + "). Ветка и Pull Request не создавались."
+                )
+                visible_reply = reply
+                generated_files = []
+                github_files = []
+
         if github_files:
             if not repository_snapshot:
                 raise RuntimeError("Для отправки изменений в GitHub сначала пришли ссылку на репозиторий.")
@@ -1937,9 +2015,19 @@ async def ai_chat_message(message: types.Message, state: FSMContext):
                 base_branch_override=chat.get("github_branch"),
             )
             chat["github_branch"] = pull_request["branch"]
+            changed_paths = pull_request.get("changed_files", [])
+            changed_summary = ", ".join(changed_paths[:20])
+            if len(changed_paths) > 20:
+                changed_summary += f" и ещё {len(changed_paths) - 20}"
+            commit_sha = str(pull_request.get("commit", ""))
+            success_details = (
+                f"Подтверждено изменений: {len(changed_paths)} файл(ов)."
+                + (f" Файлы: {changed_summary}." if changed_summary else "")
+                + (f" Коммит: {commit_sha[:12]}." if commit_sha else "")
+            )
             visible_reply = (
                 (visible_reply + "\n\n" if visible_reply else "")
-                + "Изменения отправлены в отдельную ветку. Pull Request: " + pull_request["url"]
+                + success_details + " Pull Request: " + pull_request["url"]
             )
 
         # Если пользователь явно запросил файл, но модель не создала ни одного
