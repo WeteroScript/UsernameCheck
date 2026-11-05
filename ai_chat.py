@@ -986,7 +986,7 @@ async def ai_chat_message(message: types.Message, state: FSMContext):
                 user_id,
                 repository_snapshot["full_name"],
                 github_files,
-                title="AI changes: " + _short_title(user_text, 70),
+                title="AI changes: " + _short_title(str(chat.get("title") or user_text), 70),
                 body=visible_reply,
                 base_branch_override=chat.get("github_branch"),
             )
