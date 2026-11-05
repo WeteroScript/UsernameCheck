@@ -24,6 +24,7 @@ from typing import Any, Dict, List, Optional
 
 import aiohttp
 from aiogram import Router, types
+from aiogram.exceptions import TelegramRetryAfter
 from aiogram.enums import ButtonStyle
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -46,6 +47,7 @@ MAX_CUSTOM_PROMPT_FILE_BYTES = 64 * 1024
 
 MAX_CONTEXT_MESSAGES = 40
 TELEGRAM_TEXT_LIMIT = 4000
+REPLY_LINE_DELAY_SECONDS = 0.35
 TEXT_EXTENSIONS = {
     ".txt", ".md", ".csv", ".tsv", ".json", ".xml", ".html", ".htm",
     ".py", ".js", ".ts", ".jsx", ".tsx", ".css", ".scss", ".yaml", ".yml",
@@ -807,6 +809,83 @@ def _split_text(text: str, limit: int = TELEGRAM_TEXT_LIMIT) -> List[str]:
     if remaining:
         chunks.append(remaining)
     return chunks
+
+
+def _telegram_text_length(text: str) -> int:
+    """Telegram measures message length in UTF-16 code units."""
+    return len(text.encode("utf-16-le")) // 2
+
+
+def _split_reply_lines(text: str, limit: int = TELEGRAM_TEXT_LIMIT) -> List[str]:
+    """Keep original line breaks while splitting any line that exceeds Telegram's limit."""
+    result = []
+    normalized = str(text or "").replace("\r\n", "\n").replace("\r", "\n")
+    for line in normalized.split("\n"):
+        if _telegram_text_length(line) <= limit:
+            result.append(line)
+            continue
+
+        fragment = []
+        fragment_length = 0
+        for character in line:
+            char_length = 2 if ord(character) > 0xFFFF else 1
+            if fragment and fragment_length + char_length > limit:
+                result.append("".join(fragment))
+                fragment = []
+                fragment_length = 0
+            fragment.append(character)
+            fragment_length += char_length
+        if fragment:
+            result.append("".join(fragment))
+    return result or ["Пустой ответ от API."]
+
+
+async def _answer_reply_text(message: types.Message, text: str) -> types.Message:
+    try:
+        return await message.answer(text)
+    except TelegramRetryAfter as exc:
+        await asyncio.sleep(float(exc.retry_after) + 0.1)
+        return await message.answer(text)
+
+
+async def _edit_reply_text(target: types.Message, text: str) -> None:
+    try:
+        await target.edit_text(text)
+    except TelegramRetryAfter as exc:
+        await asyncio.sleep(float(exc.retry_after) + 0.1)
+        await target.edit_text(text)
+
+
+async def _animate_reply(
+    message: types.Message,
+    waiting: Optional[types.Message],
+    text: str,
+) -> None:
+    """Reveal the completed model response one line at a time in editable messages."""
+    lines = _split_reply_lines(text)
+    current_message = waiting
+    current_text = ""
+
+    for index, line in enumerate(lines):
+        candidate = current_text + "\n" + line if current_text else (line or " ")
+        if current_text and _telegram_text_length(candidate) > TELEGRAM_TEXT_LIMIT:
+            current_text = line or " "
+            current_message = await _answer_reply_text(message, current_text)
+        elif current_message is None:
+            current_text = candidate
+            current_message = await _answer_reply_text(message, current_text)
+        else:
+            try:
+                await _edit_reply_text(current_message, candidate)
+                current_text = candidate
+            except Exception:
+                # Continue with a new message if Telegram refuses to edit the current one.
+                logging.exception("Не удалось обновить анимируемый ответ; продолжаем новым сообщением")
+                current_text = candidate
+                current_message = await _answer_reply_text(message, current_text)
+
+        if index < len(lines) - 1:
+            await asyncio.sleep(REPLY_LINE_DELAY_SECONDS)
 
 
 
@@ -2180,15 +2259,7 @@ async def ai_chat_message(message: types.Message, state: FSMContext):
         await _stop_waiting_timer(waiting_timer)
         waiting_timer = None
         display_text = visible_reply if visible_reply else "Файл готов."
-        chunks = _split_text(display_text)
-        try:
-            if waiting:
-                await waiting.edit_text(chunks[0])
-        except Exception:
-            logging.exception("Не удалось изменить сообщение ожидания")
-            await message.answer(chunks[0])
-        for chunk in chunks[1:]:
-            await message.answer(chunk)
+        await _animate_reply(message, waiting, display_text)
         if len(generated_files) >= 2 or _is_archive_request(user_text) or any(
             not file_content for _, file_content in generated_files
         ):
