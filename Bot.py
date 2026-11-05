@@ -2438,7 +2438,7 @@ BUTTON_CONTROL_BY_SLUG = {
     for section, (_, items) in BUTTON_CONTROL_SECTIONS.items()
     for slug, label, callback_data in items
 }
-BUTTON_CONTROL_FILE = "button_restrictions.json"
+BUTTON_CONTROL_FILE = os.getenv("BUTTON_RESTRICTIONS_FILE", "data/button_restrictions.json")
 DISABLED_MENU_BUTTONS = set()
 
 
@@ -2462,6 +2462,9 @@ def _load_disabled_menu_buttons():
 
 
 def _save_disabled_menu_buttons():
+    parent = os.path.dirname(BUTTON_CONTROL_FILE)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
     temporary_path = BUTTON_CONTROL_FILE + ".tmp"
     with open(temporary_path, "w", encoding="utf-8") as file:
         json.dump(sorted(DISABLED_MENU_BUTTONS), file, ensure_ascii=False, indent=2)
@@ -3096,12 +3099,28 @@ class AccessMiddleware(BaseMiddleware):
             return
 
         cb_data = getattr(event, "data", None)
-        if isinstance(event, types.CallbackQuery) and (
-            cb_data in DISABLED_MENU_BUTTONS
-            or (cb_data == "bot_prgramm_locked" and "bot_prgramm" in DISABLED_MENU_BUTTONS)
-        ):
-            await event.answer("Данная кнопка ограничена администратором", show_alert=True)
-            return
+        if isinstance(event, types.CallbackQuery):
+            # Один callback_data иногда используется и для открытия функции,
+            # и для кнопки «Назад». Ограничиваем только нажатие самой функции.
+            is_back_button = False
+            message_markup = getattr(getattr(event, "message", None), "reply_markup", None)
+            for row in getattr(message_markup, "inline_keyboard", []) or []:
+                for button in row:
+                    if getattr(button, "callback_data", None) == cb_data:
+                        button_label = str(getattr(button, "text", "")).casefold()
+                        if "назад" in button_label or "back" in button_label or "меню" in button_label:
+                            is_back_button = True
+                            break
+                if is_back_button:
+                    break
+
+            is_disabled_feature = (
+                cb_data in DISABLED_MENU_BUTTONS
+                or (cb_data == "bot_prgramm_locked" and "bot_prgramm" in DISABLED_MENU_BUTTONS)
+            )
+            if is_disabled_feature and not is_back_button:
+                await event.answer("Данная кнопка ограничена администратором", show_alert=True)
+                return
 
         if isinstance(event, types.CallbackQuery):
             navigation_targets = {
