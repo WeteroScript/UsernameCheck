@@ -511,9 +511,6 @@ def get_main_keyboard(user_id: Optional[int] = None) -> InlineKeyboardMarkup:
         [
             InlineKeyboardButton(text="💬 Чат с ИИ", callback_data="ai_menu", style=ButtonStyle.SUCCESS),
         ],
-        [
-            InlineKeyboardButton(text="🐙 GitHub", callback_data="github_menu", style=ButtonStyle.PRIMARY),
-        ],
     ]
     extra = get_extra_main_buttons()
     if extra:
@@ -653,7 +650,7 @@ async def github_menu(callback: types.CallbackQuery):
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="📁 Мои репозитории", callback_data="github_repos")],
             [InlineKeyboardButton(text="🔌 Отключить GitHub", callback_data="github_disconnect")],
-            [InlineKeyboardButton(text="⬅️ Назад", callback_data="main")],
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data="ai_menu")],
         ])
     else:
         text = "🐙 <b>Подключение GitHub</b>\n\nПодключи аккаунт и выбери репозитории, к которым бот получит доступ.\n\nПри отправке ссылки в чат содержимое доступных исходников передаётся выбранной ИИ-модели через TokenPlan."
@@ -664,7 +661,7 @@ async def github_menu(callback: types.CallbackQuery):
         else:
             keyboard = InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="🔗 Подключить GitHub", callback_data="github_connect")],
-                [InlineKeyboardButton(text="⬅️ Назад", callback_data="main")],
+                [InlineKeyboardButton(text="⬅️ Назад", callback_data="ai_menu")],
             ])
     await callback.message.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=keyboard)
 
