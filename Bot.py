@@ -354,7 +354,7 @@ def get_sessions_keyboard(user_id: int) -> InlineKeyboardMarkup:
         buttons.append([InlineKeyboardButton(text="⏹ Остановить все", callback_data="sess_stop_all")])
     else:
         buttons.append([InlineKeyboardButton(text="❌ Нет аккаунтов", callback_data="no_action")])
-    buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="bots")])
+    buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="home_automation")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
@@ -643,7 +643,7 @@ async def start_command(message: types.Message, state: FSMContext):
     await message.answer(
         f"👋 Привет, {message.from_user.first_name or 'Пользователь'}!\n\n"
         f"Здесь собраны инструменты для Telegram, аккаунтов, каналов и работы с ИИ.\n"
-        f"Выбирай нужный раздел — дальше всё будет по шагам:",
+        f"Выбирай раздел — нужная функция найдётся быстро:",
         parse_mode=ParseMode.HTML,
         reply_markup=get_main_keyboard(message.from_user.id)
     )
@@ -3208,9 +3208,8 @@ async def check_subscription_callback(callback: types.CallbackQuery):
     await callback.message.edit_text(
         f"👋 Привет, {callback.from_user.first_name or 'Пользователь'}!\n\n"
         f"🤖 <b>Ты попал в Telegram-Центр</b>,\n"
-        f"Тут есть огромное количество различных функций.\n\n"
-        f"Премиум:\n\n"
-        f"Выберите нужный раздел:",
+        f"Здесь собраны инструменты для Telegram, аккаунтов и каналов.\n\n"
+        f"Выбирай, что нужно сделать:",
         parse_mode=ParseMode.HTML,
         reply_markup=get_main_keyboard(user_id)
     )
