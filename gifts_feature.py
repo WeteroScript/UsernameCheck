@@ -334,8 +334,8 @@ async def gift_pick(callback: types.CallbackQuery, state: FSMContext):
     await state.set_state(GiftStates.waiting_username)
     await callback.message.edit_text(
         f"🎁 {draft['gift_title']} — {_gift_price_label(gift)}\n\n"
-        f"Введите юзернейм получателя (без @), или перешлите его сообщение:\n\n"
-        f"/cancel — отменить"
+        f"Введите юзернейм получателя (без @), или перешлите его сообщение:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад", callback_data="gift_cancel")]])
     )
 
 
@@ -423,8 +423,8 @@ async def gift_edit_username(callback: types.CallbackQuery, state: FSMContext):
     await callback.answer()
     await state.set_state(GiftStates.waiting_username)
     await callback.message.edit_text(
-        "👤 Введите новый юзернейм получателя (без @), или перешлите его сообщение:\n\n"
-        "/cancel — вернуться назад"
+        "👤 Введите новый юзернейм получателя (без @), или перешлите его сообщение:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад", callback_data="gift_cancel")]])
     )
 
 
@@ -439,8 +439,8 @@ async def gift_add_desc(callback: types.CallbackQuery, state: FSMContext):
     await callback.answer()
     await state.set_state(GiftStates.waiting_description)
     await callback.message.edit_text(
-        f"📝 Введите описание к подарку (до {GIFT_MESSAGE_MAX_LEN} символов):\n\n"
-        f"/cancel — вернуться назад без описания"
+        f"📝 Введите описание к подарку (до {GIFT_MESSAGE_MAX_LEN} символов):",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад", callback_data="gift_cancel")]])
     )
 
 
@@ -461,7 +461,7 @@ async def gift_description_input(message: types.Message, state: FSMContext):
         return
 
     if not text:
-        await message.answer("❌ Описание не может быть пустым. Пришли текст или /cancel.")
+        await message.answer("❌ Описание не может быть пустым. Пришли текст или нажми «Назад».")
         return
 
     if len(text) > GIFT_MESSAGE_MAX_LEN:

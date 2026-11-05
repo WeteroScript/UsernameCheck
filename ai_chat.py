@@ -13,6 +13,7 @@ import os
 import re
 import uuid
 import time
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -36,8 +37,8 @@ HISTORY_PATH = Path(os.getenv("AI_CHAT_HISTORY_FILE", "data/ai_chats.json"))
 
 MAX_CONTEXT_MESSAGES = 40
 TELEGRAM_TEXT_LIMIT = 4000
-MAX_UPLOAD_BYTES = 15 * 1024 * 1024
-MAX_EXTRACTED_CHARS = 80000
+MAX_UPLOAD_MB = max(1, int(os.getenv("AI_CHAT_MAX_UPLOAD_MB", "200")))
+MAX_UPLOAD_BYTES = MAX_UPLOAD_MB * 1024 * 1024
 MAX_ARCHIVE_FILES = 40
 MAX_GENERATED_FILE_BYTES = 10 * 1024 * 1024
 TEXT_EXTENSIONS = {
@@ -48,18 +49,46 @@ TEXT_EXTENSIONS = {
     ".php", ".rb", ".swift", ".r", ".ipynb", ".env.example",
 }
 SUPPORTED_FILE_EXTENSIONS = TEXT_EXTENSIONS | {".zip", ".pdf", ".docx", ".pptx", ".xlsx"}
-REQUEST_COOLDOWN_SECONDS = 30
+REQUEST_COOLDOWN_SECONDS = 5
 _last_request_at: Dict[int, float] = {}
 _active_requests: set[int] = set()
 _active_tasks: Dict[int, asyncio.Task] = {}
 _waiting_messages: Dict[int, types.Message] = {}
 SYSTEM_PROMPT = (
-    "Ты — полезный ИИ-помощник. Отвечай на языке пользователя. "
-    "Если пользователь просит код, приводи полный и понятный пример. "
-    "Если пользователь просит создать файл для скачивания, возвращай содержимое "
-    "каждого файла строго в формате [[FILE: имя_файла.расширение]], затем новая строка, "
-    "содержимое файла, новая строка и [[/FILE]]. Не помещай содержимое файла вне маркеров. "
-    "Можно вернуть несколько таких блоков. Перед блоками кратко объясни результат."
+    "Ты — ИИ-помощник внутри Telegram-бота. Отвечай на языке пользователя. "
+    "ВАЖНО: ты можешь создавать и отправлять пользователю файлы. У тебя нет доступа "
+    "к диску или папкам сервера, но это не мешает создавать вложения: бот превращает "
+    "текст, который ты поместишь в специальные блоки, в настоящие файлы и отправляет их. "
+    "Когда пользователь просит создать, сделать, подготовить, сохранить, экспортировать "
+    "или прислать файл, не ограничивайся инструкцией или примером в сообщении — создай "
+    "сам файл и верни его полное содержимое в блоке. "
+    "Формат блока строго такой: [[FILE: имя_файла.расширение]], затем перевод строки, "
+    "затем полное содержимое файла, затем перевод строки и [[/FILE]]. "
+    "Пример: [[FILE: notes.txt]] затем перевод строки, непустое содержимое файла, "
+    "затем новая строка и [[/FILE]]. Не добавляй тройные кавычки или Markdown-ограждения "
+    "вокруг маркеров. Имя должно быть понятным и содержать подходящее расширение. "
+    "КРИТИЧЕСКИ ВАЖНО: каждый блок файла должен содержать хотя бы один непробельный символ. "
+    "Никогда не отправляй пустые блоки, блоки только с пробелами или переносами строк, "
+    "маркеры-заглушки и файлы без содержимого. Перед завершением проверь, что внутри "
+    "каждого блока действительно есть полный текст. Если файл должен содержать код, "
+    "заполни его полным исходным кодом; если документ — полным текстом документа; "
+    "если таблицу — строками заголовков и данными. Не заменяй содержимое фразами "
+    "«здесь будет код», «добавить позже», многоточиями или кратким описанием. "
+    "Если не хватает сведений, создай разумный законченный вариант на основе контекста "
+    "и перечисли допущения обычным текстом вне блока файла. "
+    "Бот может прикреплять текстовые файлы, например TXT, MD, CSV, JSON, XML, HTML, "
+    "Python, JavaScript, TypeScript, CSS, SQL и другие текстовые исходники. Не выдавай "
+    "обычный текст с расширением PDF, DOCX, XLSX, PPTX или другого бинарного формата "
+    "за настоящий бинарный документ: такой файл нельзя корректно получить простым "
+    "текстовым блоком. Для такого запроса предложи подходящий текстовый исходник "
+    "или объясни ограничение, сохранив возможность создать этот исходник как файл. "
+    "Исключение — ZIP: не создавай ZIP содержимым одного текстового блока. Если нужен "
+    "архив или проект, верни каждый файл проекта отдельным полноценным блоком FILE; "
+    "бот сам упакует два или более файлов из одного ответа в ZIP. Для одного файла "
+    "бот отправит отдельное вложение. "
+    "Каждый файл выводи отдельным блоком, не объединяй содержимое нескольких файлов. "
+    "Краткое описание результата размещай вне блоков. Не утверждай, что не можешь "
+    "создавать или прикреплять файлы, если запрос можно выполнить текстовым файлом."
 )
 
 MODELS = [
@@ -94,6 +123,32 @@ class AIChatStates(StatesGroup):
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+
+async def _animate_waiting_message(message: types.Message) -> None:
+    """Показывает фактическое время ожидания ответа модели."""
+    elapsed = 0
+    while True:
+        await asyncio.sleep(1)
+        elapsed += 1
+        try:
+            await message.edit_text(f"👀 Ии готовит ответ. {elapsed}s.")
+        except Exception:
+            # Ошибка редактирования не должна прерывать запрос к модели.
+            logging.debug("Не удалось обновить таймер ожидания ИИ", exc_info=True)
+
+
+async def _stop_waiting_timer(task: Optional[asyncio.Task]) -> None:
+    if task and not task.done():
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            # Ошибка таймера не должна мешать освобождению блокировки запроса.
+            logging.debug("Задача таймера завершилась с ошибкой", exc_info=True)
 
 
 def _load_history() -> Dict[str, List[Dict[str, Any]]]:
@@ -163,8 +218,12 @@ def _user_chats(user_id: int) -> List[Dict[str, Any]]:
 
 
 def _find_chat(user_id: int, chat_id: str) -> Optional[Dict[str, Any]]:
+    # Каждый chat_id хранит собственные model и messages. Не объединять историю
+    # по имени модели: два чата одной модели должны оставаться независимыми.
     for chat in _user_chats(user_id):
         if chat.get("id") == chat_id:
+            if not isinstance(chat.get("messages"), list):
+                chat["messages"] = []
             return chat
     return None
 
@@ -405,7 +464,6 @@ def _extract_zip_content(data: bytes, depth: int = 0) -> str:
                 raise ValueError("Распакованный размер архива превышает 30 МБ.")
 
             extracted = []
-            total_chars = 0
             for item in files:
                 if item.file_size > MAX_UPLOAD_BYTES:
                     continue
@@ -424,12 +482,7 @@ def _extract_zip_content(data: bytes, depth: int = 0) -> str:
                     continue
                 if not content:
                     continue
-                remaining = MAX_EXTRACTED_CHARS - total_chars
-                if remaining <= 0:
-                    break
-                content = content[:remaining]
                 extracted.append(f"===== {filename} =====\n{content}")
-                total_chars += len(content)
             if not extracted:
                 raise ValueError(
                     "В ZIP не найдено поддерживаемых файлов с извлекаемым содержимым."
@@ -444,7 +497,7 @@ async def _document_to_text(message: types.Message) -> str:
     if not document:
         raise ValueError("Документ не найден.")
     if document.file_size and document.file_size > MAX_UPLOAD_BYTES:
-        raise ValueError("Максимальный размер загружаемого файла — 15 МБ.")
+        raise ValueError(f"Максимальный размер загружаемого файла — {MAX_UPLOAD_MB} МБ.")
     filename = document.file_name or "document"
     extension = Path(filename).suffix.lower()
     if extension not in SUPPORTED_FILE_EXTENSIONS:
@@ -453,42 +506,96 @@ async def _document_to_text(message: types.Message) -> str:
             "XML, код, PDF, DOCX, PPTX, XLSX и ZIP с такими файлами."
         )
 
-    buffer = io.BytesIO()
     try:
-        await message.bot.download(document, destination=buffer)
+        # Временный файл не держит ещё одну копию загрузки в оперативной памяти.
+        with tempfile.TemporaryFile(mode="w+b") as buffer:
+            await message.bot.download(document, destination=buffer)
+            buffer.seek(0)
+            raw = buffer.read(MAX_UPLOAD_BYTES + 1)
     except Exception as exc:
         logging.exception("Не удалось скачать документ Telegram")
         raise RuntimeError("Не удалось скачать файл из Telegram.") from exc
-    raw = buffer.getvalue()
     if len(raw) > MAX_UPLOAD_BYTES:
-        raise ValueError("Максимальный размер загружаемого файла — 15 МБ.")
+        raise ValueError(f"Максимальный размер загружаемого файла — {MAX_UPLOAD_MB} МБ.")
     content = _extract_file_content(filename, raw).strip()
     if not content:
         raise ValueError("В файле не удалось найти текст для передачи модели.")
     return (
         f"Пользователь приложил файл: {filename}\n"
-        f"Извлечённое содержимое:\n{content[:MAX_EXTRACTED_CHARS]}"
+        f"Извлечённое содержимое:\n{content}"
     )
 
 
 def _extract_generated_files(reply: str):
     pattern = re.compile(
-        r"\[\[FILE:\s*([^\]\r\n]+)\]\]\s*\n(.*?)\n\[\[/FILE\]\]",
+        r"\[\[FILE:\s*([^\]\r\n]+)\]\][ \t]*\r?\n(.*?)\r?\n?\[\[/FILE\]\]",
         re.DOTALL | re.IGNORECASE,
     )
     files = []
+    empty_files = 0
     for match in pattern.finditer(reply):
         filename = Path(match.group(1).strip().replace("\\", "/")).name
         filename = re.sub(r"[^A-Za-z0-9А-Яа-яёЁ._-]", "_", filename)
-        content = match.group(2)
+        file_content = match.group(2)
         if not filename or filename in {".", ".."}:
-            filename = f"generated_{len(files) + 1}.txt"
-        encoded = content.encode("utf-8")
+            filename = f"generated_{len(files) + empty_files + 1}.txt"
+        if not file_content.strip():
+            empty_files += 1
+            logging.warning("Модель вернула пустой файл %s; файл пропущен.", filename)
+            continue
+        encoded = file_content.encode("utf-8")
         if len(encoded) > MAX_GENERATED_FILE_BYTES:
             raise ValueError(f"Сгенерированный файл {filename} превышает 10 МБ.")
         files.append((filename, encoded))
     visible_reply = pattern.sub("", reply).strip()
-    return visible_reply, files
+    if empty_files:
+        warning = (
+            f"Модель вернула пустых файлов: {empty_files}. "
+            "Пустые вложения пропущены: Telegram не принимает файлы нулевого размера."
+        )
+        visible_reply = f"{visible_reply}\n\n⚠️ {warning}".strip()
+    return visible_reply, files, empty_files
+
+
+def _build_generated_zip(files: List[tuple]) -> bytes:
+    """Упаковывает несколько сгенерированных файлов в один ZIP-архив."""
+    if len(files) > MAX_ARCHIVE_FILES:
+        raise ValueError(f"Модель вернула больше {MAX_ARCHIVE_FILES} файлов за один ответ.")
+    total_size = sum(len(file_content) for _, file_content in files)
+    if total_size > MAX_UPLOAD_BYTES:
+        raise ValueError(
+            f"Общий размер сгенерированных файлов превышает лимит {MAX_UPLOAD_MB} МБ."
+        )
+
+    output = io.BytesIO()
+    used_names = set()
+    with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        for index, (filename, file_content) in enumerate(files, start=1):
+            safe_name = Path(filename).name or f"generated_{index}.txt"
+            candidate = safe_name
+            stem = Path(safe_name).stem
+            suffix = Path(safe_name).suffix
+            counter = 2
+            while candidate.casefold() in used_names:
+                candidate = f"{stem}_{counter}{suffix}"
+                counter += 1
+            used_names.add(candidate.casefold())
+            archive.writestr(candidate, file_content)
+    return output.getvalue()
+
+
+def _is_file_creation_request(user_text: str) -> bool:
+    """Определяет явные просьбы пользователя создать файл для отправки."""
+    patterns = (
+        r"\b(?:созда(?:й|ть|йте)|сдела(?:й|ть|йте)|сгенерируй|сгенерировать|сформируй|сформировать)\b.{0,80}(?:\b(?:файл|документ)\b|(?<!\w)\.?(?:txt|md|pdf|docx|csv|json)\b)",
+        r"\bсохрани(?:ть)?\s+.{0,60}\bв\s+файл\b",
+        r"\bподготов(?:ь|ить|ьте)\s+.{0,60}\bфайл\b",
+        r"\bфайл\s+(?:для\s+)?скачивания\b",
+        r"\bcreate\s+(?:a\s+)?(?:file|document)\b",
+        r"\bmake\s+(?:me\s+)?(?:a\s+)?file\b",
+        r"\bexport\s+(?:this|it|as)\b",
+    )
+    return any(re.search(pattern, user_text, re.IGNORECASE) for pattern in patterns)
 
 
 def _extract_reply(data: Dict[str, Any]) -> str:
@@ -727,10 +834,66 @@ async def ai_chat_message(message: types.Message, state: FSMContext):
     _active_requests.add(user_id)
     _active_tasks[user_id] = asyncio.current_task()
     waiting = None
+    waiting_timer = None
     try:
-        waiting = await message.answer("👀 Ии готовит ответ")
+        waiting = await message.answer("👀 Ии готовит ответ. 0s.")
         _waiting_messages[user_id] = waiting
+        waiting_timer = asyncio.create_task(_animate_waiting_message(waiting))
+        # Контекст берётся только из выбранного chat_id, не из других чатов
+        # этой же модели или других моделей.
         reply = await _request_model(model, chat.get("messages", []), user_text)
+        visible_reply, generated_files, empty_files = _extract_generated_files(reply)
+
+        # Если пользователь явно запросил файл, но модель не создала ни одного
+        # непустого вложения, один раз просим её повторить генерацию.
+        if _is_file_creation_request(user_text) and not generated_files:
+            retry_context = [
+                *chat.get("messages", [])[-MAX_CONTEXT_MESSAGES:],
+                {"role": "user", "content": user_text},
+                {"role": "assistant", "content": reply},
+            ]
+            retry_instruction = (
+                "Предыдущая попытка не дала пригодного вложения. Выполни исходную просьбу "
+                "и верни полный файл в точном формате [[FILE: имя_файла.расширение]] "
+                "затем перевод строки, полное непустое содержимое и [[/FILE]]. "
+                "Внутри каждого блока обязателен хотя бы один непробельный символ. "
+                "Не отправляй пустой блок и не заменяй файл описанием. Если запрос касается "
+                "текстового файла, создай законченное содержимое прямо сейчас. "
+                "Бот сам отправит это содержимое как вложение."
+            )
+            try:
+                retry_reply = await _request_model(model, retry_context, retry_instruction)
+                retry_visible, retry_files, retry_empty_files = _extract_generated_files(retry_reply)
+                if retry_files:
+                    reply = retry_reply
+                    visible_reply, generated_files = retry_visible, retry_files
+                    empty_files = retry_empty_files
+                else:
+                    logging.warning(
+                        "Модель %s не вернула непустой файл после повторного запроса", model
+                    )
+                    if empty_files or retry_empty_files:
+                        reply = (
+                            "⚠️ Модель вернула пустой файл. Пустое вложение отправить нельзя, "
+                            "поэтому файл не был прикреплён. Запрос завершён — можешь сразу "
+                            "отправить новое сообщение. Для повторной попытки попроси модель "
+                            "заполнить файл полным содержимым, а не оставлять его пустым."
+                        )
+                    else:
+                        reply = (
+                            "Не удалось получить файл от модели: она не вернула содержимое "
+                            "в требуемом формате. Запрос завершён — можешь отправить новое "
+                            "сообщение или повторить просьбу, указав имя и формат файла."
+                        )
+                    visible_reply, generated_files = reply, []
+            except RuntimeError:
+                logging.exception("Повторный запрос для генерации файла завершился ошибкой")
+                reply = (
+                    "Не удалось создать файл: повторный запрос к модели завершился ошибкой. "
+                    "Запрос завершён — можешь отправить новое сообщение позже."
+                )
+                visible_reply, generated_files = reply, []
+
         messages = chat.setdefault("messages", [])
         messages.extend([
             {"role": "user", "content": user_text},
@@ -742,7 +905,8 @@ async def ai_chat_message(message: types.Message, state: FSMContext):
         if not _save_history():
             logging.error("Ответ ИИ получен, но историю диалога не удалось сохранить.")
 
-        visible_reply, generated_files = _extract_generated_files(reply)
+        await _stop_waiting_timer(waiting_timer)
+        waiting_timer = None
         display_text = f'"{model}" - {visible_reply}' if visible_reply else f'"{model}" - Файл готов.'
         chunks = _split_text(display_text)
         try:
@@ -753,12 +917,25 @@ async def ai_chat_message(message: types.Message, state: FSMContext):
             await message.answer(chunks[0])
         for chunk in chunks[1:]:
             await message.answer(chunk)
-        for filename, file_content in generated_files:
+        if len(generated_files) >= 2:
+            try:
+                archive_content = _build_generated_zip(generated_files)
+            except ValueError as exc:
+                await message.answer(f"Не удалось собрать ZIP-архив: {exc}")
+            else:
+                await message.answer_document(
+                    BufferedInputFile(archive_content, filename="generated_files.zip"),
+                    caption=f'Архив с {len(generated_files)} файлами от модели {model}',
+                )
+        elif generated_files:
+            filename, file_content = generated_files[0]
             await message.answer_document(
                 BufferedInputFile(file_content, filename=filename),
                 caption=f"Файл от модели {model}",
             )
     except RuntimeError as exc:
+        await _stop_waiting_timer(waiting_timer)
+        waiting_timer = None
         if waiting:
             await waiting.edit_text(f'"{model}" - Ошибка запроса: {exc}')
     except asyncio.CancelledError:
@@ -768,6 +945,12 @@ async def ai_chat_message(message: types.Message, state: FSMContext):
         if waiting:
             await waiting.edit_text(f'"{model}" - Произошла внутренняя ошибка при обращении к API.')
     finally:
-        _active_requests.discard(user_id)
-        _active_tasks.pop(user_id, None)
-        _waiting_messages.pop(user_id, None)
+        try:
+            await _stop_waiting_timer(waiting_timer)
+        except Exception:
+            logging.debug("Не удалось корректно остановить таймер ожидания", exc_info=True)
+        finally:
+            # Освобождаем блокировку даже при ошибке редактирования сообщения/таймера.
+            _active_requests.discard(user_id)
+            _active_tasks.pop(user_id, None)
+            _waiting_messages.pop(user_id, None)

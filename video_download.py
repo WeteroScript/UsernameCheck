@@ -58,8 +58,9 @@ async def video_youtube_prompt(callback: types.CallbackQuery, state: FSMContext)
     await callback.answer()
     await state.set_state(VideoStates.waiting_youtube_link)
     await callback.message.edit_text(
-        "▶️ Пришли ссылку на видео YouTube.\n\n/cancel — отменить",
-        parse_mode=ParseMode.HTML
+        "▶️ Пришли ссылку на видео YouTube.",
+        parse_mode=ParseMode.HTML,
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад", callback_data="fsm_back")]])
     )
 
 
@@ -91,7 +92,7 @@ async def video_youtube_link_input(message: types.Message, state: FSMContext):
         await message.answer("❌ Отменено", reply_markup=get_video_menu_keyboard())
         return
     if "youtube.com" not in url and "youtu.be" not in url:
-        await message.answer("❌ Это не похоже на ссылку YouTube. Попробуй снова, или /cancel.")
+        await message.answer("❌ Это не похоже на ссылку YouTube. Попробуй снова или нажми «Назад».")
         return
     
     await state.clear()
@@ -230,8 +231,9 @@ async def video_tiktok_video_prompt(callback: types.CallbackQuery, state: FSMCon
     await state.update_data(tiktok_mode="video")
     await state.set_state(VideoStates.waiting_tiktok_link)
     await callback.message.edit_text(
-        "🎥 Пришли ссылку на видео TikTok.\n\n/cancel — отменить",
-        parse_mode=ParseMode.HTML
+        "🎥 Пришли ссылку на видео TikTok.",
+        parse_mode=ParseMode.HTML,
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад", callback_data="fsm_back")]])
     )
 
 
@@ -241,8 +243,9 @@ async def video_tiktok_photo_prompt(callback: types.CallbackQuery, state: FSMCon
     await state.update_data(tiktok_mode="photo")
     await state.set_state(VideoStates.waiting_tiktok_link)
     await callback.message.edit_text(
-        "🖼 Пришли ссылку на фото-пост (слайд-шоу) TikTok.\n\n/cancel — отменить",
-        parse_mode=ParseMode.HTML
+        "🖼 Пришли ссылку на фото-пост (слайд-шоу) TikTok.",
+        parse_mode=ParseMode.HTML,
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад", callback_data="fsm_back")]])
     )
 
 
@@ -282,7 +285,7 @@ async def video_tiktok_link_input(message: types.Message, state: FSMContext):
         await message.answer("❌ Отменено", reply_markup=get_tiktok_menu_keyboard())
         return
     if "tiktok.com" not in url:
-        await message.answer("❌ Это не похоже на ссылку TikTok. Попробуй снова, или /cancel.")
+        await message.answer("❌ Это не похоже на ссылку TikTok. Попробуй снова или нажми «Назад».")
         return
     
     await state.clear()

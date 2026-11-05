@@ -93,9 +93,9 @@ async def github_menu(callback: types.CallbackQuery, state: FSMContext):
     await state.set_state(ExtraStates.waiting_github_query)
     await callback.message.edit_text(
         "🐙 <b>Поиск репозиториев GitHub</b>\n\n"
-        "Введи ключевые слова для поиска:\n\n"
-        "/cancel — отменить",
-        parse_mode=ParseMode.HTML
+        "Введи ключевые слова для поиска:",
+        parse_mode=ParseMode.HTML,
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад", callback_data="fsm_back")]])
     )
 
 
@@ -212,8 +212,9 @@ async def getid_prompt(callback: types.CallbackQuery, state: FSMContext):
     await callback.answer()
     await state.set_state(target_state)
     await callback.message.edit_text(
-        f"{prompt}\n\n/cancel — отменить",
-        parse_mode=ParseMode.HTML
+        f"{prompt}",
+        parse_mode=ParseMode.HTML,
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад", callback_data="fsm_back")]])
     )
 
 
@@ -325,8 +326,9 @@ async def bugreport_menu(callback: types.CallbackQuery, state: FSMContext):
         "В нашем боте достаточно большое количество багов, если вы найдёте "
         "их, то мы сможем вас отблагодарить в качестве премиум подписки "
         "на 1 день, за один найденный баг.\n\n"
-        "Опиши баг сообщением:\n\n/cancel — отменить",
-        parse_mode=ParseMode.HTML
+        "Опиши баг сообщением:",
+        parse_mode=ParseMode.HTML,
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад", callback_data="fsm_back")]])
     )
 
 

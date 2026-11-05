@@ -6,6 +6,8 @@ import re
 from datetime import datetime
 from typing import Dict, Optional, List, Any
 from aiogram import Bot, Dispatcher, types, BaseMiddleware
+from aiogram.client.session.aiohttp import AiohttpSession
+from aiogram.client.telegram import TelegramAPIServer
 from aiogram.filters import Command
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, FSInputFile
 from aiogram.enums import ParseMode, ButtonStyle
@@ -102,6 +104,8 @@ from ai_chat import init_ai_chat, pause_ai_chat
 
 load_dotenv()
 
+APP_VERSION = "v1.0.0"
+
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 if not BOT_TOKEN:
     raise RuntimeError("Не задана переменная окружения BOT_TOKEN. Добавь её в настройках хостинга.")
@@ -112,7 +116,16 @@ logging.basicConfig(
 )
 
 storage = MemoryStorage()
-bot = Bot(token=BOT_TOKEN)
+USE_LOCAL_BOT_API = os.getenv("USE_LOCAL_BOT_API", "false").strip().lower() in {"1", "true", "yes", "on"}
+if USE_LOCAL_BOT_API:
+    local_api_url = os.getenv("TELEGRAM_BOT_API_URL", "http://127.0.0.1:8081").strip()
+    bot_api_session = AiohttpSession(
+        api=TelegramAPIServer.from_base(local_api_url, is_local=True)
+    )
+    bot = Bot(token=BOT_TOKEN, session=bot_api_session)
+    logging.info("Используется локальный Telegram Bot API: %s", local_api_url)
+else:
+    bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=storage)
 
 
@@ -401,7 +414,7 @@ async def sess_interval_prompt(callback: types.CallbackQuery, state: FSMContext)
         "Нажми <b>Назад</b> для отмены.",
         parse_mode=ParseMode.HTML,
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="⬅️ Назад", callback_data="main")]
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data="fsm_back")]
         ])
     )
 
@@ -712,414 +725,208 @@ DODEEPER_TASK_TYPES = {
 # ═══════════════════════════════════════════════════
 
 def get_dodeeper_sessions_keyboard(user_id: int) -> InlineKeyboardMarkup:
-    phones = user_sessions.get(user_id, [])
-    buttons = []
-    for phone in phones:
-        cfg = get_session_config(user_id, phone)
-        enabled = cfg.get("enabled", False)
-        loader_on  = phone in dodeeper_active
-        trader_on  = phone in crypto_trader_active
-        icons = ("📦" if loader_on else "") + ("📈" if trader_on else "")
-        label = f"{'🟢' if enabled else '🔴'} {phone}" + (f"  {icons}" if icons else "")
-        # Зелёный = активная сессия, синий = неактивная
-        style = ButtonStyle.SUCCESS if enabled else ButtonStyle.PRIMARY
-        buttons.append([InlineKeyboardButton(
-            text=label,
-            callback_data=f"dodeeper_sess_{phone}",
-            style=style,
-        )])
+    buttons = [
+        [InlineKeyboardButton(text=phone, callback_data=f"dodeeper_sess_{phone}")]
+        for phone in user_sessions.get(user_id, [])
+    ]
     if not buttons:
-        buttons.append([InlineKeyboardButton(
-            text="➕ Добавить аккаунт", callback_data="sess_add",
-            style=ButtonStyle.PRIMARY
-        )])
-    buttons.append([InlineKeyboardButton(
-        text="⬅️ Назад", callback_data="bots",
-        style=ButtonStyle.DANGER
-    )])
+        buttons.append([InlineKeyboardButton(text="➕ Добавить аккаунт", callback_data="sess_add")])
+    buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="bots")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
-def get_dodeeper_sess_keyboard(phone: str) -> InlineKeyboardMarkup:
-    loader_on = phone in dodeeper_active
-    trader_on = phone in crypto_trader_active
+def _dodeeper_work_name(work: Optional[str]) -> str:
+    return {"loader": "📦 Грузчик", "trader": "📈 Авто-трейдер"}.get(work, "Не выбрана")
+
+
+def _dodeeper_session_text(user_id: int, phone: str) -> str:
+    cfg = get_session_config(user_id, phone)
+    work = cfg.get("dodeeper_work")
+    running = (
+        work == "loader" and phone in dodeeper_active
+    ) or (
+        work == "trader" and phone in crypto_trader_active
+    )
+    status = "🟢 Работает" if running else "⚪ Остановлена"
+    return (
+        f"💼 <b>Додепер</b>\n\n"
+        f"📱 Сессия: <code>{phone}</code>\n"
+        f"⚙️ Работа: <b>{_dodeeper_work_name(work)}</b>\n"
+        f"Состояние: {status}"
+    )
+
+
+def get_dodeeper_sess_keyboard(user_id: int, phone: str) -> InlineKeyboardMarkup:
+    cfg = get_session_config(user_id, phone)
+    work = cfg.get("dodeeper_work")
+    running = (
+        work == "loader" and phone in dodeeper_active
+    ) or (
+        work == "trader" and phone in crypto_trader_active
+    )
     return InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(text="⚙️ Настройки",  callback_data=f"dodeeper_settings_{phone}", style=ButtonStyle.PRIMARY),
-            InlineKeyboardButton(text="📊 Статус",      callback_data=f"dodeeper_status_{phone}",   style=ButtonStyle.PRIMARY),
-        ],
-        [
-            InlineKeyboardButton(
-                text="⏹ Стоп грузчик" if loader_on else "▶️ Грузчик",
-                callback_data=f"dodeeper_stop_{phone}" if loader_on else f"dodeeper_start_{phone}",
-                style=ButtonStyle.DANGER if loader_on else ButtonStyle.SUCCESS,
-            ),
-            InlineKeyboardButton(
-                text="⏹ Стоп трейдер" if trader_on else "📈 Трейдер",
-                callback_data=f"dodeeper_trader_toggle_{phone}",
-                style=ButtonStyle.DANGER if trader_on else ButtonStyle.SUCCESS,
-            ),
-        ],
-        [InlineKeyboardButton(text="⬅️ Назад", callback_data="bot_dodeeper", style=ButtonStyle.DANGER)],
+        [InlineKeyboardButton(
+            text="⏹ Стоп" if running else "▶️ Старт",
+            callback_data=f"dodeeper_work_toggle_{phone}",
+            style=ButtonStyle.DANGER if running else ButtonStyle.SUCCESS,
+        )],
+        [InlineKeyboardButton(text="⚙️ Настройки", callback_data=f"dodeeper_settings_{phone}")],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="bot_dodeeper")],
     ])
 
 
 def get_dodeeper_settings_keyboard(phone: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🤖 Автоматизация",   callback_data=f"dodeeper_auto_{phone}",        style=ButtonStyle.SUCCESS)],
-        [
-            InlineKeyboardButton(text="📉 Порог покупки", callback_data=f"dodeeper_set_drop_{phone}",   style=ButtonStyle.PRIMARY),
-            InlineKeyboardButton(text="📈 Порог продажи", callback_data=f"dodeeper_set_rise_{phone}",   style=ButtonStyle.SUCCESS),
-        ],
-        [
-            InlineKeyboardButton(text="💰 Объём сделки",  callback_data=f"dodeeper_set_amount_{phone}", style=ButtonStyle.PRIMARY),
-            InlineKeyboardButton(text="📊 Статистика",    callback_data=f"dodeeper_trader_stat_{phone}",style=ButtonStyle.PRIMARY),
-        ],
-        [InlineKeyboardButton(text="⬅️ Назад",           callback_data=f"dodeeper_sess_{phone}",        style=ButtonStyle.DANGER)],
+        [InlineKeyboardButton(text="🧭 Выбрать работу", callback_data=f"dodeeper_choose_work_{phone}")],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data=f"dodeeper_sess_{phone}")],
     ])
 
 
-def get_dodeeper_auto_keyboard(phone: str) -> InlineKeyboardMarkup:
-    loader_on = phone in dodeeper_active
-    trader_on = phone in crypto_trader_active
+def get_dodeeper_work_choice_keyboard(phone: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(
-            text="⏹ Стоп грузчик" if loader_on else "📦 Грузчик",
-            callback_data=f"dodeeper_stop_{phone}" if loader_on else f"dodeeper_loader_{phone}",
-            style=ButtonStyle.DANGER if loader_on else ButtonStyle.SUCCESS,
-        )],
-        [InlineKeyboardButton(
-            text="⏹ Стоп трейдер" if trader_on else "📈 Автотрейдер",
-            callback_data=f"dodeeper_trader_toggle_{phone}",
-            style=ButtonStyle.DANGER if trader_on else ButtonStyle.SUCCESS,
-        )],
-        [InlineKeyboardButton(text="⬅️ Назад", callback_data=f"dodeeper_settings_{phone}", style=ButtonStyle.DANGER)],
+        [InlineKeyboardButton(text="📦 Грузчик", callback_data=f"dodeeper_work_loader_{phone}")],
+        [InlineKeyboardButton(text="📈 Авто-трейдер", callback_data=f"dodeeper_work_trader_{phone}")],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data=f"dodeeper_settings_{phone}")],
     ])
 
-
-def get_dodeeper_trader_keyboard(phone: str) -> InlineKeyboardMarkup:
-    running = phone in crypto_trader_active
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(
-            text="⏹ Остановить трейдер" if running else "▶️ Запустить трейдер",
-            callback_data=f"dodeeper_trader_toggle_{phone}",
-            style=ButtonStyle.DANGER if running else ButtonStyle.SUCCESS,
-        )],
-        [
-            InlineKeyboardButton(text="⚙️ Параметры", callback_data=f"dodeeper_trader_cfg_{phone}",  style=ButtonStyle.PRIMARY),
-            InlineKeyboardButton(text="📊 Сделки",    callback_data=f"dodeeper_trader_stat_{phone}", style=ButtonStyle.PRIMARY),
-        ],
-        [InlineKeyboardButton(text="⬅️ Назад", callback_data=f"dodeeper_auto_{phone}", style=ButtonStyle.DANGER)],
-    ])
-
-
-
-
-@dp.callback_query(lambda c: c.data and c.data.startswith("dodeeper_set_drop_"))
-async def dodeeper_set_drop(callback: types.CallbackQuery):
-    await callback.answer()
-    phone = callback.data.replace("dodeeper_set_drop_", "")
-    _load_trader_config()
-    cfg = crypto_trader_config.get(phone, {})
-    cur = cfg.get("__global_drop", TRADER_DEFAULT_DROP)
-    await safe_edit_message(callback.message,
-        f"📉 <b>Порог покупки</b>\n\n"
-        f"Сейчас: <b>-{cur}%</b>\n\n"
-        f"Бот купит монету когда она упадёт на X% от базовой цены.\n\n"
-        f"Отправь команду для изменения:\n"
-        f"<code>/trader_set {phone} drop=5</code>",
-        parse_mode=ParseMode.HTML,
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [
-                InlineKeyboardButton(text="3%",  callback_data=f"dodeeper_drop_val_3_{phone}"),
-                InlineKeyboardButton(text="5%",  callback_data=f"dodeeper_drop_val_5_{phone}"),
-                InlineKeyboardButton(text="7%",  callback_data=f"dodeeper_drop_val_7_{phone}"),
-                InlineKeyboardButton(text="10%", callback_data=f"dodeeper_drop_val_10_{phone}"),
-            ],
-            [InlineKeyboardButton(text="⬅️ Назад", callback_data=f"dodeeper_settings_{phone}")],
-        ]))
-
-
-@dp.callback_query(lambda c: c.data and c.data.startswith("dodeeper_drop_val_"))
-async def dodeeper_drop_val(callback: types.CallbackQuery):
-    parts = callback.data.replace("dodeeper_drop_val_", "").split("_", 1)
-    val, phone = float(parts[0]), parts[1]
-    _load_trader_config()
-    crypto_trader_config.setdefault(phone, {})["__global_drop"] = val
-    _save_trader_config()
-    await callback.answer(f"✅ Порог покупки: -{val}%")
-    await dodeeper_settings(callback)
-
-
-@dp.callback_query(lambda c: c.data and c.data.startswith("dodeeper_set_rise_"))
-async def dodeeper_set_rise(callback: types.CallbackQuery):
-    await callback.answer()
-    phone = callback.data.replace("dodeeper_set_rise_", "")
-    _load_trader_config()
-    cfg = crypto_trader_config.get(phone, {})
-    cur = cfg.get("__global_rise", TRADER_DEFAULT_RISE)
-    await safe_edit_message(callback.message,
-        f"📈 <b>Порог продажи</b>\n\n"
-        f"Сейчас: <b>+{cur}%</b>\n\n"
-        f"Бот продаст монету когда она вырастет на X% от цены покупки.\n\n"
-        f"Отправь команду для изменения:\n"
-        f"<code>/trader_set {phone} rise=5</code>",
-        parse_mode=ParseMode.HTML,
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [
-                InlineKeyboardButton(text="3%",  callback_data=f"dodeeper_rise_val_3_{phone}"),
-                InlineKeyboardButton(text="5%",  callback_data=f"dodeeper_rise_val_5_{phone}"),
-                InlineKeyboardButton(text="7%",  callback_data=f"dodeeper_rise_val_7_{phone}"),
-                InlineKeyboardButton(text="10%", callback_data=f"dodeeper_rise_val_10_{phone}"),
-            ],
-            [InlineKeyboardButton(text="⬅️ Назад", callback_data=f"dodeeper_settings_{phone}")],
-        ]))
-
-
-@dp.callback_query(lambda c: c.data and c.data.startswith("dodeeper_rise_val_"))
-async def dodeeper_rise_val(callback: types.CallbackQuery):
-    parts = callback.data.replace("dodeeper_rise_val_", "").split("_", 1)
-    val, phone = float(parts[0]), parts[1]
-    _load_trader_config()
-    crypto_trader_config.setdefault(phone, {})["__global_rise"] = val
-    _save_trader_config()
-    await callback.answer(f"✅ Порог продажи: +{val}%")
-    await dodeeper_settings(callback)
-
-
-@dp.callback_query(lambda c: c.data and c.data.startswith("dodeeper_set_amount_"))
-async def dodeeper_set_amount(callback: types.CallbackQuery):
-    await callback.answer()
-    phone = callback.data.replace("dodeeper_set_amount_", "")
-    _load_trader_config()
-    cfg = crypto_trader_config.get(phone, {})
-    cur = cfg.get("__global_amount", TRADER_DEFAULT_AMOUNT)
-    await safe_edit_message(callback.message,
-        f"💰 <b>Объём сделки</b>\n\n"
-        f"Сейчас: <b>{cur}</b>\n\n"
-        f"Сколько тратить при каждой покупке (% от баланса).\n"
-        f"При продаже — тот же % от имеющегося количества монеты.",
-        parse_mode=ParseMode.HTML,
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [
-                InlineKeyboardButton(text="10%",     callback_data=f"dodeeper_amt_val_10%_{phone}"),
-                InlineKeyboardButton(text="25%",     callback_data=f"dodeeper_amt_val_25%_{phone}"),
-                InlineKeyboardButton(text="50%",     callback_data=f"dodeeper_amt_val_50%_{phone}"),
-                InlineKeyboardButton(text="максимум",callback_data=f"dodeeper_amt_val_максимум_{phone}"),
-            ],
-            [InlineKeyboardButton(text="⬅️ Назад", callback_data=f"dodeeper_settings_{phone}")],
-        ]))
-
-
-@dp.callback_query(lambda c: c.data and c.data.startswith("dodeeper_amt_val_"))
-async def dodeeper_amt_val(callback: types.CallbackQuery):
-    raw   = callback.data.replace("dodeeper_amt_val_", "")
-    # phone может содержать +, ищем первый _ после значения
-    idx   = raw.index("_")
-    val   = raw[:idx]
-    phone = raw[idx+1:]
-    _load_trader_config()
-    crypto_trader_config.setdefault(phone, {})["__global_amount"] = val
-    _save_trader_config()
-    await callback.answer(f"✅ Объём: {val}")
-    await dodeeper_settings(callback)
 
 @dp.callback_query(lambda c: c.data == "bot_dodeeper")
 async def bot_dodeeper_menu(callback: types.CallbackQuery):
     await callback.answer()
     user_id = callback.from_user.id
     phones = user_sessions.get(user_id, [])
-
-    text = "💼 <b>Додепер</b>\n\n"
-    text += f"🤖 Бот: <b>{DODEEPER_BOT}</b>\n\n"
-
-    if phones:
-        text += "📱 <b>Сессии:</b>\n"
-        for phone in phones:
-            cfg = get_session_config(user_id, phone)
-            enabled = cfg.get("enabled", False)
-            status  = "🟢" if enabled else "🔴"
-            icons   = ""
-            if phone in dodeeper_active:      icons += "📦"
-            if phone in crypto_trader_active: icons += "📈"
-            if icons: icons = " " + icons
-            text += f"  {status} <code>{phone}</code>{icons}\n"
-        text += f"\n📊 Аккаунтов: <b>{len(phones)}</b>"
-        active_c = sum(1 for p in phones if p in dodeeper_active or p in crypto_trader_active)
-        if active_c:
-            text += f"   ⚡ Активных: <b>{active_c}</b>"
-    else:
-        text += "❌ Нет подключённых сессий\n\n"
-        text += "Добавь аккаунт в разделе «Аккаунты»"
-
-    text += "\n\n📦 = грузчик   📈 = трейдер"
-
-    await safe_edit_message(callback.message, text,
+    text = "💼 <b>Додепер</b>\n\nВыбери сессию:" if phones else (
+        "💼 <b>Додепер</b>\n\nНет подключённых сессий. Добавь аккаунт в разделе «Аккаунты»."
+    )
+    await safe_edit_message(
+        callback.message,
+        text,
         parse_mode=ParseMode.HTML,
-        reply_markup=get_dodeeper_sessions_keyboard(user_id))
+        reply_markup=get_dodeeper_sessions_keyboard(user_id),
+    )
 
 
-@dp.callback_query(lambda c: c.data and c.data.startswith("dodeeper_sess_")
-    and not c.data.startswith("dodeeper_settings_")
-    and not c.data.startswith("dodeeper_start_")
-    and not c.data.startswith("dodeeper_stop_")
-    and not c.data.startswith("dodeeper_auto_")
-    and not c.data.startswith("dodeeper_loader_")
-    and not c.data.startswith("dodeeper_status_"))
+@dp.callback_query(lambda c: c.data and c.data.startswith("dodeeper_sess_"))
 async def dodeeper_sess_item(callback: types.CallbackQuery):
     await callback.answer()
-    phone = callback.data.replace("dodeeper_sess_", "")
-    loader_on = phone in dodeeper_active
-    trader_on = phone in crypto_trader_active
-
-    client = await _get_connected_client(phone)
-    conn_mark = "🟢" if client else "🔴"
-
-    text  = f"💼 <b>Додепер</b>\n\n"
-    text += f"🤖 Бот: <b>{DODEEPER_BOT}</b>\n"
-    text += f"📱 Сессия: {conn_mark} <code>{phone}</code>\n\n"
-    text += f"📦 Грузчик: {'🟢 работает' if loader_on else '🔴 стоп'}\n"
-    text += f"📈 Трейдер: {'🟢 работает' if trader_on else '🔴 стоп'}\n\n"
-    text += "Выбери действие:"
-
-    await safe_edit_message(callback.message, text,
+    phone = callback.data.replace("dodeeper_sess_", "", 1)
+    user_id = callback.from_user.id
+    await safe_edit_message(
+        callback.message,
+        _dodeeper_session_text(user_id, phone),
         parse_mode=ParseMode.HTML,
-        reply_markup=get_dodeeper_sess_keyboard(phone))
-
-
-@dp.callback_query(lambda c: c.data and c.data.startswith("dodeeper_status_"))
-async def dodeeper_status(callback: types.CallbackQuery):
-    await callback.answer()
-    phone = callback.data.replace("dodeeper_status_", "")
-    loader_on = phone in dodeeper_active
-    trader_on = phone in crypto_trader_active
-    history = crypto_price_history.get(phone, {})
-    coins_tracked = len(history)
-    stats = crypto_trader_stats.get(phone, {})
-    total_trades = sum(s["buys"] + s["sells"] for s in stats.values())
-    text = (
-        f"📊 <b>Статус — {phone}</b>\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        f"📦 Грузчик: {'🟢 активен' if loader_on else '🔴 стоп'}\n"
-        f"📈 Трейдер: {'🟢 активен' if trader_on else '🔴 стоп'}\n\n"
-        f"🪙 Монет в слежении: <b>{coins_tracked}</b>\n"
-        f"🔁 Сделок всего: <b>{total_trades}</b>"
+        reply_markup=get_dodeeper_sess_keyboard(user_id, phone),
     )
-    await safe_edit_message(callback.message, text,
-        parse_mode=ParseMode.HTML,
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="⬅️ Назад", callback_data=f"dodeeper_sess_{phone}")]
-        ]))
 
 
 @dp.callback_query(lambda c: c.data and c.data.startswith("dodeeper_settings_"))
 async def dodeeper_settings(callback: types.CallbackQuery):
     await callback.answer()
-    phone = callback.data.replace("dodeeper_settings_", "")
-    _load_trader_config()
-    cfg = crypto_trader_config.get(phone, {})
-    d = cfg.get("__global_drop",   TRADER_DEFAULT_DROP)
-    r = cfg.get("__global_rise",   TRADER_DEFAULT_RISE)
-    a = cfg.get("__global_amount", TRADER_DEFAULT_AMOUNT)
-    text = (
-        f"⚙️ <b>Настройки Додепер</b>\n\n"
-        f"🤖 Бот: <b>{DODEEPER_BOT}</b>\n"
-        f"📱 Сессия: <code>{phone}</code>\n\n"
-        f"━━ 📈 Автотрейдер ━━\n"
-        f"📉 Покупка при падении: <b>-{d}%</b>\n"
-        f"📈 Продажа при росте: <b>+{r}%</b>\n"
-        f"💰 Объём сделки: <b>{a}</b>\n\n"
-        f"Изменить параметры:\n"
-        f"<code>/trader_set {phone} drop=5 rise=5 amount=25%</code>"
-    )
-    await safe_edit_message(callback.message, text,
-        parse_mode=ParseMode.HTML,
-        reply_markup=get_dodeeper_settings_keyboard(phone))
-
-
-@dp.callback_query(lambda c: c.data and c.data.startswith("dodeeper_auto_"))
-async def dodeeper_auto(callback: types.CallbackQuery):
-    await callback.answer()
-    phone = callback.data.replace("dodeeper_auto_", "")
-    loader_on = phone in dodeeper_active
-    trader_on = phone in crypto_trader_active
-    text = (
-        f"🤖 <b>Автоматизация</b>\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        f"📱 <code>{phone}</code>\n\n"
-        f"📦 Грузчик: {'🟢 активен' if loader_on else '🔴 стоп'}\n"
-        f"📈 Трейдер: {'🟢 активен' if trader_on else '🔴 стоп'}\n\n"
-        f"Выбери задание:"
-    )
-    await safe_edit_message(callback.message, text,
-        parse_mode=ParseMode.HTML,
-        reply_markup=get_dodeeper_auto_keyboard(phone))
-
-
-@dp.callback_query(lambda c: c.data and c.data.startswith("dodeeper_loader_"))
-async def dodeeper_loader_start(callback: types.CallbackQuery):
-    await callback.answer()
-    phone = callback.data.replace("dodeeper_loader_", "")
+    phone = callback.data.replace("dodeeper_settings_", "", 1)
     user_id = callback.from_user.id
+    cfg = get_session_config(user_id, phone)
+    text = (
+        f"⚙️ <b>Настройки сессии</b>\n\n"
+        f"📱 <code>{phone}</code>\n"
+        f"Выбранная работа: <b>{_dodeeper_work_name(cfg.get('dodeeper_work'))}</b>"
+    )
     await safe_edit_message(
         callback.message,
-        f"📦 <b>Грузчик</b>\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        f"📱 <code>{phone}</code>\n\n"
-        f"⏳ Запускаю работу грузчика...\n"
-        f"Уведомления о грузах придут в этот чат.",
+        text,
         parse_mode=ParseMode.HTML,
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="⏹ Остановить", callback_data=f"dodeeper_stop_{phone}")],
-            [InlineKeyboardButton(text="⬅️ Назад", callback_data=f"dodeeper_auto_{phone}")],
-        ]))
-    asyncio.create_task(_run_dodeeper_loader(user_id, phone, callback.message.chat.id))
+        reply_markup=get_dodeeper_settings_keyboard(phone),
+    )
 
 
-@dp.callback_query(lambda c: c.data and c.data.startswith("dodeeper_start_"))
-async def dodeeper_start(callback: types.CallbackQuery):
+@dp.callback_query(lambda c: c.data and c.data.startswith("dodeeper_choose_work_"))
+async def dodeeper_choose_work(callback: types.CallbackQuery):
+    phone = callback.data.replace("dodeeper_choose_work_", "", 1)
+    if phone in dodeeper_active or phone in crypto_trader_active:
+        await callback.answer("Сначала останови текущую работу", show_alert=True)
+        return
     await callback.answer()
-    phone = callback.data.replace("dodeeper_start_", "")
+    await safe_edit_message(
+        callback.message,
+        f"🧭 <b>Выбери работу</b>\n\n📱 <code>{phone}</code>",
+        parse_mode=ParseMode.HTML,
+        reply_markup=get_dodeeper_work_choice_keyboard(phone),
+    )
+
+
+async def _set_dodeeper_work(callback: types.CallbackQuery, work: str):
+    prefix = "dodeeper_work_loader_" if work == "loader" else "dodeeper_work_trader_"
+    phone = callback.data.replace(prefix, "", 1)
     user_id = callback.from_user.id
+    if phone in dodeeper_active or phone in crypto_trader_active:
+        await callback.answer("Сначала останови текущую работу", show_alert=True)
+        return
+    cfg = get_session_config(user_id, phone)
+    cfg["dodeeper_work"] = work
+    save_session_config()
+    await callback.answer(f"Выбрано: {_dodeeper_work_name(work)}")
     await safe_edit_message(
         callback.message,
-        f"▶️ <b>Грузчик запущен</b>\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        f"📱 <code>{phone}</code>\n\n"
-        f"⏳ Работаю...",
+        f"⚙️ <b>Настройки сессии</b>\n\n"
+        f"📱 <code>{phone}</code>\n"
+        f"Выбранная работа: <b>{_dodeeper_work_name(work)}</b>",
         parse_mode=ParseMode.HTML,
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="⏹ Остановить", callback_data=f"dodeeper_stop_{phone}")],
-            [InlineKeyboardButton(text="📊 Статус", callback_data=f"dodeeper_status_{phone}")],
-        ]))
-    asyncio.create_task(_run_dodeeper_loader(user_id, phone, callback.message.chat.id))
+        reply_markup=get_dodeeper_settings_keyboard(phone),
+    )
 
 
-@dp.callback_query(lambda c: c.data and c.data.startswith("dodeeper_stop_"))
-async def dodeeper_stop(callback: types.CallbackQuery):
-    phone = callback.data.replace("dodeeper_stop_", "")
-    dodeeper_active.discard(phone)
-    await callback.answer("⏹ Грузчик остановлен")
+@dp.callback_query(lambda c: c.data and c.data.startswith("dodeeper_work_loader_"))
+async def dodeeper_choose_loader(callback: types.CallbackQuery):
+    await _set_dodeeper_work(callback, "loader")
+
+
+@dp.callback_query(lambda c: c.data and c.data.startswith("dodeeper_work_trader_"))
+async def dodeeper_choose_trader(callback: types.CallbackQuery):
+    await _set_dodeeper_work(callback, "trader")
+
+
+@dp.callback_query(lambda c: c.data and c.data.startswith("dodeeper_work_toggle_"))
+async def dodeeper_work_toggle(callback: types.CallbackQuery):
+    phone = callback.data.replace("dodeeper_work_toggle_", "", 1)
+    user_id = callback.from_user.id
+    cfg = get_session_config(user_id, phone)
+    work = cfg.get("dodeeper_work")
+
+    if work not in ("loader", "trader"):
+        await callback.answer("Сначала выбери работу в настройках", show_alert=True)
+        return
+
+    active_set = dodeeper_active if work == "loader" else crypto_trader_active
+    if phone in active_set:
+        active_set.discard(phone)
+        await callback.answer("Работа остановлена")
+    else:
+        client = await _get_connected_client(phone)
+        if not client:
+            await callback.answer("Сессия не подключена", show_alert=True)
+            return
+        active_set.add(phone)
+        if work == "loader":
+            asyncio.create_task(_run_dodeeper_loader(user_id, phone, callback.message.chat.id))
+        else:
+            asyncio.create_task(_run_crypto_autotrader(user_id, phone, callback.message.chat.id))
+        await callback.answer("Работа запущена")
+
     await safe_edit_message(
         callback.message,
-        f"⏹ <b>Грузчик остановлен</b>\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        f"📱 <code>{phone}</code>",
+        _dodeeper_session_text(user_id, phone),
         parse_mode=ParseMode.HTML,
-        reply_markup=get_dodeeper_sess_keyboard(phone))
-
-
+        reply_markup=get_dodeeper_sess_keyboard(user_id, phone),
+    )
 
 
 async def _run_dodeeper_loader(user_id: int, phone: str, notify_chat_id: int):
     """Механика грузчика для бота @Dodeperplaybot."""
-    from Bot import active_clients, _get_connected_client
     client = await _get_connected_client(phone)
     if not client:
+        dodeeper_active.discard(phone)
         await bot.send_message(notify_chat_id, f"❌ Сессия {phone} не подключена")
         return
 
-    dodeeper_active.add(phone)
     try:
         # Шаг 1: /start
         await client.send_message(DODEEPER_BOT, "/start")
@@ -1986,9 +1793,11 @@ async def session_add(callback: types.CallbackQuery, state: FSMContext):
         callback.message,
         f"📱 <b>Добавление сессии</b>\n\n"
         f"Сессий: {len(user_sessions.get(user_id, []))}/{get_max_sessions(user_id)}\n\n"
-        "Введите номер телефона в международном формате (с +):\n\n"
-        "Нажми ⬅️ <b>Назад</b> для отмены.",
-        parse_mode=ParseMode.HTML
+        "Введите номер телефона в международном формате (с +):",
+        parse_mode=ParseMode.HTML,
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data="fsm_back")]
+        ])
     )
 
 
@@ -2007,6 +1816,8 @@ async def session_phone(message: types.Message, state: FSMContext):
             parse_mode=ParseMode.HTML
         )
         return
+    if not phone.startswith("+"):
+        phone = "+" + phone
     if not is_phone_allowed(user_id, phone):
         await message.answer(
             f"❌ Без {PREMIUM_ICON} премиум-подписки доступны только номера "
@@ -2045,15 +1856,17 @@ async def session_phone(message: types.Message, state: FSMContext):
         result, delivery_hint = False, None
     
     if result:
-        hint_line = f"\n\n{delivery_hint}" if delivery_hint else ""
+        delivery_line = delivery_hint or "📲 Код придёт в системный чат Telegram"
         await send_with_retry(
             message,
-            "📱 <b>Код отправлен!</b>"
-            f"{hint_line}\n\n"
-            "📲 Код придёт в системный чат Telegram\n\n"
+            "📱 <b>Код отправлен!</b>\n\n"
+            f"{delivery_line}\n\n"
             "Введите код подтверждения из Telegram в формате:\n"
             "<code>code12345</code> (префикс code + сам код)",
-            parse_mode=ParseMode.HTML
+            parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="⬅️ Назад", callback_data="fsm_back")]
+            ])
         )
     else:
         await message.answer(
@@ -2098,7 +1911,10 @@ async def session_code(message: types.Message, state: FSMContext):
         await send_with_retry(
             message,
             "🔐 На этом аккаунте включён облачный пароль (2FA).\n\n"
-            "Введи пароль, чтобы завершить вход:\n\nИли нажми ⬅️ Назад для отмены."
+            "Введи пароль, чтобы завершить вход.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="⬅️ Назад", callback_data="fsm_back")]
+            ])
         )
         return
     
@@ -2112,15 +1928,12 @@ async def session_code(message: types.Message, state: FSMContext):
             save_sessions()
             get_session_config(user_id, phone)
         await message.answer(
-            f"✅ <b>Сессия добавлена!</b>\n\n"
-            f"📱 {phone}\n"
-            f"🤖 Выбранный бот: {bot_name}\n"
-            f"📊 Всего сессий: {len(user_sessions[user_id])}/{get_max_sessions(user_id)}\n\n"
-            f"Теперь перейди в раздел 'Боты' → 'PR GRAMM' для настройки",
+            f"✅Сессия добавлена!\n"
+            f"{phone}\n"
+            f"Всего сессий: {len(user_sessions[user_id])}",
             parse_mode=ParseMode.HTML,
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="🤖 Перейти в Боты", callback_data="bot_prgramm")],
-                [InlineKeyboardButton(text="📱 Аккаунты", callback_data="accounts")],
+                [InlineKeyboardButton(text="🏠 Главное меню", callback_data="main")]
             ])
         )
     elif result == "invalid_code":
@@ -2167,15 +1980,12 @@ async def session_2fa_password(message: types.Message, state: FSMContext):
             save_sessions()
             get_session_config(user_id, phone)
         await message.answer(
-            f"✅ <b>Сессия добавлена!</b>\n\n"
-            f"📱 {phone}\n"
-            f"🤖 Выбранный бот: {bot_name}\n"
-            f"📊 Всего сессий: {len(user_sessions[user_id])}/{get_max_sessions(user_id)}\n\n"
-            f"Теперь перейди в раздел 'Боты' → 'PR GRAMM' для настройки",
+            f"✅Сессия добавлена!\n"
+            f"{phone}\n"
+            f"Всего сессий: {len(user_sessions[user_id])}",
             parse_mode=ParseMode.HTML,
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="🤖 Перейти в Боты", callback_data="bot_prgramm")],
-                [InlineKeyboardButton(text="📱 Аккаунты", callback_data="accounts")],
+                [InlineKeyboardButton(text="🏠 Главное меню", callback_data="main")]
             ])
         )
     elif result == "wrong_password":
@@ -2393,7 +2203,8 @@ async def bot_choice_callback(callback: types.CallbackQuery):
 # ============ АДМИН-КОМАНДЫ (Этап 0: премиум/админ-система) ============
 
 ADMIN_COMMANDS_HELP = (
-    "🛠 <b>Команды администратора</b>\n\n"
+    f"🛠 <b>Команды администратора</b>\n"
+    f"Версия: <code>{APP_VERSION}</code>\n\n"
     "✅ /addadmin (юз/айди) — выдать права админа\n"
     "✅ /deladmin (юз/айди) — снять права админа\n"
     "✅ /givepremium (юз/айди) (дней, по умолчанию 1) — выдать 💎 премиум\n"
@@ -2570,9 +2381,14 @@ class AccessMiddleware(BaseMiddleware):
                     try:
                         chat = await self.bot_ref.get_chat(chat_id)
                         title = chat.title or "Канал"
-                        url = f"https://t.me/{chat.username}" if chat.username else None
-                    except Exception:
-                        title, url = "Канал", None
+                        url = (
+                            MANDATORY_CHANNEL_LINKS.get(int(chat_id))
+                            or (f"https://t.me/{chat.username}" if chat.username else None)
+                        )
+                    except Exception as e:
+                        logging.error("Не удалось получить данные обязательного канала %s: %s", chat_id, e)
+                        title = "Канал"
+                        url = MANDATORY_CHANNEL_LINKS.get(int(chat_id))
                     if url:
                         buttons.append([InlineKeyboardButton(text=f"📢 {title}", url=url)])
                 buttons.append([InlineKeyboardButton(text="✅ Я подписался", callback_data="check_subscription")])
@@ -2589,6 +2405,24 @@ class AccessMiddleware(BaseMiddleware):
                 return
 
         return await handler(event, data)
+
+
+@dp.callback_query(lambda c: c.data == "fsm_back")
+async def fsm_back_callback(callback: types.CallbackQuery, state: FSMContext):
+    await state.clear()
+    await callback.answer("Операция отменена")
+    try:
+        await callback.message.edit_text(
+            "Операция отменена.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🏠 Главное меню", callback_data="main")]
+            ])
+        )
+    except TelegramBadRequest:
+        await callback.message.answer(
+            "Операция отменена.",
+            reply_markup=get_main_keyboard(callback.from_user.id)
+        )
 
 
 @dp.callback_query(lambda c: c.data == "check_subscription")
@@ -3458,18 +3292,11 @@ async def resume_enabled_sessions():
 #  продаёт при росте. Параметры задаёт Оператор.
 # ════════════════════════════════════════════════════════════
 
-import json as _json
 from collections import defaultdict
 
-TRADER_CONFIG_FILE = "trader_config.json"
-
-# { phone: { coin: { "buy_drop": float, "sell_rise": float, "amount": str, "enabled": bool } } }
-crypto_trader_config: dict = {}
-# { phone } — активные трейдеры
+# Активные трейдеры и история работы.
 crypto_trader_active: set = set()
-# { phone: { coin: [{"price": float, "ts": float}, ...] } } — история цен
 crypto_price_history: dict = defaultdict(lambda: defaultdict(list))
-# { phone: { coin: {"buys": int, "sells": int, "pnl": float} } }
 crypto_trader_stats: dict = defaultdict(lambda: defaultdict(lambda: {"buys": 0, "sells": 0, "pnl": 0.0}))
 
 TRADER_CHECK_INTERVAL = 120   # секунд между проверками цен
@@ -3477,35 +3304,6 @@ TRADER_PRICE_HISTORY  = 10    # точек истории на монету
 TRADER_DEFAULT_DROP   = 3.0   # % падения → покупка
 TRADER_DEFAULT_RISE   = 3.0   # % роста  → продажа
 TRADER_DEFAULT_AMOUNT = "10%" # сколько покупать/продавать
-
-
-def _load_trader_config():
-    global crypto_trader_config
-    try:
-        with open(TRADER_CONFIG_FILE, "r", encoding="utf-8") as f:
-            crypto_trader_config = _json.load(f)
-    except Exception:
-        crypto_trader_config = {}
-
-
-def _save_trader_config():
-    try:
-        with open(TRADER_CONFIG_FILE, "w", encoding="utf-8") as f:
-            _json.dump(crypto_trader_config, f, ensure_ascii=False, indent=2)
-    except Exception as e:
-        logging.warning(f"trader_config save: {e}")
-
-
-def _trader_coin_cfg(phone: str, coin: str) -> dict:
-    """Возвращает конфиг монеты, создавая дефолт если не задан."""
-    crypto_trader_config.setdefault(phone, {})
-    crypto_trader_config[phone].setdefault(coin, {
-        "buy_drop":  TRADER_DEFAULT_DROP,
-        "sell_rise": TRADER_DEFAULT_RISE,
-        "amount":    TRADER_DEFAULT_AMOUNT,
-        "enabled":   True,
-    })
-    return crypto_trader_config[phone][coin]
 
 
 # ── Парсинг цен с листинга биржи ──────────────────────────
@@ -3737,14 +3535,11 @@ async def _run_crypto_autotrader(user_id: int, phone: str, notify_chat_id: int):
 
     База сбрасывается при каждой продаже — цикл начинается заново.
     """
-    from Bot import _get_connected_client
     client = await _get_connected_client(phone)
     if not client:
+        crypto_trader_active.discard(phone)
         await bot.send_message(notify_chat_id, f"❌ Сессия {phone} не подключена")
         return
-
-    _load_trader_config()
-    crypto_trader_active.add(phone)
 
     # { coin: base_price }  — цена в момент первого замера (до покупки)
     base_prices: dict[str, float] = {}
@@ -3775,23 +3570,13 @@ async def _run_crypto_autotrader(user_id: int, phone: str, notify_chat_id: int):
                 await asyncio.sleep(TRADER_CHECK_INTERVAL)
                 continue
 
-            cfg = crypto_trader_config.get(phone, {})
-            drop   = cfg.get("__global_drop",   TRADER_DEFAULT_DROP)
-            rise   = cfg.get("__global_rise",   TRADER_DEFAULT_RISE)
-            amount = cfg.get("__global_amount", TRADER_DEFAULT_AMOUNT)
-
             actions = []
 
             for coin, current_price in prices.items():
-                # Пропускаем монеты отключённые вручную
-                coin_cfg = cfg.get(coin, {})
-                if coin_cfg.get("enabled") is False:
-                    continue
-
-                # Персональные параметры монеты (если заданы через /trader_set)
-                c_drop   = coin_cfg.get("buy_drop",  drop)
-                c_rise   = coin_cfg.get("sell_rise", rise)
-                c_amount = coin_cfg.get("amount",    amount)
+                # Для всех сессий и монет используются системные значения.
+                c_drop = TRADER_DEFAULT_DROP
+                c_rise = TRADER_DEFAULT_RISE
+                c_amount = TRADER_DEFAULT_AMOUNT
 
                 # ── Фаза 2: монета куплена — ждём роста ──────────────────
                 if coin in bought_at:
@@ -3866,180 +3651,6 @@ async def _run_crypto_autotrader(user_id: int, phone: str, notify_chat_id: int):
         await bot.send_message(
             notify_chat_id,
             f"⏹ <b>Автотрейдер остановлен</b> — <code>{phone}</code>",
-            parse_mode=ParseMode.HTML
-        )
-
-
-# ── UI-хендлеры автотрейдера ──────────────────────────────
-
-@dp.callback_query(lambda c: c.data and c.data.startswith("dodeeper_trader_") and not c.data.startswith("dodeeper_trader_toggle_") and not c.data.startswith("dodeeper_trader_cfg_") and not c.data.startswith("dodeeper_trader_stat_"))
-async def dodeeper_trader_menu(callback: types.CallbackQuery):
-    await callback.answer()
-    phone = callback.data.replace("dodeeper_trader_", "")
-    running = phone in crypto_trader_active
-    status = "🟢 Работает" if running else "🔴 Остановлен"
-    await safe_edit_message(
-        callback.message,
-        f"📈 <b>Автотрейдер</b>\n\nСессия: <code>{phone}</code>\nСтатус: {status}\n\n"
-        f"Покупка при падении: -{TRADER_DEFAULT_DROP}%\n"
-        f"Продажа при росте: +{TRADER_DEFAULT_RISE}%\n"
-        f"Объём сделки: {TRADER_DEFAULT_AMOUNT}",
-        reply_markup=get_dodeeper_trader_keyboard(phone)
-    )
-
-
-@dp.callback_query(lambda c: c.data and c.data.startswith("dodeeper_trader_toggle_"))
-async def dodeeper_trader_toggle(callback: types.CallbackQuery):
-    await callback.answer()
-    phone = callback.data.replace("dodeeper_trader_toggle_", "")
-    user_id = callback.from_user.id
-    chat_id = callback.message.chat.id
-
-    if phone in crypto_trader_active:
-        crypto_trader_active.discard(phone)
-        await safe_edit_message(
-            callback.message,
-            f"⏹ Автотрейдер для <code>{phone}</code> остановлен",
-            reply_markup=get_dodeeper_trader_keyboard(phone)
-        )
-    else:
-        asyncio.create_task(_run_crypto_autotrader(user_id, phone, chat_id))
-        await safe_edit_message(
-            callback.message,
-            f"▶️ Автотрейдер для <code>{phone}</code> запущен\n"
-            f"Первая проверка цен через {TRADER_CHECK_INTERVAL} сек",
-            reply_markup=get_dodeeper_trader_keyboard(phone)
-        )
-
-
-@dp.callback_query(lambda c: c.data and c.data.startswith("dodeeper_trader_stat_"))
-async def dodeeper_trader_stat(callback: types.CallbackQuery):
-    await callback.answer()
-    phone = callback.data.replace("dodeeper_trader_stat_", "")
-    stats = crypto_trader_stats.get(phone, {})
-    if not stats:
-        text = f"📊 Статистика <code>{phone}</code>\n\nСделок пока не было."
-    else:
-        lines = []
-        for coin, s in stats.items():
-            lines.append(f"<b>{coin.upper()}</b>: куплено {s['buys']}, продано {s['sells']}")
-        text = f"📊 Статистика <code>{phone}</code>\n\n" + "\n".join(lines)
-
-    await safe_edit_message(
-        callback.message,
-        text,
-        reply_markup=get_dodeeper_trader_keyboard(phone)
-    )
-
-
-@dp.callback_query(lambda c: c.data and c.data.startswith("dodeeper_trader_cfg_"))
-async def dodeeper_trader_cfg(callback: types.CallbackQuery):
-    await callback.answer()
-    phone = callback.data.replace("dodeeper_trader_cfg_", "")
-    _load_trader_config()
-    cfg = crypto_trader_config.get(phone, {})
-    coins_cfg = "\n".join(
-        f"  {c}: drop={v.get('buy_drop', TRADER_DEFAULT_DROP)}% "
-        f"rise={v.get('sell_rise', TRADER_DEFAULT_RISE)}% "
-        f"amount={v.get('amount', TRADER_DEFAULT_AMOUNT)} "
-        f"{'✅' if v.get('enabled', True) else '❌'}"
-        for c, v in cfg.items()
-    ) or "  (дефолт для всех монет)"
-
-    text = (
-        f"⚙️ <b>Параметры автотрейдера</b> <code>{phone}</code>\n\n"
-        f"Чтобы изменить параметры — отправь команду:\n"
-        f"<code>/trader_set {phone} &lt;монета&gt; drop=3 rise=5 amount=25%</code>\n\n"
-        f"<b>Текущие настройки:</b>\n{coins_cfg}\n\n"
-        f"Монета: название как в боте (xrp, btc, sol...)\n"
-        f"drop — % падения для покупки\n"
-        f"rise — % роста для продажи\n"
-        f"amount — 10%, 25%, 50%, максимум"
-    )
-    await safe_edit_message(
-        callback.message,
-        text,
-        reply_markup=get_dodeeper_trader_keyboard(phone)
-    )
-
-
-@dp.message(lambda m: m.text and m.text.startswith("/trader_set"))
-async def trader_set_handler(message: types.Message):
-    """
-    Глобальные параметры (для всех монет):
-      /trader_set <phone> drop=5 rise=5 amount=25%
-
-    Параметры конкретной монеты:
-      /trader_set <phone> xrp drop=4 rise=6 amount=50%
-      /trader_set <phone> btc enabled=false
-
-    Примеры:
-      /trader_set +79172993848 drop=5 rise=5 amount=25%
-      /trader_set +79172993848 xrp drop=3 rise=7
-    """
-    parts = message.text.split()
-    if len(parts) < 3:
-        await message.answer(
-            "Формат:\n"
-            "<code>/trader_set &lt;phone&gt; drop=5 rise=5 amount=25%</code> — глобально\n"
-            "<code>/trader_set &lt;phone&gt; &lt;монета&gt; drop=3 rise=7</code> — для монеты",
-            parse_mode=ParseMode.HTML
-        )
-        return
-
-    phone = parts[1]
-    _load_trader_config()
-    crypto_trader_config.setdefault(phone, {})
-
-    # Определяем: часть[2] — монета или параметр?
-    maybe_coin = parts[2].lower()
-    is_param   = "=" in maybe_coin
-    coin       = None if is_param else maybe_coin
-    param_parts = parts[2:] if is_param else parts[3:]
-
-    parsed = {}
-    for p in param_parts:
-        if "=" in p:
-            k, v = p.split("=", 1)
-            k, v = k.strip().lower(), v.strip()
-            if k == "drop":
-                try: parsed["buy_drop"] = float(v)
-                except ValueError: pass
-            elif k == "rise":
-                try: parsed["sell_rise"] = float(v)
-                except ValueError: pass
-            elif k == "amount":
-                parsed["amount"] = v
-            elif k == "enabled":
-                parsed["enabled"] = v.lower() in ("1", "true", "да", "yes")
-
-    if coin:
-        # Применяем к конкретной монете
-        cfg = _trader_coin_cfg(phone, coin)
-        cfg.update(parsed)
-        _save_trader_config()
-        await message.answer(
-            f"✅ <b>{coin.upper()}</b> для <code>{phone}</code>:\n"
-            f"  падение: <b>{cfg.get('buy_drop', TRADER_DEFAULT_DROP)}%</b>\n"
-            f"  рост: <b>{cfg.get('sell_rise', TRADER_DEFAULT_RISE)}%</b>\n"
-            f"  объём: <b>{cfg.get('amount', TRADER_DEFAULT_AMOUNT)}</b>\n"
-            f"  активна: <b>{'да' if cfg.get('enabled', True) else 'нет'}</b>",
-            parse_mode=ParseMode.HTML
-        )
-    else:
-        # Применяем глобально
-        if "buy_drop"  in parsed: crypto_trader_config[phone]["__global_drop"]   = parsed["buy_drop"]
-        if "sell_rise" in parsed: crypto_trader_config[phone]["__global_rise"]   = parsed["sell_rise"]
-        if "amount"    in parsed: crypto_trader_config[phone]["__global_amount"] = parsed["amount"]
-        _save_trader_config()
-        d = crypto_trader_config[phone].get("__global_drop",   TRADER_DEFAULT_DROP)
-        r = crypto_trader_config[phone].get("__global_rise",   TRADER_DEFAULT_RISE)
-        a = crypto_trader_config[phone].get("__global_amount", TRADER_DEFAULT_AMOUNT)
-        await message.answer(
-            f"✅ Глобальные параметры для <code>{phone}</code>:\n"
-            f"  📉 покупка при падении: <b>-{d}%</b>\n"
-            f"  📈 продажа при росте: <b>+{r}%</b>\n"
-            f"  💰 объём: <b>{a}</b>",
             parse_mode=ParseMode.HTML
         )
 
