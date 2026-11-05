@@ -350,7 +350,7 @@ async def _api_json(
         return data
 
 
-async def fetch_repository_context(telegram_user_id: int, reference: str) -> Dict[str, str]:
+async def fetch_repository_context(telegram_user_id: int, reference: str, branch_override: Optional[str] = None) -> Dict[str, str]:
     full_name = _repository_full_name(reference)
     record = get_user_installation(telegram_user_id)
     if not record:
@@ -359,7 +359,7 @@ async def fetch_repository_context(telegram_user_id: int, reference: str) -> Dic
     timeout = aiohttp.ClientTimeout(total=60)
     async with aiohttp.ClientSession(timeout=timeout) as session:
         repo_data = await _api_json(session, "GET", "/repos/" + full_name, token)
-        branch = repo_data.get("default_branch") or "main"
+        branch = branch_override or repo_data.get("default_branch") or "main"
         encoded_branch = quote(branch, safe="")
         branch_ref = await _api_json(
             session, "GET",
@@ -461,6 +461,7 @@ async def create_repository_pull_request(
     files: List[tuple],
     title: str,
     body: str = "",
+    base_branch_override: Optional[str] = None,
 ) -> Dict[str, str]:
     full_name = _repository_full_name(full_name)
     if not files:
@@ -491,7 +492,7 @@ async def create_repository_pull_request(
     timeout = aiohttp.ClientTimeout(total=120)
     async with aiohttp.ClientSession(timeout=timeout) as session:
         repo_data = await _api_json(session, "GET", "/repos/" + full_name, token)
-        base_branch = repo_data.get("default_branch") or "main"
+        base_branch = base_branch_override or repo_data.get("default_branch") or "main"
         encoded_branch = quote(base_branch, safe="")
         ref_data = await _api_json(
             session, "GET", "/repos/{}/git/ref/heads/{}".format(full_name, encoded_branch), token
