@@ -172,36 +172,40 @@ def get_all_premium() -> Dict[int, Dict]:
 # ============ РАЗБОР "юз/айди" ИЗ АРГУМЕНТОВ АДМИН-КОМАНД ============
 
 async def resolve_user_id(bot, arg: str) -> Optional[int]:
-    """Принимает либо числовой user_id, либо @username и возвращает
-    numeric user_id (или None, если распознать не удалось).
+    """Resolve a numeric Telegram ID or a username already visible to the bot."""
+    value = (arg or "").strip()
+    if not value:
+        return None
+    if value.lstrip("-").isdigit():
+        return int(value)
 
-    get_chat корректно работает для каналов и групп, но для обычных
-    пользователей (user) Bot API может вернуть ошибку "Chat not found",
-    если бот с ним никогда не общался. Поэтому сначала пробуем получить
-    из кэша known_users (если передан), затем get_chat."""
-    arg = arg.strip()
-    if arg.lstrip('-').isdigit():
-        return int(arg)
-    username = arg.lstrip('@').lower()
-    # Пробуем через Bot API
+    if "t.me/" in value:
+        value = value.split("t.me/", 1)[1].split("/", 1)[0].split("?", 1)[0]
+    username = value.lstrip("@").strip().lower()
+    if not username:
+        return None
+
+    # Users who have already opened the bot are resolved from the local registry.
+    known = getattr(bot, "_known_users_ref", None)
+    if isinstance(known, dict):
+        for uid, info in known.items():
+            if isinstance(info, dict) and (info.get("username") or "").strip().lower() == username:
+                try:
+                    return int(uid)
+                except (TypeError, ValueError):
+                    continue
+
+    # Bot API cannot search arbitrary Telegram users; it resolves only visible chats/users.
     try:
-        chat = await bot.get_chat(f"@{username}")
-        return chat.id
-    except Exception:
-        pass
-    # Если бот не знает этого чата — ищем в known_users по username
-    try:
-        # known_users живёт в Bot.py; импортировать нельзя из-за циклических
-        # зависимостей, поэтому ищем через bot.get_updates (нет) —
-        # используем атрибут переданного bot._known_users если он есть
-        ku = getattr(bot, '_known_users_ref', None)
-        if ku:
-            for uid, info in ku.items():
-                if (info.get("username") or "").lower() == username:
-                    return uid
-    except Exception:
-        pass
-    logging.error(f"❌ resolve_user_id: не удалось найти @{username}")
+        chat = await bot.get_chat("@" + username)
+        return int(chat.id)
+    except Exception as exc:
+        logging.info("resolve_user_id: Bot API не разрешил @%s (%s)", username, type(exc).__name__)
+
+    logging.warning(
+        "resolve_user_id: @%s отсутствует в реестре; попросите пользователя отправить /start "
+        "или передать числовой Telegram ID", username
+    )
     return None
 
 
