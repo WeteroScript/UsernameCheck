@@ -638,6 +638,79 @@ async def main_menu(callback: types.CallbackQuery, state: FSMContext):
     )
 
 
+@dp.callback_query(lambda c: c.data == "github_menu")
+async def github_menu(callback: types.CallbackQuery):
+    await callback.answer()
+    user_id = callback.from_user.id
+    installation = github_get_user_installation(user_id)
+    if installation:
+        text = (
+            "🐙 <b>GitHub подключён</b>\n\n"
+            + "Аккаунт: <b>@" + html.escape(installation.get("account_login", "unknown")) + "</b>\n"
+            + "Доступ ограничен репозиториями, выбранными при установке GitHub App."
+        )
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="📁 Мои репозитории", callback_data="github_repos")],
+            [InlineKeyboardButton(text="🔌 Отключить GitHub", callback_data="github_disconnect")],
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data="main")],
+        ])
+    else:
+        text = "🐙 <b>Подключение GitHub</b>\n\nПодключи аккаунт и выбери репозитории, к которым бот получит доступ."
+        setup_error = github_configuration_error()
+        if setup_error:
+            text += "\n\n⚠️ Администратору нужно настроить GitHub App в Bothost."
+            keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад", callback_data="main")]])
+        else:
+            install_url = github_create_install_url(user_id)
+            keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🔗 Подключить GitHub", url=install_url)],
+                [InlineKeyboardButton(text="⬅️ Назад", callback_data="main")],
+            ])
+    await callback.message.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=keyboard)
+
+
+@dp.callback_query(lambda c: c.data == "github_repos")
+async def github_repositories(callback: types.CallbackQuery):
+    await callback.answer("Загружаю репозитории…")
+    try:
+        repositories = await github_list_user_repositories(callback.from_user.id)
+    except Exception as exc:
+        logging.exception("Не удалось получить репозитории GitHub")
+        text = "Ошибка загрузки репозиториев: " + html.escape(str(exc)[:500])
+    else:
+        if not repositories:
+            text = "Нет доступных репозиториев. Проверь выбранные репозитории в настройках GitHub App."
+        else:
+            lines = ["📁 <b>Доступные репозитории</b>", ""]
+            for item in repositories[:30]:
+                name = html.escape(item["full_name"])
+                url = html.escape(item["html_url"], quote=True)
+                visibility = "private" if item["private"] else "public"
+                lines.append("• <a href=\"" + url + "\">" + name + "</a> — " + visibility)
+            if len(repositories) > 30:
+                lines.append("Показаны первые 30 из {} репозиториев.".format(len(repositories)))
+            text = "\n".join(lines)
+    await callback.message.edit_text(
+        text, parse_mode=ParseMode.HTML, disable_web_page_preview=True,
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🔄 Обновить", callback_data="github_repos")],
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data="github_menu")],
+        ]),
+    )
+
+
+@dp.callback_query(lambda c: c.data == "github_disconnect")
+async def github_disconnect(callback: types.CallbackQuery):
+    await callback.answer()
+    github_remove_user_installation(callback.from_user.id)
+    await callback.message.edit_text(
+        "GitHub отключён от аккаунта Telegram.",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🐙 GitHub", callback_data="github_menu")],
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data="main")],
+        ]),
+    )
+
 @dp.callback_query(lambda c: c.data == "bot_settings_menu")
 async def bot_settings_menu(callback: types.CallbackQuery):
     """Раздел настроек бота: смена языка."""
