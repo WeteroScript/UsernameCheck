@@ -568,8 +568,13 @@ async def create_repository_pull_request(
             session, "POST", "/repos/{}/git/commits".format(full_name), token,
             {"message": safe_title, "tree": tree["sha"], "parents": [base_sha]},
         )
-        # Сверяем commit с базовой веткой до создания PR. Это исключает PR
-        # без реальных отличий (например, когда модель вернула прежний файл).
+        branch_name = "ai/telegram-" + uuid.uuid4().hex[:10]
+        await _api_json(
+            session, "POST", "/repos/{}/git/refs".format(full_name), token,
+            {"ref": "refs/heads/" + branch_name, "sha": commit["sha"]},
+        )
+
+        # Compare API resolves the head reliably after its branch ref exists.
         compare_data = await _api_json(
             session,
             "GET",
@@ -582,16 +587,16 @@ async def create_repository_pull_request(
             if isinstance(item, dict) and isinstance(item.get("filename"), str)
         ]
         if not changed_files:
+            await _api_json(
+                session,
+                "DELETE",
+                "/repos/{}/git/refs/heads/{}".format(full_name, quote(branch_name, safe="")),
+                token,
+            )
             raise RuntimeError(
                 "GitHub не обнаружил реальных отличий между подготовленным коммитом "
-                "и базовой веткой. Pull Request не создан."
+                "и базовой веткой. Временная ветка удалена, Pull Request не создан."
             )
-
-        branch_name = "ai/telegram-" + uuid.uuid4().hex[:10]
-        await _api_json(
-            session, "POST", "/repos/{}/git/refs".format(full_name), token,
-            {"ref": "refs/heads/" + branch_name, "sha": commit["sha"]},
-        )
         pull = await _api_json(
             session, "POST", "/repos/{}/pulls".format(full_name), token,
             {
