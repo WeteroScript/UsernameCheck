@@ -118,6 +118,17 @@ SYSTEM_PROMPT = (
     "Не заявляй, что вложение готово, пока не вернул его полное содержимое в блоке FILE."
 )
 SYSTEM_PROMPT += (
+    "СТИЛЬ ОТОБРАЖАЕМОГО ОТВЕТА: обычные ответы пиши простым, естественным текстом на языке пользователя. "
+    "Не добавляй названия файлов, расширения, пути, технические метки, названия языков программирования "
+    "и служебные подписи. Не используй Markdown-разметку, тройные кавычки, блоки кода, декоративные "
+    "символы, стрелки, подчёркивания, каретки, лишние кавычки, точки с запятой и нагромождение "
+    "знаков препинания. Не вставляй слова bash, python, json и подобные обозначения в обычный ответ. "
+    "Формулируй мысли короткими абзацами и обычными предложениями. Сохраняй нормальную пунктуацию, "
+    "если она нужна для смысла. Исходный код возвращай только внутри обязательных FILE или GITHUB_FILE "
+    "блоков, когда пользователь прямо просит код или файлы. Вне этих блоков объясняй результат "
+    "человеческим языком и не перечисляй имена созданных файлов. "
+)
+SYSTEM_PROMPT += (
     "РАБОТА С GITHUB: если пользователь прислал ссылку на репозиторий GitHub, бот может передать тебе "
     "снимок доступных текстовых файлов этого репозитория. Изучи структуру и существующий код до "
     "предложения изменений. Не утверждай, что видишь файлы, которых нет в переданном снимке. "
@@ -762,6 +773,15 @@ def _chat_transcript(chat: Dict[str, Any]) -> str:
         for item in messages:
             role = "Ты" if item.get("role") == "user" else "ИИ"
             content = str(item.get("content", "")).strip()
+            # Скрываем технические блоки исходников из текстового просмотра истории.
+            content = re.sub(
+                r"\\[\\[(?:FILE|GITHUB_FILE):[^\\]]+\\]\\][\\s\\S]*?\\[\\[/(?:FILE|GITHUB_FILE)\\]\\]",
+                "",
+                content,
+                flags=re.IGNORECASE,
+            ).strip()
+            if not content:
+                content = "В этом сообщении были отправлены файлы."
             lines.append(f"{role}: {content}")
             lines.append("")
     text = "\n".join(lines).strip()
@@ -2016,14 +2036,8 @@ async def ai_chat_message(message: types.Message, state: FSMContext):
             )
             chat["github_branch"] = pull_request["branch"]
             changed_paths = pull_request.get("changed_files", [])
-            changed_summary = ", ".join(changed_paths[:20])
-            if len(changed_paths) > 20:
-                changed_summary += f" и ещё {len(changed_paths) - 20}"
-            commit_sha = str(pull_request.get("commit", ""))
             success_details = (
-                f"Подтверждено изменений: {len(changed_paths)} файл(ов)."
-                + (f" Файлы: {changed_summary}." if changed_summary else "")
-                + (f" Коммит: {commit_sha[:12]}." if commit_sha else "")
+                f"Изменения отправлены в GitHub. Обновлено файлов: {len(changed_paths)}."
             )
             visible_reply = (
                 (visible_reply + "\n\n" if visible_reply else "")
@@ -2101,7 +2115,7 @@ async def ai_chat_message(message: types.Message, state: FSMContext):
 
         await _stop_waiting_timer(waiting_timer)
         waiting_timer = None
-        display_text = f'"{model}" - {visible_reply}' if visible_reply else f'"{model}" - Файл готов.'
+        display_text = visible_reply if visible_reply else "Файл готов."
         chunks = _split_text(display_text)
         try:
             if waiting:
