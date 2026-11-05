@@ -444,6 +444,11 @@ async def fetch_repository_context(telegram_user_id: int, reference: str, branch
             return (basename in allowed_names or extension in allowed_extensions) and int(item.get("size", 0)) <= 20000
 
         candidates = [item for item in entries if safe_entry(item)]
+        # Полный манифест путей не даёт модели принять ограниченный снимок за весь репозиторий.
+        repository_inventory = [
+            item["path"] for item in entries
+            if isinstance(item.get("path"), str) and safe_entry(item)
+        ]
         priority_names = (
             "readme", "readme.md", "dockerfile", "makefile", "pyproject.toml", "requirements.txt", "package.json",
             "dockerfile", "compose.yaml", "compose.yml", "tsconfig.json",
@@ -456,7 +461,7 @@ async def fetch_repository_context(telegram_user_id: int, reference: str, branch
         files = []
         total_bytes = 0
         for item in candidates:
-            if len(files) >= 30 or total_bytes >= 100000:
+            if len(files) >= 60 or total_bytes >= 250000:
                 break
             try:
                 blob = await _api_json(
@@ -479,7 +484,12 @@ async def fetch_repository_context(telegram_user_id: int, reference: str, branch
         "GitHub repository: " + full_name,
         "Default branch: " + branch,
         "Repository URL: " + repo_data.get("html_url", "https://github.com/" + full_name),
-        "Файлы ниже — ограниченный снимок репозитория. Если нужного файла нет, попроси пользователя указать путь.",
+        "Ниже приведён манифест путей и ограниченный снимок содержимого. Отсутствие файла в снимке "
+        "НЕ означает, что файла нет в GitHub. Если для изменения нужен файл, который не попал в снимок, "
+        "запроси его путь/содержимое.",
+        "Repository file inventory (" + str(len(repository_inventory)) + " paths):",
+        *repository_inventory[:2000],
+        "Fetched file contents (" + str(len(files)) + " files; cap 60 files / 250 KB):",
     ]
     for path, file_content in files:
         sections.append("\n--- FILE: " + path + " ---\n" + file_content)
