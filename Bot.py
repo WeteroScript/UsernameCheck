@@ -705,7 +705,7 @@ async def github_disconnect(callback: types.CallbackQuery):
     await callback.answer()
     github_remove_user_installation(callback.from_user.id)
     await callback.message.edit_text(
-        "GitHub отключён от аккаунта Telegram.",
+        "Привязка GitHub в боте удалена. Установка приложения остаётся в GitHub, пока пользователь не удалит её в настройках GitHub.",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="🐙 GitHub", callback_data="github_menu")],
             [InlineKeyboardButton(text="⬅️ Назад", callback_data="main")],
