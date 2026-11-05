@@ -2364,42 +2364,597 @@ async def bot_choice_callback(callback: types.CallbackQuery):
 
 # ============ АДМИН-КОМАНДЫ (Этап 0: премиум/админ-система) ============
 
-ADMIN_COMMANDS_HELP = (
-    f"🛠 <b>Команды администратора</b>\n"
-    f"Версия: <code>{APP_VERSION}</code>\n\n"
-    "✅ /addadmin (юз/айди) — выдать права админа\n"
-    "✅ /deladmin (юз/айди) — снять права админа\n"
-    "✅ /givepremium (юз/айди) (дней, по умолчанию 1) — выдать 💎 премиум\n"
-    "✅ /delpremium (юз/айди) — забрать 💎 премиум\n"
-    "✅ /setsessionlimit (юз/айди) (кол-во) — лимит сессий для пользователя\n"
-    "✅ /ban (юз/айди) (причина)\n"
-    "✅ /unban (юз/айди) (причина)\n"
-    "✅ /mail (текст) — рассылка всем\n"
-    "✅ /mailuser (юз/айди) (текст)\n"
-    "✅ /addchannel (айди) (часы) — обязательная подписка\n"
-    "✅ /delchannel (айди)\n"
-    "✅ /technical (on/off)\n"
-    "✅ /blockTechPod (юз/айди)\n"
-    "✅ /unblockTechPod (юз/айди)\n"
-    "✅ /sessions — управление всеми сессиями\n"
-    "✅ /offallsession\n"
-    "✅ /stopalltasks"
-)
+class AdminPanelStates(StatesGroup):
+    waiting_input = State()
 
 
-@dp.callback_query(lambda c: c.data == "adm_help")
+ADMIN_COMMAND_GROUPS = {
+    "admins": ("👥 Администраторы", [
+        ("➕ Назначить администратора", "addadmin"),
+        ("➖ Снять права администратора", "deladmin"),
+    ]),
+    "access": ("💎 Premium и доступ", [
+        ("💎 Выдать Premium", "givepremium"),
+        ("Убрать Premium", "delpremium"),
+        ("📱 Изменить лимит сессий", "setsessionlimit"),
+        ("⛔ Заблокировать пользователя", "ban"),
+        ("✅ Снять блокировку", "unban"),
+        ("🔧 Переключить техработы", "technical"),
+        ("🚫 Закрыть доступ к поддержке", "blockTechPod"),
+        ("🟢 Вернуть доступ к поддержке", "unblockTechPod"),
+    ]),
+    "messages": ("📨 Сообщения", [
+        ("📢 Сделать рассылку", "mail"),
+        ("✉️ Написать пользователю", "mailuser"),
+    ]),
+    "channels": ("📢 Обязательная подписка", [
+        ("➕ Добавить канал или группу", "addchannel"),
+        ("➖ Удалить канал или группу", "delchannel"),
+    ]),
+    "sessions": ("📱 Сессии", [
+        ("📋 Посмотреть все сессии", "sessions"),
+        ("⏹ Отключить все сессии", "offallsession"),
+        ("⏸ Остановить все задания", "stopalltasks"),
+        ("📦 Скачать архив сессий", "downloadsessions"),
+        ("📂 Загрузить файл сессии", "loadfilesession"),
+    ]),
+    "tools": ("🧾 Чеки", [
+        ("🔗 Создать чек", "createcheck"),
+    ]),
+}
+
+ADMIN_ACTION_GROUP = {
+    action: group
+    for group, (_, actions) in ADMIN_COMMAND_GROUPS.items()
+    for _, action in actions
+}
+
+BUTTON_CONTROL_SECTIONS = {
+    "automation": ("🤖 Автоматизация", [
+        ("bots", "🤖 Боты", "bots"),
+        ("gram", "📣 Gram-бот", "bot_prgramm"),
+        ("accounts", "📱 Аккаунты", "accounts"),
+        ("channels", "📢 Каналы", "channels_menu"),
+    ]),
+    "tools": ("🧰 Инструменты", [
+        ("usernames", "👤 Юзернеймы", "users"),
+        ("shakalizer", "📉 Шакализатор", "shakalizer_menu"),
+        ("gifts", "🎁 Подарки", "gifts_menu"),
+        ("video", "🎥 Скачать видео", "video_menu"),
+    ]),
+    "ai": ("🧠 ИИ и GitHub", [
+        ("ai_chat", "💬 Чат с ИИ", "ai_menu"),
+        ("github", "🐙 GitHub", "github_menu"),
+    ]),
+    "profile": ("👤 Профиль и помощь", [
+        ("get_id", "🆔 Получить ID", "getid_menu"),
+        ("premium", "💎 Премиум", "premium_menu"),
+        ("bug_report", "🐛 Сообщить о баге", "bugreport_menu"),
+    ]),
+}
+
+BUTTON_CONTROL_BY_SLUG = {
+    slug: {"label": label, "callback_data": callback_data, "section": section}
+    for section, (_, items) in BUTTON_CONTROL_SECTIONS.items()
+    for slug, label, callback_data in items
+}
+BUTTON_CONTROL_FILE = "button_restrictions.json"
+DISABLED_MENU_BUTTONS = set()
+
+
+def _load_disabled_menu_buttons():
+    global DISABLED_MENU_BUTTONS
+    try:
+        with open(BUTTON_CONTROL_FILE, "r", encoding="utf-8") as file:
+            stored = json.load(file)
+        if isinstance(stored, list):
+            valid_callbacks = {
+                item["callback_data"] for item in BUTTON_CONTROL_BY_SLUG.values()
+            }
+            DISABLED_MENU_BUTTONS = {
+                str(value) for value in stored if str(value) in valid_callbacks
+            }
+    except FileNotFoundError:
+        DISABLED_MENU_BUTTONS = set()
+    except Exception:
+        logging.exception("Не удалось загрузить настройки отключённых кнопок меню")
+        DISABLED_MENU_BUTTONS = set()
+
+
+def _save_disabled_menu_buttons():
+    temporary_path = BUTTON_CONTROL_FILE + ".tmp"
+    with open(temporary_path, "w", encoding="utf-8") as file:
+        json.dump(sorted(DISABLED_MENU_BUTTONS), file, ensure_ascii=False, indent=2)
+    os.replace(temporary_path, BUTTON_CONTROL_FILE)
+
+
+_load_disabled_menu_buttons()
+
+
+def get_admin_panel_keyboard() -> InlineKeyboardMarkup:
+    rows = []
+    for group, (title, _) in ADMIN_COMMAND_GROUPS.items():
+        rows.append([InlineKeyboardButton(text=title, callback_data=f"adm_group_{group}")])
+    rows.append([InlineKeyboardButton(text="🎛 Управление кнопками", callback_data="adm_buttons")])
+    rows.append([InlineKeyboardButton(text="⬅️ Главное меню", callback_data="main")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def get_admin_group_keyboard(group: str) -> InlineKeyboardMarkup:
+    config = ADMIN_COMMAND_GROUPS[group]
+    rows = []
+    for label, action in config[1]:
+        if action == "technical":
+            status = "включены" if is_technical_mode() else "выключены"
+            label = f"🔧 Техработы: {status}"
+        rows.append([InlineKeyboardButton(text=label, callback_data=f"adm_action_{action}")])
+    rows.append([InlineKeyboardButton(text="⬅️ К разделам панели", callback_data="adm_help")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def get_button_control_keyboard() -> InlineKeyboardMarkup:
+    rows = [
+        [InlineKeyboardButton(text=title, callback_data=f"adm_buttons_section_{section}")]
+        for section, (title, _) in BUTTON_CONTROL_SECTIONS.items()
+    ]
+    rows.append([InlineKeyboardButton(text="⬅️ К админ-панели", callback_data="adm_help")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def get_button_control_section_keyboard(section: str) -> InlineKeyboardMarkup:
+    rows = []
+    for slug, label, callback_data in BUTTON_CONTROL_SECTIONS[section][1]:
+        status = "🔴 Отключена" if callback_data in DISABLED_MENU_BUTTONS else "🟢 Включена"
+        rows.append([InlineKeyboardButton(
+            text=f"{status} · {label}",
+            callback_data=f"adm_buttons_toggle_{slug}",
+        )])
+    rows.append([InlineKeyboardButton(text="⬅️ К разделам кнопок", callback_data="adm_buttons")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+@dp.callback_query(lambda c: c.data in ("adm_help", "adm_panel"))
 async def adm_help_callback(callback: types.CallbackQuery):
-    await callback.answer()
     if not is_admin(callback.from_user.id):
+        await callback.answer("Недостаточно прав.", show_alert=True)
         return
+    await callback.answer()
     await safe_edit_message(
         callback.message,
-        ADMIN_COMMANDS_HELP,
+        "🛠 <b>Панель управления</b>\n\n"
+        "Все команды собраны по разделам. Выбери, чем нужно заняться:",
         parse_mode=ParseMode.HTML,
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="⬅️ Назад", callback_data="main")]
-        ])
+        reply_markup=get_admin_panel_keyboard(),
     )
+
+
+@dp.callback_query(lambda c: c.data and c.data.startswith("adm_group_"))
+async def adm_group_callback(callback: types.CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Недостаточно прав.", show_alert=True)
+        return
+    group = callback.data[len("adm_group_"):]
+    if group not in ADMIN_COMMAND_GROUPS:
+        await callback.answer("Раздел не найден.", show_alert=True)
+        return
+    await callback.answer()
+    title = ADMIN_COMMAND_GROUPS[group][0]
+    await safe_edit_message(
+        callback.message,
+        f"<b>{title}</b>\n\nВыбери действие:",
+        parse_mode=ParseMode.HTML,
+        reply_markup=get_admin_group_keyboard(group),
+    )
+
+
+@dp.callback_query(lambda c: c.data == "adm_buttons")
+async def adm_buttons_callback(callback: types.CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Недостаточно прав.", show_alert=True)
+        return
+    await callback.answer()
+    await safe_edit_message(
+        callback.message,
+        "🎛 <b>Управление кнопками</b>\n\n"
+        "Выбери раздел главного меню. Здесь можно временно отключить любую функцию внутри раздела.",
+        parse_mode=ParseMode.HTML,
+        reply_markup=get_button_control_keyboard(),
+    )
+
+
+@dp.callback_query(lambda c: c.data and c.data.startswith("adm_buttons_section_"))
+async def adm_buttons_section_callback(callback: types.CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Недостаточно прав.", show_alert=True)
+        return
+    section = callback.data[len("adm_buttons_section_"):]
+    if section not in BUTTON_CONTROL_SECTIONS:
+        await callback.answer("Раздел не найден.", show_alert=True)
+        return
+    await callback.answer()
+    title = BUTTON_CONTROL_SECTIONS[section][0]
+    await safe_edit_message(
+        callback.message,
+        f"🎛 <b>{title}</b>\n\n"
+        "Нажми на кнопку, чтобы включить или отключить её. Навигация и кнопки «Назад» здесь не затрагиваются.",
+        parse_mode=ParseMode.HTML,
+        reply_markup=get_button_control_section_keyboard(section),
+    )
+
+
+@dp.callback_query(lambda c: c.data and c.data.startswith("adm_buttons_toggle_"))
+async def adm_buttons_toggle_callback(callback: types.CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Недостаточно прав.", show_alert=True)
+        return
+    slug = callback.data[len("adm_buttons_toggle_"):]
+    item = BUTTON_CONTROL_BY_SLUG.get(slug)
+    if not item:
+        await callback.answer("Кнопка не найдена.", show_alert=True)
+        return
+    callback_data = item["callback_data"]
+    if callback_data in DISABLED_MENU_BUTTONS:
+        DISABLED_MENU_BUTTONS.remove(callback_data)
+        answer = "Кнопка снова включена."
+    else:
+        DISABLED_MENU_BUTTONS.add(callback_data)
+        answer = "Кнопка отключена для пользователей."
+    try:
+        _save_disabled_menu_buttons()
+    except Exception:
+        logging.exception("Не удалось сохранить состояние кнопки меню")
+        await callback.answer("Не удалось сохранить настройку.", show_alert=True)
+        return
+    await callback.answer(answer)
+    section = item["section"]
+    title = BUTTON_CONTROL_SECTIONS[section][0]
+    await safe_edit_message(
+        callback.message,
+        f"🎛 <b>{title}</b>\n\n"
+        "Нажми на кнопку, чтобы включить или отключить её. Навигация и кнопки «Назад» здесь не затрагиваются.",
+        parse_mode=ParseMode.HTML,
+        reply_markup=get_button_control_section_keyboard(section),
+    )
+
+
+async def _admin_prompt_input(callback: types.CallbackQuery, state: FSMContext,
+                              action: str, step: str, prompt: str):
+    group = ADMIN_ACTION_GROUP[action]
+    await state.update_data(admin_operation=action, admin_step=step, admin_group=group)
+    await state.set_state(AdminPanelStates.waiting_input)
+    await callback.answer()
+    await callback.message.edit_text(
+        prompt + "\n\nОтправь ответ следующим сообщением. Для отмены нажми кнопку ниже.",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="✖️ Отмена", callback_data="adm_input_cancel")]
+        ]),
+    )
+
+
+@dp.callback_query(lambda c: c.data and c.data.startswith("adm_action_"))
+async def adm_action_callback(callback: types.CallbackQuery, state: FSMContext):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Недостаточно прав.", show_alert=True)
+        return
+    action = callback.data[len("adm_action_"):]
+    group = ADMIN_ACTION_GROUP.get(action)
+    if not group:
+        await callback.answer("Команда не найдена.", show_alert=True)
+        return
+
+    if action == "sessions":
+        return await adm_sessions_list_callback(callback)
+
+    if action == "technical":
+        enabled = not is_technical_mode()
+        set_technical_mode(enabled)
+        await callback.answer("Технические работы " + ("включены." if enabled else "выключены."))
+        await safe_edit_message(
+            callback.message,
+            f"<b>{ADMIN_COMMAND_GROUPS[group][0]}</b>\n\nВыбери действие:",
+            parse_mode=ParseMode.HTML,
+            reply_markup=get_admin_group_keyboard(group),
+        )
+        return
+
+    if action in ("offallsession", "stopalltasks"):
+        title = "отключить все активные сессии" if action == "offallsession" else "остановить все активные задания"
+        await callback.answer()
+        await callback.message.edit_text(
+            f"Подтверди: действительно {title}?",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="Да, выполнить", callback_data=f"adm_confirm_{action}")],
+                [InlineKeyboardButton(text="Отмена", callback_data=f"adm_group_{group}")],
+            ]),
+        )
+        return
+
+    if action == "downloadsessions":
+        await callback.answer("Собираю файлы сессий…")
+        import io
+        import zipfile
+        buffer = io.BytesIO()
+        count = 0
+        with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+            for phones in user_sessions.values():
+                for phone in phones:
+                    filename = f"{phone.lstrip('+')}.session"
+                    if os.path.exists(filename):
+                        archive.write(filename)
+                        count += 1
+        if not count:
+            await callback.message.answer("Файлов сессий пока нет.")
+        else:
+            buffer.seek(0)
+            await callback.message.answer_document(
+                types.BufferedInputFile(buffer.read(), filename="sessions.zip"),
+                caption=f"Архив: {count} файлов сессий",
+            )
+        return
+
+    if action == "loadfilesession":
+        await callback.answer()
+        await state.set_state(SessionStates.waiting_session_file)
+        await callback.message.edit_text(
+            "📂 Отправь файл .session следующим сообщением. После загрузки он появится в списке сессий.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="⬅️ К админ-панели", callback_data="adm_help")]
+            ]),
+        )
+        return
+
+    if action == "createcheck":
+        await callback.answer()
+        await callback.message.edit_text(
+            "🔗 <b>Создание чека</b>\n\nШаг 1 из 4: пришли ссылку на чек PR GRAMM.",
+            parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="⬅️ К админ-панели", callback_data="adm_help")]
+            ]),
+        )
+        await state.set_state(CheckStates.waiting_check_url)
+        return
+
+    prompts = {
+        "addadmin": ("target", "Укажи @username или Telegram ID пользователя, которого нужно назначить администратором."),
+        "deladmin": ("target", "Укажи @username или Telegram ID администратора, чьи права нужно снять."),
+        "givepremium": ("target", "Кому выдать Premium? Пришли @username или Telegram ID."),
+        "delpremium": ("target", "У кого убрать Premium? Пришли @username или Telegram ID."),
+        "setsessionlimit": ("target", "Для кого изменить лимит сессий? Пришли @username или Telegram ID."),
+        "ban": ("target", "Кого заблокировать? Пришли @username или Telegram ID."),
+        "unban": ("target", "Кому снять блокировку? Пришли @username или Telegram ID."),
+        "mail": ("text", "Напиши текст рассылки. Он будет отправлен всем пользователям бота."),
+        "mailuser": ("target", "Кому отправить сообщение? Пришли @username или Telegram ID."),
+        "addchannel": ("channel_id", "Пришли ID канала или группы. Например: -1001234567890."),
+        "delchannel": ("channel_id", "Пришли ID канала или группы, которую нужно убрать из обязательной подписки."),
+        "blockTechPod": ("target", "Кому закрыть доступ к разделу сообщений об ошибках? Пришли @username или Telegram ID."),
+        "unblockTechPod": ("target", "Кому вернуть доступ к разделу сообщений об ошибках? Пришли @username или Telegram ID."),
+    }
+    step, prompt = prompts[action]
+    await _admin_prompt_input(callback, state, action, step, prompt)
+
+
+@dp.callback_query(lambda c: c.data and c.data.startswith("adm_confirm_"))
+async def adm_confirm_action_callback(callback: types.CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Недостаточно прав.", show_alert=True)
+        return
+    action = callback.data[len("adm_confirm_"):]
+    if action == "offallsession":
+        count = 0
+        for phone in list(active_clients.keys()):
+            try:
+                if phone in active_tasks:
+                    await stop_gram_bot(phone)
+                await active_clients[phone].disconnect()
+                del active_clients[phone]
+                count += 1
+            except Exception as exc:
+                logging.error("Не удалось отключить сессию %s: %s", phone, exc)
+        result = f"Отключено сессий: {count}."
+    elif action == "stopalltasks":
+        count = 0
+        for phone in list(active_tasks.keys()):
+            try:
+                await stop_gram_bot(phone)
+                count += 1
+            except Exception as exc:
+                logging.error("Не удалось остановить задание %s: %s", phone, exc)
+        result = f"Остановлено заданий: {count}. Сессии остались подключены."
+    else:
+        await callback.answer("Действие не найдено.", show_alert=True)
+        return
+    await callback.answer("Готово.")
+    await callback.message.edit_text(
+        result,
+        reply_markup=get_admin_group_keyboard("sessions"),
+    )
+
+
+@dp.callback_query(lambda c: c.data == "adm_input_cancel")
+async def adm_input_cancel_callback(callback: types.CallbackQuery, state: FSMContext):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Недостаточно прав.", show_alert=True)
+        return
+    data = await state.get_data()
+    group = data.get("admin_group", "admins")
+    if group not in ADMIN_COMMAND_GROUPS:
+        group = "admins"
+    await state.clear()
+    await callback.answer("Отменено.")
+    await callback.message.edit_text(
+        f"<b>{ADMIN_COMMAND_GROUPS[group][0]}</b>\n\nВыбери действие:",
+        parse_mode=ParseMode.HTML,
+        reply_markup=get_admin_group_keyboard(group),
+    )
+
+
+@dp.message(AdminPanelStates.waiting_input)
+async def admin_panel_input_handler(message: types.Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        await state.clear()
+        return
+    data = await state.get_data()
+    action = data.get("admin_operation")
+    step = data.get("admin_step")
+    group = data.get("admin_group", ADMIN_ACTION_GROUP.get(action, "admins"))
+    value = (message.text or "").strip()
+    if not value:
+        await message.answer("Пришли текстом, чтобы я мог обработать запрос.")
+        return
+    if value.lower() in ("/cancel", "отмена"):
+        await state.clear()
+        await message.answer("Операция отменена.", reply_markup=get_admin_group_keyboard(group))
+        return
+
+    async def ask_next(next_step: str, prompt: str):
+        await state.update_data(admin_step=next_step)
+        await message.answer(
+            prompt,
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="✖️ Отмена", callback_data="adm_input_cancel")]
+            ]),
+        )
+
+    async def finish(result: str):
+        await state.clear()
+        await message.answer(
+            result,
+            parse_mode=ParseMode.HTML,
+            reply_markup=get_admin_group_keyboard(group),
+        )
+
+    if action in ("mail",):
+        sent, failed = 0, 0
+        for user_id in list(known_users.keys()):
+            try:
+                await bot.send_message(user_id, value)
+                sent += 1
+            except Exception:
+                failed += 1
+            await asyncio.sleep(0.05)
+        await finish(f"Рассылка завершена. Доставлено: <b>{sent}</b>, не доставлено: <b>{failed}</b>.")
+        return
+
+    if action in ("addchannel", "delchannel") and step == "channel_id":
+        try:
+            channel_id = int(value)
+        except ValueError:
+            await message.answer("ID должен быть числом. Попробуй ещё раз.")
+            return
+        if action == "delchannel":
+            if remove_mandatory_channel(channel_id):
+                await finish(f"Канал или группа <code>{channel_id}</code> удалены из обязательной подписки.")
+            else:
+                await finish("Такого канала или группы в списке не было.")
+            return
+        await state.update_data(admin_channel_id=channel_id)
+        await ask_next("hours", "На сколько часов добавить канал? Пришли число. Укажи 0, если доступ должен быть бессрочным.")
+        return
+
+    if action == "addchannel" and step == "hours":
+        try:
+            hours_value = float(value)
+            if hours_value < 0:
+                raise ValueError
+        except ValueError:
+            await message.answer("Укажи неотрицательное число часов. Для бессрочного доступа отправь 0.")
+            return
+        channel_id = int(data.get("admin_channel_id"))
+        hours = hours_value if hours_value > 0 else None
+        add_mandatory_channel(channel_id, hours)
+        period = f"{hours:g} ч." if hours is not None else "без срока"
+        await finish(f"Канал или группа <code>{channel_id}</code> добавлены в обязательную подписку ({period}).")
+        return
+
+    if action in ("mailuser",) and step == "text":
+        target_id = int(data["admin_target_id"])
+        try:
+            await bot.send_message(target_id, value)
+            await finish(f"Сообщение отправлено пользователю <code>{target_id}</code>.")
+        except Exception as exc:
+            await finish("Не удалось отправить сообщение: " + html.escape(str(exc)[:300]))
+        return
+
+    if action == "givepremium" and step == "days":
+        try:
+            days = float(value)
+            if days <= 0:
+                raise ValueError
+        except ValueError:
+            await message.answer("Укажи количество дней больше нуля.")
+            return
+        target_id = int(data["admin_target_id"])
+        grant_premium(target_id, granted_by=message.from_user.id, days=days)
+        await finish(f"Premium выдан пользователю <code>{target_id}</code> на <b>{days:g}</b> дн.")
+        return
+
+    if action == "setsessionlimit" and step == "limit":
+        try:
+            limit = int(value)
+            if limit < 0:
+                raise ValueError
+        except ValueError:
+            await message.answer("Лимит должен быть целым числом от нуля и выше.")
+            return
+        target_id = int(data["admin_target_id"])
+        set_custom_session_limit(target_id, limit)
+        await finish(f"Для пользователя <code>{target_id}</code> установлен лимит сессий: <b>{limit}</b>.")
+        return
+
+    if action == "ban" and step == "reason":
+        target_id = int(data["admin_target_id"])
+        reason = "" if value == "-" else value
+        if ban_user(target_id, reason):
+            await finish(f"Пользователь <code>{target_id}</code> заблокирован. Причина: {html.escape(reason) if reason else 'не указана'}.")
+        else:
+            await finish("Нельзя заблокировать главного администратора.")
+        return
+
+    if step == "target":
+        target_id = await resolve_user_id(bot, value)
+        if not target_id:
+            await message.answer("Не получилось найти пользователя. Проверь username или ID и попробуй ещё раз.")
+            return
+        await state.update_data(admin_target_id=target_id)
+        if action == "addadmin":
+            result = "Пользователь назначен администратором." if add_admin(target_id) else "Этот пользователь уже администратор."
+            await finish(result)
+            return
+        if action == "deladmin":
+            result = "Права администратора сняты." if remove_admin(target_id) else "Не получилось снять права: пользователя нет среди администраторов или это главный администратор."
+            await finish(result)
+            return
+        if action == "delpremium":
+            result = f"Premium снят у пользователя <code>{target_id}</code>." if revoke_premium(target_id) else "У этого пользователя Premium не подключён."
+            await finish(result)
+            return
+        if action == "unban":
+            result = f"Блокировка пользователя <code>{target_id}</code> снята." if unban_user(target_id) else "Этот пользователь не был заблокирован."
+            await finish(result)
+            return
+        if action == "blockTechPod":
+            result = f"Пользователю <code>{target_id}</code> закрыт доступ к обращениям." if block_tech_support(target_id) else "Доступ уже был закрыт."
+            await finish(result)
+            return
+        if action == "unblockTechPod":
+            result = f"Пользователю <code>{target_id}</code> возвращён доступ к обращениям." if unblock_tech_support(target_id) else "У пользователя не было ограничений."
+            await finish(result)
+            return
+        if action == "givepremium":
+            await ask_next("days", "На сколько дней выдать Premium? Пришли число, например 30.")
+            return
+        if action == "setsessionlimit":
+            await ask_next("limit", "Какой лимит сессий установить? Пришли целое число. 0 — без доступных слотов.")
+            return
+        if action == "ban":
+            await ask_next("reason", "Укажи причину блокировки. Если причина не нужна, отправь дефис (-).")
+            return
+        if action == "mailuser":
+            await ask_next("text", "Напиши сообщение, которое нужно отправить пользователю.")
+            return
+
+    await finish("Не удалось определить действие. Открой нужный раздел и попробуй снова.")
 
 
 @dp.message(Command("addadmin"))
