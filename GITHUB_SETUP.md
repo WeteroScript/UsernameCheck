@@ -34,6 +34,6 @@ Add:
 
 ## 3. Deploy and verify
 
-Deploy main. In Telegram, open GitHub → Подключить аккаунт. The user first authorizes their GitHub identity, then chooses the account and repositories for the GitHub App installation. After GitHub displays the success page, return to Telegram and open Мои репозитории. In an AI chat, send a repository URL. The model receives a filtered source snapshot. If it returns GITHUB_FILE blocks, the bot creates a separate branch and opens a Pull Request instead of writing directly to the default branch.
+Deploy main. In Telegram, open GitHub → Подключить аккаунт. The user first authorizes their GitHub identity, then chooses the account and repositories for the GitHub App installation. After GitHub displays the success page, return to Telegram and open Мои репозитории. In an AI chat, send a repository URL. The model receives a filtered source snapshot. If it returns GITHUB_FILE blocks, the bot creates a separate branch and opens a Pull Request instead of writing directly to the default branch. Later stages in the same AI chat continue from the previous AI branch and create chained Pull Requests; review and merge the final PR after the project stages are complete.
 
 Users can remove the installation from GitHub settings or use Отключить GitHub in the bot. Removing the installation in GitHub also revokes its access.
