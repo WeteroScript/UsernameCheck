@@ -95,7 +95,7 @@ async def github_menu(callback: types.CallbackQuery, state: FSMContext):
         "🐙 <b>Поиск репозиториев GitHub</b>\n\n"
         "Введи ключевые слова для поиска:",
         parse_mode=ParseMode.HTML,
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад", callback_data="fsm_back")]])
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад", callback_data="home_ai")]])
     )
 
 
@@ -170,7 +170,7 @@ async def premium_menu(callback: types.CallbackQuery):
         parse_mode=ParseMode.HTML,
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="✍️ Написать", url="https://t.me/BotFarmSupport")],
-            [InlineKeyboardButton(text="⬅️ Назад", callback_data="main")],
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data="home_profile")],
         ])
     )
 
@@ -184,7 +184,7 @@ def get_getid_keyboard() -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="👥 Группы", callback_data="getid_group")],
         [InlineKeyboardButton(text="👤 Пользователи", callback_data="getid_user")],
         [InlineKeyboardButton(text="🤖 Боты", callback_data="getid_bot")],
-        [InlineKeyboardButton(text="⬅️ Назад", callback_data="main")],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="home_profile")],
     ])
 
 
@@ -235,7 +235,7 @@ async def getid_prompt(callback: types.CallbackQuery, state: FSMContext):
     await callback.message.edit_text(
         f"{prompt}",
         parse_mode=ParseMode.HTML,
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад", callback_data="fsm_back")]])
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад", callback_data="getid_menu")]])
     )
 
 
@@ -374,7 +374,7 @@ async def bugreport_menu(callback: types.CallbackQuery, state: FSMContext):
         "на 1 день, за один найденный баг.\n\n"
         "Опиши баг сообщением:",
         parse_mode=ParseMode.HTML,
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад", callback_data="fsm_back")]])
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад", callback_data="home_profile")]])
     )
 
 
@@ -425,7 +425,7 @@ async def bugreport_input(message: types.Message, state: FSMContext):
 
 def _back_to_main_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="⬅️ Назад", callback_data="main")],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="home_profile")],
     ])
 
 
