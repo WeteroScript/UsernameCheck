@@ -39,7 +39,6 @@ MAX_CONTEXT_MESSAGES = 40
 TELEGRAM_TEXT_LIMIT = 4000
 MAX_UPLOAD_MB = max(1, int(os.getenv("AI_CHAT_MAX_UPLOAD_MB", "200")))
 MAX_UPLOAD_BYTES = MAX_UPLOAD_MB * 1024 * 1024
-MAX_EXTRACTED_CHARS = 80000
 MAX_ARCHIVE_FILES = 40
 MAX_GENERATED_FILE_BYTES = 10 * 1024 * 1024
 TEXT_EXTENSIONS = {
@@ -411,7 +410,6 @@ def _extract_zip_content(data: bytes, depth: int = 0) -> str:
                 raise ValueError("Распакованный размер архива превышает 30 МБ.")
 
             extracted = []
-            total_chars = 0
             for item in files:
                 if item.file_size > MAX_UPLOAD_BYTES:
                     continue
@@ -430,12 +428,7 @@ def _extract_zip_content(data: bytes, depth: int = 0) -> str:
                     continue
                 if not content:
                     continue
-                remaining = MAX_EXTRACTED_CHARS - total_chars
-                if remaining <= 0:
-                    break
-                content = content[:remaining]
                 extracted.append(f"===== {filename} =====\n{content}")
-                total_chars += len(content)
             if not extracted:
                 raise ValueError(
                     "В ZIP не найдено поддерживаемых файлов с извлекаемым содержимым."
@@ -475,7 +468,7 @@ async def _document_to_text(message: types.Message) -> str:
         raise ValueError("В файле не удалось найти текст для передачи модели.")
     return (
         f"Пользователь приложил файл: {filename}\n"
-        f"Извлечённое содержимое:\n{content[:MAX_EXTRACTED_CHARS]}"
+        f"Извлечённое содержимое:\n{content}"
     )
 
 
