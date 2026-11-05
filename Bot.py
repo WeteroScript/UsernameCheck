@@ -1808,7 +1808,17 @@ async def session_phone(message: types.Message, state: FSMContext):
         await state.clear()
         await message.answer("❌ Отменено.", reply_markup=get_main_keyboard(message.from_user.id))
         return
-    if not re.match(r'^\+?\d{10,15}        await message.answer(
+    if not re.match(r'^\+?\d{10,15}$', phone):
+        await message.answer(
+            "❌ Неверный формат номера.\n"
+            "Введите номер в международном формате (с +).",
+            parse_mode=ParseMode.HTML
+        )
+        return
+    if not phone.startswith("+"):
+        phone = "+" + phone
+    if not is_phone_allowed(user_id, phone):
+        await message.answer(
             f"❌ Без {PREMIUM_ICON} премиум-подписки доступны только номера "
             f"РФ, Украины, Беларуси, Молдовы, Грузии, Армении, Азербайджана, "
             f"Кыргызстана, Туркменистана, Узбекистана и Таджикистана.\n\n"
