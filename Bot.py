@@ -3066,6 +3066,13 @@ class AccessMiddleware(BaseMiddleware):
         if is_admin(user_id):
             return await handler(event, data)
 
+        if isinstance(event, types.CallbackQuery) and event.data in DISABLED_MENU_BUTTONS:
+            try:
+                await event.answer("Данная кнопка ограничена администратором", show_alert=True)
+            except Exception:
+                pass
+            return
+
         if is_technical_mode():
             text = "🔧 Ведутся технические работы. Попробуйте позже."
             try:
