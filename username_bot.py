@@ -24,7 +24,7 @@ import re
 from typing import Optional, Dict, List
 from dotenv import load_dotenv
 
-from access_control import is_premium, PREMIUM_ICON
+from access_control import is_premium, is_admin, PREMIUM_ICON
 
 load_dotenv()
 
@@ -1150,36 +1150,43 @@ async def watch_add_input(message: types.Message, state: FSMContext):
 
 # ============ КОМАНДЫ ============
 
-@router.message(Command("getdb"))
-async def get_db_command(message: types.Message):
+async def export_username_database(bot, chat_id: int, user_id: int):
     taken_db = load_db(TAKEN_DB_FILE)
     free_db = load_db(FREE_DB_FILE)
     banned_db = load_db(BANNED_DB_FILE)
     ts = datetime.now().strftime('%Y%m%d_%H%M%S')
-    taken_file = f"taken_{message.from_user.id}_{ts}.json"
-    free_file = f"free_{message.from_user.id}_{ts}.json"
-    banned_file = f"banned_{message.from_user.id}_{ts}.json"
-    
+    taken_file = f"taken_{user_id}_{ts}.json"
+    free_file = f"free_{user_id}_{ts}.json"
+    banned_file = f"banned_{user_id}_{ts}.json"
+
     try:
         for path, data in ((taken_file, taken_db), (free_file, free_db), (banned_file, banned_db)):
-            with open(path, 'w', encoding='utf-8') as f:
-                json.dump(data, f, indent=2, ensure_ascii=False)
-        
-        await message.answer(
-            f"📊 Занятых: {len(taken_db)}, Свободных: {len(free_db)}, Забаненных: {len(banned_db)}"
+            with open(path, "w", encoding="utf-8") as file:
+                json.dump(data, file, indent=2, ensure_ascii=False)
+
+        await bot.send_message(
+            chat_id,
+            f"База готова. Занятых: {len(taken_db)}, свободных: {len(free_db)}, заблокированных: {len(banned_db)}."
         )
-        await message.answer_document(types.FSInputFile(taken_file), caption=f"📁 Занятые ({len(taken_db)})")
-        await message.answer_document(types.FSInputFile(free_file), caption=f"✅ Свободные ({len(free_db)})")
-        await message.answer_document(types.FSInputFile(banned_file), caption=f"🚫 Забаненные ({len(banned_db)})")
-        
+        await bot.send_document(chat_id, types.FSInputFile(taken_file), caption=f"Занятые ({len(taken_db)})")
+        await bot.send_document(chat_id, types.FSInputFile(free_file), caption=f"Свободные ({len(free_db)})")
+        await bot.send_document(chat_id, types.FSInputFile(banned_file), caption=f"Заблокированные ({len(banned_db)})")
         if os.path.exists(DEBUG_LOG_FILE):
-            await message.answer_document(types.FSInputFile(DEBUG_LOG_FILE), caption="🔍 Debug log")
-    except Exception as e:
-        await message.answer(f"❌ Ошибка: {e}")
+            await bot.send_document(chat_id, types.FSInputFile(DEBUG_LOG_FILE), caption="Журнал проверок")
+    except Exception as exc:
+        logging.exception("Не удалось отправить базу юзернеймов")
+        await bot.send_message(chat_id, f"Не удалось выгрузить базу: {str(exc)[:300]}")
     finally:
-        for p in (taken_file, free_file, banned_file):
-            if os.path.exists(p):
-                os.remove(p)
+        for path in (taken_file, free_file, banned_file):
+            if os.path.exists(path):
+                os.remove(path)
+
+
+@router.message(Command("getdb"))
+async def get_db_command(message: types.Message):
+    if not is_admin(message.from_user.id):
+        return
+    await export_username_database(message.bot, message.chat.id, message.from_user.id)
 
 
 # ============ ФОНОВЫЙ ВОРКЕР ОТСЛЕЖИВАНИЯ ЮЗЕРНЕЙМОВ (💎 премиум) ============
