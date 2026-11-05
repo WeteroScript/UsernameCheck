@@ -1000,6 +1000,7 @@ async def ai_chat_message(message: types.Message, state: FSMContext):
             _is_file_creation_request(user_text)
             and not _is_large_project_request(user_text)
             and not generated_files
+            and not github_files
         ):
             retry_context = [
                 *_history_without_old_files(chat.get("messages", []))[-MAX_CONTEXT_MESSAGES:],
