@@ -346,6 +346,61 @@ async def list_user_repositories(telegram_user_id: int) -> List[Dict[str, Any]]:
     ]
 
 
+def _repository_branch_path(reference: str) -> Optional[str]:
+    """Return the branch-and-optional-path tail from a GitHub /tree/ or /blob/ URL."""
+    from urllib.parse import unquote, urlparse
+
+    value = str(reference or "").strip()
+    if not value.startswith(("https://", "http://")):
+        return None
+    parsed = urlparse(value)
+    if parsed.netloc.lower() not in ("github.com", "www.github.com"):
+        return None
+    parts = [part for part in parsed.path.split("/") if part]
+    if len(parts) < 4 or parts[2].lower() not in ("tree", "blob"):
+        return None
+    tail = unquote("/".join(parts[3:])).strip("/")
+    return tail or None
+
+
+async def _resolve_branch_from_path(
+    session: aiohttp.ClientSession,
+    full_name: str,
+    branch_and_path: str,
+    token: str,
+) -> str:
+    """Resolve a branch from a /tree/ URL, including branch names containing slashes."""
+    branch_names = []
+    for page in range(1, 101):
+        result = await _api_json(
+            session,
+            "GET",
+            "/repos/{}/branches?per_page=100&page={}".format(full_name, page),
+            token,
+        )
+        if not isinstance(result, list):
+            break
+        branch_names.extend(
+            str(item.get("name"))
+            for item in result
+            if isinstance(item, dict) and item.get("name")
+        )
+        if len(result) < 100:
+            break
+
+    matches = [
+        name for name in branch_names
+        if branch_and_path == name or branch_and_path.startswith(name + "/")
+    ]
+    if not matches:
+        raise RuntimeError(
+            "Не удалось определить ветку из GitHub-ссылки. "
+            "Проверь, что ветка существует и доступна GitHub App."
+        )
+    # Longest match handles branch names such as feature/api plus a file path after them.
+    return max(matches, key=len)
+
+
 def _repository_full_name(reference: str) -> str:
     from urllib.parse import urlparse
 
@@ -386,8 +441,9 @@ async def _api_json(
         return data
 
 
-async def fetch_repository_context(telegram_user_id: int, reference: str, branch_override: Optional[str] = None) -> Dict[str, str]:
+async def fetch_repository_context(telegram_user_id: int, reference: str, branch_override: Optional[str] = None) -> Dict[str, Any]:
     full_name = _repository_full_name(reference)
+    branch_path = _repository_branch_path(reference)
     record = get_user_installation(telegram_user_id)
     if not record:
         raise RuntimeError("Сначала подключи свой GitHub в меню бота.")
@@ -395,7 +451,11 @@ async def fetch_repository_context(telegram_user_id: int, reference: str, branch
     timeout = aiohttp.ClientTimeout(total=60)
     async with aiohttp.ClientSession(timeout=timeout) as session:
         repo_data = await _api_json(session, "GET", "/repos/" + full_name, token)
-        branch = branch_override or repo_data.get("default_branch") or "main"
+        if branch_path:
+            branch = await _resolve_branch_from_path(session, full_name, branch_path, token)
+        else:
+            branch = branch_override or repo_data.get("default_branch") or "main"
+        branch_selected = bool(branch_path or branch_override)
         encoded_branch = quote(branch, safe="")
         branch_ref = await _api_json(
             session, "GET",
@@ -482,7 +542,7 @@ async def fetch_repository_context(telegram_user_id: int, reference: str, branch
         raise RuntimeError("В репозитории не найдено доступных текстовых исходников.")
     sections = [
         "GitHub repository: " + full_name,
-        "Default branch: " + branch,
+        "Selected branch: " + branch,
         "Repository URL: " + repo_data.get("html_url", "https://github.com/" + full_name),
         "Ниже приведён манифест путей и ограниченный снимок содержимого. Отсутствие файла в снимке "
         "НЕ означает, что файла нет в GitHub. Если для изменения нужен файл, который не попал в снимок, "
@@ -496,6 +556,8 @@ async def fetch_repository_context(telegram_user_id: int, reference: str, branch
     return {
         "full_name": full_name,
         "branch": branch,
+        "branch_selected": branch_selected,
+        "branch_from_reference": bool(branch_path),
         "html_url": repo_data.get("html_url", "https://github.com/" + full_name),
         "context": "\n".join(sections),
     }
@@ -508,18 +570,23 @@ async def create_repository_pull_request(
     title: str,
     body: str = "",
     base_branch_override: Optional[str] = None,
-) -> Dict[str, str]:
+    commit_to_target_branch: bool = False,
+) -> Dict[str, Any]:
+    """Write generated files either to a new PR branch or directly to the selected branch."""
     full_name = _repository_full_name(full_name)
     if not files:
         raise ValueError("Нет файлов для отправки в GitHub")
     if len(files) > 100:
-        raise ValueError("За один Pull Request можно изменить не более 100 файлов. Разбей изменения на несколько этапов.")
+        raise ValueError("За один коммит можно изменить не более 100 файлов. Разбей изменения на несколько этапов.")
+
     normalized = []
     total_size = 0
     for path, file_content in files:
         clean_path = str(path).replace("\\", "/").strip()
         pure_path = Path(clean_path)
-        if not clean_path or clean_path.startswith("/") or any(part in ("", ".", "..") for part in clean_path.split("/")):
+        if not clean_path or clean_path.startswith("/") or any(
+            part in ("", ".", "..") for part in clean_path.split("/")
+        ):
             raise ValueError("Недопустимый путь файла: " + clean_path[:120])
         if pure_path.is_absolute() or len(clean_path) > 240:
             raise ValueError("Недопустимый путь файла: " + clean_path[:120])
@@ -540,13 +607,13 @@ async def create_repository_pull_request(
         repo_data = await _api_json(session, "GET", "/repos/" + full_name, token)
         base_branch = base_branch_override or repo_data.get("default_branch") or "main"
         encoded_branch = quote(base_branch, safe="")
-        ref_data = await _api_json(
-            session, "GET", "/repos/{}/git/ref/heads/{}".format(full_name, encoded_branch), token
-        )
+        ref_path = "/repos/{}/git/ref/heads/{}".format(full_name, encoded_branch)
+        ref_data = await _api_json(session, "GET", ref_path, token)
         base_sha = ref_data["object"]["sha"]
         base_commit = await _api_json(
             session, "GET", "/repos/{}/git/commits/{}".format(full_name, base_sha), token
         )
+
         tree_entries = []
         for path, raw in normalized:
             blob = await _api_json(
@@ -559,6 +626,7 @@ async def create_repository_pull_request(
                 "type": "blob",
                 "sha": blob["sha"],
             })
+
         tree = await _api_json(
             session, "POST", "/repos/{}/git/trees".format(full_name), token,
             {"base_tree": base_commit["tree"]["sha"], "tree": tree_entries},
@@ -568,13 +636,7 @@ async def create_repository_pull_request(
             session, "POST", "/repos/{}/git/commits".format(full_name), token,
             {"message": safe_title, "tree": tree["sha"], "parents": [base_sha]},
         )
-        branch_name = "ai/telegram-" + uuid.uuid4().hex[:10]
-        await _api_json(
-            session, "POST", "/repos/{}/git/refs".format(full_name), token,
-            {"ref": "refs/heads/" + branch_name, "sha": commit["sha"]},
-        )
 
-        # Compare API resolves the head reliably after its branch ref exists.
         compare_data = await _api_json(
             session,
             "GET",
@@ -587,16 +649,45 @@ async def create_repository_pull_request(
             if isinstance(item, dict) and isinstance(item.get("filename"), str)
         ]
         if not changed_files:
+            raise RuntimeError(
+                "GitHub не обнаружил реальных отличий между подготовленными файлами "
+                "и выбранной веткой. Новая ветка и Pull Request не создавались; "
+                "выбранная ветка не изменена."
+            )
+
+        if commit_to_target_branch:
+            # Do not overwrite a newer commit if the branch moved while the model was generating.
+            current_ref = await _api_json(session, "GET", ref_path, token)
+            if current_ref.get("object", {}).get("sha") != base_sha:
+                raise RuntimeError(
+                    "Ветка {} успела измениться во время подготовки. "
+                    "Ничего не записано; повтори запрос, чтобы бот загрузил свежий код.".format(base_branch)
+                )
             await _api_json(
                 session,
-                "DELETE",
-                "/repos/{}/git/refs/heads/{}".format(full_name, quote(branch_name, safe="")),
+                "PATCH",
+                ref_path,
                 token,
+                {"sha": commit["sha"], "force": False},
             )
-            raise RuntimeError(
-                "GitHub не обнаружил реальных отличий между подготовленным коммитом "
-                "и базовой веткой. Временная ветка удалена, Pull Request не создан."
+            branch_url = "https://github.com/{}/tree/{}".format(
+                full_name, quote(base_branch, safe="/")
             )
+            return {
+                "url": branch_url,
+                "branch": base_branch,
+                "base_branch": base_branch,
+                "commit": commit["sha"],
+                "repository": full_name,
+                "changed_files": changed_files,
+                "direct_commit": True,
+            }
+
+        branch_name = "ai/telegram-" + uuid.uuid4().hex[:10]
+        await _api_json(
+            session, "POST", "/repos/{}/git/refs".format(full_name), token,
+            {"ref": "refs/heads/" + branch_name, "sha": commit["sha"]},
+        )
         pull = await _api_json(
             session, "POST", "/repos/{}/pulls".format(full_name), token,
             {
@@ -606,6 +697,7 @@ async def create_repository_pull_request(
                 "body": (body or "Изменения подготовлены через Telegram-бота. Проверьте diff и тесты перед слиянием.")[:5000],
             },
         )
+
     return {
         "url": pull.get("html_url", ""),
         "branch": branch_name,
@@ -613,4 +705,5 @@ async def create_repository_pull_request(
         "commit": commit["sha"],
         "repository": full_name,
         "changed_files": changed_files,
+        "direct_commit": False,
     }
