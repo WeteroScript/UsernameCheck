@@ -950,6 +950,8 @@ async def _request_model(
     settings = _user_settings(user_id) if user_id is not None else {}
     api_key = str(settings.get("api_key") or os.getenv(API_KEY_ENV, "")).strip()
     api_url = str(settings.get("api_url") or os.getenv("TOKENPLAN_BASE_URL") or DEFAULT_API_URL).strip()
+    if not api_url.rstrip("/").endswith("/chat/completions"):
+        api_url = api_url.rstrip("/") + "/chat/completions"
     if not api_key:
         raise RuntimeError(
             "Не задан TOKENPLAN_API_KEY. Добавь API-ключ TokenPlan в переменные "
@@ -1484,7 +1486,7 @@ async def ai_save_custom_api_key(message: types.Message, state: FSMContext):
         await state.clear()
         await message.answer("Настройка API key отменена.", reply_markup=_root_keyboard())
         return
-    if message.document or not text_value or len(text_value) > 1024 or "\\n" in text_value:
+    if message.document or not text_value or len(text_value) > 1024 or "\n" in text_value:
         await message.answer("Отправь API key одним текстовым сообщением без переносов строк.")
         return
     if _settings_cipher() is None:
