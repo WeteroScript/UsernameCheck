@@ -104,6 +104,8 @@ from ai_chat import init_ai_chat, pause_ai_chat
 
 load_dotenv()
 
+APP_VERSION = "v1.0.0"
+
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 if not BOT_TOKEN:
     raise RuntimeError("Не задана переменная окружения BOT_TOKEN. Добавь её в настройках хостинга.")
@@ -2201,7 +2203,8 @@ async def bot_choice_callback(callback: types.CallbackQuery):
 # ============ АДМИН-КОМАНДЫ (Этап 0: премиум/админ-система) ============
 
 ADMIN_COMMANDS_HELP = (
-    "🛠 <b>Команды администратора</b>\n\n"
+    f"🛠 <b>Команды администратора</b>\n"
+    f"Версия: <code>{APP_VERSION}</code>\n\n"
     "✅ /addadmin (юз/айди) — выдать права админа\n"
     "✅ /deladmin (юз/айди) — снять права админа\n"
     "✅ /givepremium (юз/айди) (дней, по умолчанию 1) — выдать 💎 премиум\n"
