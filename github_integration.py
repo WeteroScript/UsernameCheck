@@ -381,9 +381,19 @@ async def fetch_repository_context(telegram_user_id: int, reference: str) -> Dic
         repo_data = await _api_json(session, "GET", "/repos/" + full_name, token)
         branch = repo_data.get("default_branch") or "main"
         encoded_branch = quote(branch, safe="")
+        branch_ref = await _api_json(
+            session, "GET",
+            "/repos/{}/git/ref/heads/{}".format(full_name, encoded_branch),
+            token,
+        )
+        head_commit = await _api_json(
+            session, "GET",
+            "/repos/{}/git/commits/{}".format(full_name, branch_ref["object"]["sha"]),
+            token,
+        )
         tree_data = await _api_json(
             session, "GET",
-            "/repos/{}/git/trees/{}?recursive=1".format(full_name, encoded_branch),
+            "/repos/{}/git/trees/{}?recursive=1".format(full_name, head_commit["tree"]["sha"]),
             token,
         )
         entries = [
