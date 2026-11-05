@@ -13,6 +13,7 @@ Configure:
 - Disable webhooks for this integration.
 - Repository permissions:
   - Contents: Read and write
+  - Pull requests: Read and write
   - Metadata: Read-only (required).
 - Allow installation on any account if users should connect personal accounts and organizations.
 
