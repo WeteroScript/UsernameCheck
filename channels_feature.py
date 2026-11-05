@@ -326,7 +326,7 @@ async def ch_auto_count(callback: types.CallbackQuery, state: FSMContext):
     await state.update_data(auto_count_chat_id=chat_id)
     await state.set_state(ChannelStates.waiting_auto_accept_count)
     await callback.message.edit_text(
-        f"🔢 Введи число от 0 до {MAX_AUTO_ACCEPT} — максимум заявок, которые бот примет автоматически.\n\n"
+        f"🔢 Введи число от 0 до {MAX_AUTO_ACCEPT} — максимум заявок, которые бот примет автоматически.\n\n",
         parse_mode=ParseMode.HTML,
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад", callback_data="fsm_back")]])
     )
