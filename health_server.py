@@ -7,7 +7,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from github_integration import complete_installation, complete_oauth_authorization
+from github_integration import complete_installation
 
 
 class HealthHandler(BaseHTTPRequestHandler):
@@ -25,34 +25,6 @@ class HealthHandler(BaseHTTPRequestHandler):
         if parsed.path in ("/", "/health", "/healthz"):
             self._send(200, "OK\n")
             return
-        if parsed.path == "/github/oauth/callback":
-            query = parse_qs(parsed.query)
-            state = (query.get("state") or [""])[0]
-            code = (query.get("code") or [""])[0]
-            oauth_error = (query.get("error_description") or query.get("error") or [""])[0]
-            if oauth_error:
-                self._send(
-                    400,
-                    "<h2>Авторизация GitHub отменена</h2><p>Вернитесь в Telegram и повторите подключение.</p>",
-                    "text/html; charset=utf-8",
-                )
-                return
-            try:
-                install_url = complete_oauth_authorization(code, state)
-            except Exception as exc:
-                safe_error = html.escape(str(exc))
-                self._send(
-                    400,
-                    "<h2>Не удалось проверить GitHub-аккаунт</h2><p>{}</p><p>Вернитесь в Telegram и повторите подключение.</p>".format(safe_error),
-                    "text/html; charset=utf-8",
-                )
-                return
-            self.send_response(302)
-            self.send_header("Location", install_url)
-            self.send_header("Cache-Control", "no-store")
-            self.end_headers()
-            return
-
         if parsed.path == "/github/callback":
             query = parse_qs(parsed.query)
             state = (query.get("state") or [""])[0]
