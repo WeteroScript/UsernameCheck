@@ -17,6 +17,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.exceptions import TelegramBadRequest, TelegramNetworkError
 from dotenv import load_dotenv
+load_dotenv()
 
 from telethon import TelegramClient
 from telethon import functions, types as tl_types
