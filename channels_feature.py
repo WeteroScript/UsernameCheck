@@ -97,7 +97,7 @@ def get_channels_root_keyboard() -> InlineKeyboardMarkup:
 async def channels_menu(callback: types.CallbackQuery):
     await callback.answer()
     await callback.message.edit_text(
-        "📢 <b>Каналы</b>\n\nУправление подключёнными каналами:",
+        "📢 <b>Каналы</b>\n\nЗдесь можно подключить каналы и настроить работу с ними:",
         parse_mode=ParseMode.HTML,
         reply_markup=get_channels_root_keyboard()
     )
