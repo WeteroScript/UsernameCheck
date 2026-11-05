@@ -3302,35 +3302,6 @@ TRADER_DEFAULT_RISE   = 3.0   # % роста  → продажа
 TRADER_DEFAULT_AMOUNT = "10%" # сколько покупать/продавать
 
 
-def _load_trader_config():
-    global crypto_trader_config
-    try:
-        with open(TRADER_CONFIG_FILE, "r", encoding="utf-8") as f:
-            crypto_trader_config = _json.load(f)
-    except Exception:
-        crypto_trader_config = {}
-
-
-def _save_trader_config():
-    try:
-        with open(TRADER_CONFIG_FILE, "w", encoding="utf-8") as f:
-            _json.dump(crypto_trader_config, f, ensure_ascii=False, indent=2)
-    except Exception as e:
-        logging.warning(f"trader_config save: {e}")
-
-
-def _trader_coin_cfg(phone: str, coin: str) -> dict:
-    """Возвращает конфиг монеты, создавая дефолт если не задан."""
-    crypto_trader_config.setdefault(phone, {})
-    crypto_trader_config[phone].setdefault(coin, {
-        "buy_drop":  TRADER_DEFAULT_DROP,
-        "sell_rise": TRADER_DEFAULT_RISE,
-        "amount":    TRADER_DEFAULT_AMOUNT,
-        "enabled":   True,
-    })
-    return crypto_trader_config[phone][coin]
-
-
 # ── Парсинг цен с листинга биржи ──────────────────────────
 
 async def _crypto_parse_prices(client) -> dict[str, float]:
