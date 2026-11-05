@@ -974,6 +974,7 @@ async def _request_model(
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
+        "Accept": "text/event-stream, application/json",
     }
 
     started_at = time.monotonic()
@@ -1177,7 +1178,12 @@ async def ai_api_settings(callback: types.CallbackQuery, state: FSMContext):
     await callback.answer()
     await state.clear()
     settings = _user_settings(callback.from_user.id)
-    key_status = "установлен" if settings.get("api_key") else "не установлен"
+    if settings.get("api_key"):
+        key_status = "установлен"
+    elif os.getenv(API_KEY_ENV):
+        key_status = "свой не задан; используется ключ бота"
+    else:
+        key_status = "не установлен"
     custom_url = str(settings.get("api_url") or "")
     if custom_url:
         parsed = urlsplit(custom_url)
@@ -1189,7 +1195,8 @@ async def ai_api_settings(callback: types.CallbackQuery, state: FSMContext):
         f"API key: <b>{key_status}</b>\n"
         f"API URL: <code>{url_status}</code>\n\n"
         "Свой ключ и адрес применяются только к твоим запросам. Ключ не показывается "
-        "в меню и не записывается в историю переписки. Для TokenPlan обычно подходит "
+        "в меню и не записывается в историю переписки; на диске он хранится зашифрованно. "
+        "Для TokenPlan обычно подходит "
         "<code>https://tokenplan.lat/v1</code>.",
         parse_mode="HTML",
         reply_markup=_api_settings_keyboard(),
