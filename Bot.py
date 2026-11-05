@@ -418,7 +418,7 @@ async def sess_interval_prompt(callback: types.CallbackQuery, state: FSMContext)
         "Нажми <b>Назад</b> для отмены.",
         parse_mode=ParseMode.HTML,
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="⬅️ Назад", callback_data="fsm_back")]
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data=f"bots_sess_{phone}")]
         ])
     )
 
@@ -556,7 +556,7 @@ def get_bots_list_keyboard(user_id: int = None) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [prgramm_btn],
         [InlineKeyboardButton(text="💼 Додепер", callback_data="bot_dodeeper", style=ButtonStyle.SUCCESS)],
-        [InlineKeyboardButton(text="⬅️ Назад",   callback_data="main",         style=ButtonStyle.DANGER)],
+        [InlineKeyboardButton(text="⬅️ Назад",   callback_data="home_automation", style=ButtonStyle.DANGER)],
     ])
 
 
@@ -564,7 +564,7 @@ def get_username_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✨ Генерировать", callback_data="gen")],
         [InlineKeyboardButton(text="⚙️ Настройки", callback_data="settings")],
-        [InlineKeyboardButton(text="⬅️ Назад", callback_data="main")],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="home_tools")],
     ])
 
 
@@ -592,7 +592,7 @@ def get_accounts_keyboard(user_id: int) -> InlineKeyboardMarkup:
     buttons.append([InlineKeyboardButton(text="➕ Добавить аккаунт", callback_data="sess_add")])
     if accounts:
         buttons.append([InlineKeyboardButton(text="➖ Отвязать аккаунт", callback_data="acc_unlink_menu")])
-    buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="main")])
+    buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="home_automation")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
@@ -1956,7 +1956,7 @@ async def session_add(callback: types.CallbackQuery, state: FSMContext):
         "Введите номер телефона в международном формате (с +):",
         parse_mode=ParseMode.HTML,
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="⬅️ Назад", callback_data="fsm_back")]
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data="accounts")]
         ])
     )
 
@@ -2025,7 +2025,7 @@ async def session_phone(message: types.Message, state: FSMContext):
             "<code>code12345</code> (префикс code + сам код)",
             parse_mode=ParseMode.HTML,
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="⬅️ Назад", callback_data="fsm_back")]
+                [InlineKeyboardButton(text="⬅️ Назад", callback_data="accounts")]
             ])
         )
     else:
@@ -2073,7 +2073,7 @@ async def session_code(message: types.Message, state: FSMContext):
             "🔐 На этом аккаунте включён облачный пароль (2FA).\n\n"
             "Введи пароль, чтобы завершить вход.",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="⬅️ Назад", callback_data="fsm_back")]
+                [InlineKeyboardButton(text="⬅️ Назад", callback_data="accounts")]
             ])
         )
         return
@@ -2528,10 +2528,11 @@ async def adm_help_callback(callback: types.CallbackQuery, state: FSMContext):
 
 
 @dp.callback_query(lambda c: c.data and c.data.startswith("adm_group_"))
-async def adm_group_callback(callback: types.CallbackQuery):
+async def adm_group_callback(callback: types.CallbackQuery, state: FSMContext):
     if not is_admin(callback.from_user.id):
         await callback.answer("Недостаточно прав.", show_alert=True)
         return
+    await state.clear()
     group = callback.data[len("adm_group_"):]
     if group not in ADMIN_COMMAND_GROUPS:
         await callback.answer("Раздел не найден.", show_alert=True)
@@ -2635,6 +2636,7 @@ async def adm_action_callback(callback: types.CallbackQuery, state: FSMContext):
     if not is_admin(callback.from_user.id):
         await callback.answer("Недостаточно прав.", show_alert=True)
         return
+    await state.clear()
     action = callback.data[len("adm_action_"):]
     group = ADMIN_ACTION_GROUP.get(action)
     if not group:
@@ -3084,6 +3086,33 @@ class AccessMiddleware(BaseMiddleware):
             return
 
         cb_data = getattr(event, "data", None)
+        if isinstance(event, types.CallbackQuery) and cb_data in DISABLED_MENU_BUTTONS:
+            await event.answer("Данная кнопка ограничена администратором", show_alert=True)
+            return
+
+        if isinstance(event, types.CallbackQuery):
+            navigation_targets = {
+                "main", "home_automation", "home_tools", "home_ai", "home_profile",
+                "bots", "bot_prgramm", "accounts", "users", "settings",
+                "check_availability_menu", "getid_menu", "premium_menu",
+                "video_menu", "video_tiktok", "channels_menu", "ch_list",
+                "shakalizer_menu", "github_menu", "adm_help", "adm_buttons",
+                "adm_group_tools", "adm_group_sessions",
+            }
+            is_navigation = (
+                cb_data in navigation_targets
+                or (
+                    cb_data.startswith(("bots_sess_", "sess_item_", "ch_auto_"))
+                    and not cb_data.startswith(("ch_auto_toggle_", "ch_auto_count_"))
+                )
+            )
+            fsm_context = data.get("state")
+            if is_navigation and fsm_context is not None:
+                try:
+                    await fsm_context.clear()
+                except Exception:
+                    logging.exception("Не удалось очистить состояние диалога при возврате в меню")
+
         if cb_data == "check_subscription":
             return await handler(event, data)
 
@@ -3716,7 +3745,7 @@ async def loadfilesession_command(message: types.Message, state: FSMContext):
         "Отправь .session файл документом. Бот подключит его автоматически.",
         parse_mode=ParseMode.HTML,
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="⬅️ Назад", callback_data="main")]
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data="adm_group_sessions")]
         ])
     )
     await state.set_state(SessionStates.waiting_session_file)
@@ -3771,7 +3800,7 @@ async def createcheck_command(message: types.Message, state: FSMContext):
         "🔗 <b>Создание чека</b>\n\nШаг 1/4: Отправь ссылку на чек PR GRAMM.",
         parse_mode=ParseMode.HTML,
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="⬅️ Назад", callback_data="main")]
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data="adm_group_tools")]
         ])
     )
     await state.set_state(CheckStates.waiting_check_url)
@@ -3787,7 +3816,7 @@ async def check_url_input(message: types.Message, state: FSMContext):
     await message.answer(
         "🔑 Шаг 2/4: Введи пароль для этого чека.",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="⬅️ Назад", callback_data="main")]
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data="adm_group_tools")]
         ])
     )
     await state.set_state(CheckStates.waiting_check_password)
@@ -3802,7 +3831,7 @@ async def check_password_input(message: types.Message, state: FSMContext):
         "Можно добавить несколько.",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="⏭ Пропустить", callback_data="check_skip_links")],
-            [InlineKeyboardButton(text="⬅️ Назад", callback_data="main")],
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data="adm_group_tools")],
         ])
     )
     await state.set_state(CheckStates.waiting_check_links)
@@ -3815,7 +3844,7 @@ async def check_skip_links(callback: types.CallbackQuery, state: FSMContext):
     await callback.message.edit_text(
         "🔢 Шаг 4/4: Введи минимальное количество подключённых сессий у пользователя.",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="⬅️ Назад", callback_data="main")]
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data="adm_group_tools")]
         ])
     )
     await state.set_state(CheckStates.waiting_check_min_sessions)
@@ -3844,7 +3873,7 @@ async def check_add_more_link(callback: types.CallbackQuery, state: FSMContext):
     await callback.message.edit_text(
         "🌐 Отправь ещё одну ссылку:",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="⬅️ Назад", callback_data="main")]
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data="adm_group_tools")]
         ])
     )
     await state.set_state(CheckStates.waiting_check_links)
@@ -3856,7 +3885,7 @@ async def check_links_done(callback: types.CallbackQuery, state: FSMContext):
     await callback.message.edit_text(
         "🔢 Шаг 4/4: Введи минимальное количество подключённых сессий у пользователя.",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="⬅️ Назад", callback_data="main")]
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data="adm_group_tools")]
         ])
     )
     await state.set_state(CheckStates.waiting_check_min_sessions)
