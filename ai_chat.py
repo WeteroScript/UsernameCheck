@@ -586,7 +586,7 @@ async def _document_to_text(message: types.Message) -> str:
 
 def _extract_github_reference(user_text: str) -> Optional[str]:
     match = re.search(
-        r"https?://(?:www\\.)?github\\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:\\.git)?(?:/[^\\s]*)?",
+        r"https?://(?:www\.)?github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:\.git)?(?:/[^\s]*)?",
         user_text,
         re.IGNORECASE,
     )
