@@ -3,6 +3,9 @@ import html
 import os
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
+from dotenv import load_dotenv
+
+load_dotenv()
 
 from github_integration import complete_installation, complete_oauth_authorization
 
