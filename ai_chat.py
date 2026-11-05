@@ -134,7 +134,8 @@ async def _animate_waiting_message(message: types.Message) -> None:
         await asyncio.sleep(1)
         elapsed += 1
         try:
-            await message.edit_text(f"👀 Ии готовит ответ. {elapsed}s.")
+            time_label = f"{elapsed // 60}m {elapsed % 60}s" if elapsed >= 60 else f"{elapsed}s"
+            await message.edit_text(f"👀 Ии готовит ответ. {time_label}.")
         except Exception:
             # Ошибка редактирования не должна прерывать запрос к модели.
             logging.debug("Не удалось обновить таймер ожидания ИИ", exc_info=True)
@@ -665,7 +666,7 @@ async def _request_model(
             {"role": "user", "content": user_text},
         ],
     }
-    timeout = aiohttp.ClientTimeout(total=120)
+    timeout = aiohttp.ClientTimeout(total=600, connect=30, sock_read=600)
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
@@ -693,7 +694,7 @@ async def _request_model(
                     raise RuntimeError("TokenPlan вернул ответ в неизвестном формате")
                 return _extract_reply(data)
     except asyncio.TimeoutError as exc:
-        raise RuntimeError("Истекло время ожидания ответа TokenPlan (120 секунд).") from exc
+        raise RuntimeError("Истекло время ожидания ответа TokenPlan (10 минут).") from exc
     except aiohttp.ClientError as exc:
         logging.warning("Ошибка соединения с TokenPlan: %s", type(exc).__name__)
         raise RuntimeError("Не удалось подключиться к TokenPlan. Проверь адрес API и соединение.") from exc
@@ -814,6 +815,14 @@ async def ai_open_chat(callback: types.CallbackQuery, state: FSMContext):
 
 @router.message(AIChatStates.chatting)
 async def ai_chat_message(message: types.Message, state: FSMContext):
+    user_id = message.from_user.id
+    interrupted_previous = False
+    active_task = _active_tasks.get(user_id)
+    if active_task and active_task is not asyncio.current_task() and not active_task.done():
+        interrupted_previous = True
+        active_task.cancel()
+        await asyncio.gather(active_task, return_exceptions=True)
+
     user_text = (message.text or message.caption or "").strip()
     if message.document:
         try:
@@ -845,13 +854,15 @@ async def ai_chat_message(message: types.Message, state: FSMContext):
         await state.clear()
         await message.answer("Эта модель доступна только с премиум-доступом. Выбери другую модель.")
         return
+    # Если прошлый запрос был прерван новым сообщением, разрешаем начать
+    # следующий запрос сразу, без обычного пятисекундного кулдауна.
     if user_id in _active_requests:
-        await message.answer("Предыдущий запрос ещё обрабатывается. Дождись ответа.")
+        await message.answer("Предыдущий запрос ещё завершается. Повтори сообщение через секунду.")
         return
 
     now = time.monotonic()
     previous = _last_request_at.get(user_id)
-    if previous is not None:
+    if not interrupted_previous and previous is not None:
         remaining = REQUEST_COOLDOWN_SECONDS - (now - previous)
         if remaining > 0:
             await message.answer(f"Следующий запрос можно отправить через {int(remaining) + 1} сек.")
@@ -980,7 +991,12 @@ async def ai_chat_message(message: types.Message, state: FSMContext):
         if waiting:
             await waiting.edit_text(f'"{model}" - Ошибка запроса: {exc}')
     except asyncio.CancelledError:
-        raise
+        if waiting:
+            try:
+                await waiting.edit_text("Ответ прерван.")
+            except Exception:
+                logging.debug("Не удалось обновить сообщение прерванного запроса", exc_info=True)
+        return
     except Exception:
         logging.exception("Непредвиденная ошибка при запросе к TokenPlan")
         if waiting:
