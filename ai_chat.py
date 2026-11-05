@@ -868,9 +868,20 @@ async def ai_chat_message(message: types.Message, state: FSMContext):
         waiting_timer = asyncio.create_task(_animate_waiting_message(waiting))
         # Контекст берётся только из выбранного chat_id, не из других чатов
         # этой же модели или других моделей.
-        # Модели получают историю только своего chat_id; содержимое старых
-        # вложений из этой истории удаляется перед каждым запросом.
-        model_history = _history_without_old_files(chat.get("messages", []))
+        # Модели получают историю только своего chat_id. Удаляем содержимое
+        # старых вложений также из сохранённой истории, а не только из API-контекста.
+        stored_messages = chat.setdefault("messages", [])
+        for stored_message in stored_messages:
+            if (
+                isinstance(stored_message, dict)
+                and stored_message.get("role") == "user"
+                and isinstance(stored_message.get("content"), str)
+            ):
+                stored_message["content"] = _history_message_without_old_files(
+                    stored_message["content"]
+                )
+        _save_history()
+        model_history = _history_without_old_files(stored_messages)
         reply = await _request_model(model, model_history, user_text)
         visible_reply, generated_files, empty_files = _extract_generated_files(reply)
 
