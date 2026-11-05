@@ -641,10 +641,8 @@ async def start_command(message: types.Message, state: FSMContext):
     
     await message.answer(
         f"👋 Привет, {message.from_user.first_name or 'Пользователь'}!\n\n"
-        f"🤖 <b>Ты попал в Telegram-Центр</b>,\n"
-        f"Тут есть огромное количество различных функций.\n\n"
-        f"Премиум:\n\n"
-        f"Выберите нужный раздел:",
+        f"Здесь собраны инструменты для Telegram, аккаунтов, каналов и работы с ИИ.\n"
+        f"Выбирай нужный раздел — дальше всё будет по шагам:",
         parse_mode=ParseMode.HTML,
         reply_markup=get_main_keyboard(message.from_user.id)
     )
@@ -657,7 +655,7 @@ async def main_menu(callback: types.CallbackQuery, state: FSMContext):
     await safe_edit_message(
         callback.message,
         "🏠 <b>Главное меню</b>\n\n"
-        "Разделы сгруппированы по назначению. Выбери нужную вкладку:",
+        "Что будем делать? Выбирай нужный раздел:",
         parse_mode=ParseMode.HTML,
         reply_markup=get_main_keyboard(callback.from_user.id)
     )
@@ -667,10 +665,10 @@ async def main_menu(callback: types.CallbackQuery, state: FSMContext):
 async def home_category_menu(callback: types.CallbackQuery):
     await callback.answer()
     pages = {
-        "home_automation": ("🤖 <b>Автоматизация</b>\n\nБоты, аккаунты и каналы.", "automation"),
-        "home_tools": ("🧰 <b>Инструменты</b>\n\nЮзернеймы, проверки и дополнительные функции.", "tools"),
-        "home_ai": ("🧠 <b>ИИ и разработка</b>\n\nЧат с ИИ и работа с GitHub-репозиториями.", "ai"),
-        "home_profile": ("👤 <b>Профиль и помощь</b>\n\nТвой Telegram ID, премиум и обратная связь.", "profile"),
+        "home_automation": ("🤖 <b>Автоматизация</b>\n\nБоты, аккаунты и работа с каналами.", "automation"),
+        "home_tools": ("🧰 <b>Инструменты</b>\n\nЮзернеймы, подарки, видео и другие полезные штуки.", "tools"),
+        "home_ai": ("🧠 <b>ИИ и разработка</b>\n\nЧат с ИИ и работа с GitHub.", "ai"),
+        "home_profile": ("👤 <b>Профиль и помощь</b>\n\nТвой ID, Premium и связь с поддержкой.", "profile"),
     }
     page_text, category = pages[callback.data]
     await safe_edit_message(
