@@ -881,7 +881,9 @@ async def _animate_reply(
             except Exception:
                 # Continue with a new message if Telegram refuses to edit the current one.
                 logging.exception("Не удалось обновить анимируемый ответ; продолжаем новым сообщением")
-                current_text = candidate
+                # Предыдущий текст уже остался в предыдущем сообщении, поэтому
+                # в новом сообщении показываем только текущую строку, без дубля.
+                current_text = line or " "
                 current_message = await _answer_reply_text(message, current_text)
 
         if index < len(lines) - 1:
