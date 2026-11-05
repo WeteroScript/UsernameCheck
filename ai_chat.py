@@ -46,10 +46,6 @@ MAX_CUSTOM_PROMPT_FILE_BYTES = 64 * 1024
 
 MAX_CONTEXT_MESSAGES = 40
 TELEGRAM_TEXT_LIMIT = 4000
-MAX_UPLOAD_MB = max(1, int(os.getenv("AI_CHAT_MAX_UPLOAD_MB", "200")))
-MAX_UPLOAD_BYTES = MAX_UPLOAD_MB * 1024 * 1024
-MAX_ARCHIVE_FILES = 2000
-MAX_GENERATED_FILE_BYTES = 10 * 1024 * 1024
 TEXT_EXTENSIONS = {
     ".txt", ".md", ".csv", ".tsv", ".json", ".xml", ".html", ".htm",
     ".py", ".js", ".ts", ".jsx", ".tsx", ".css", ".scss", ".yaml", ".yml",
@@ -866,8 +862,6 @@ def _extract_file_content(filename: str, data: bytes, depth: int = 0) -> str:
     if extension in {".docx", ".pptx", ".xlsx"}:
         return _extract_office_xml(data, extension)
     if extension == ".zip":
-        if depth >= 2:
-            raise ValueError("Слишком большая глубина вложенных ZIP-архивов.")
         return _extract_zip_content(data, depth + 1)
     raise ValueError(
         f"Формат {extension or 'без расширения'} не поддерживается. "
@@ -879,16 +873,9 @@ def _extract_zip_content(data: bytes, depth: int = 0) -> str:
     try:
         with zipfile.ZipFile(io.BytesIO(data)) as archive:
             files = [item for item in archive.infolist() if not item.is_dir()]
-            if len(files) > MAX_ARCHIVE_FILES:
-                raise ValueError(f"В архиве больше {MAX_ARCHIVE_FILES} файлов.")
-            total_size = sum(item.file_size for item in files)
-            if total_size > 30 * 1024 * 1024:
-                raise ValueError("Распакованный размер архива превышает 30 МБ.")
 
             extracted = []
             for item in files:
-                if item.file_size > MAX_UPLOAD_BYTES:
-                    continue
                 filename = Path(item.filename).name
                 if not filename:
                     continue
@@ -918,8 +905,6 @@ async def _document_to_text(message: types.Message) -> str:
     document = message.document
     if not document:
         raise ValueError("Документ не найден.")
-    if document.file_size and document.file_size > MAX_UPLOAD_BYTES:
-        raise ValueError(f"Максимальный размер загружаемого файла — {MAX_UPLOAD_MB} МБ.")
     filename = document.file_name or "document"
     extension = Path(filename).suffix.lower()
     if extension not in SUPPORTED_FILE_EXTENSIONS:
@@ -933,12 +918,10 @@ async def _document_to_text(message: types.Message) -> str:
         with tempfile.TemporaryFile(mode="w+b") as buffer:
             await message.bot.download(document, destination=buffer)
             buffer.seek(0)
-            raw = buffer.read(MAX_UPLOAD_BYTES + 1)
+            raw = buffer.read()
     except Exception as exc:
         logging.exception("Не удалось скачать документ Telegram")
         raise RuntimeError("Не удалось скачать файл из Telegram.") from exc
-    if len(raw) > MAX_UPLOAD_BYTES:
-        raise ValueError(f"Максимальный размер загружаемого файла — {MAX_UPLOAD_MB} МБ.")
     content = _extract_file_content(filename, raw).strip()
     if not content:
         raise ValueError("В файле не удалось найти текст для передачи модели.")
@@ -1035,11 +1018,7 @@ def _extract_generated_files(reply: str):
             empty_files += 1
             logging.info("Пустой файл %s сохранён: ZIP поддерживает файлы нулевого размера.", filename)
         encoded = file_content.encode("utf-8")
-        if len(encoded) > MAX_GENERATED_FILE_BYTES:
-            raise ValueError(f"Сгенерированный файл {filename} превышает 10 МБ.")
         files.append((filename, encoded))
-        if len(files) > MAX_ARCHIVE_FILES:
-            raise ValueError(f"Модель вернула больше {MAX_ARCHIVE_FILES} файлов за один ответ.")
     visible_reply = pattern.sub("", reply).strip()
     if empty_files:
         warning = (
@@ -1051,14 +1030,6 @@ def _extract_generated_files(reply: str):
 
 def _build_generated_zip(files: List[tuple]) -> bytes:
     """Create a ZIP while preserving the project's relative directory structure."""
-    if len(files) > MAX_ARCHIVE_FILES:
-        raise ValueError(f"В архиве больше {MAX_ARCHIVE_FILES} файлов.")
-    total_size = sum(len(file_content) for _, file_content in files)
-    if total_size > MAX_UPLOAD_BYTES:
-        raise ValueError(
-            f"Общий размер сгенерированных файлов превышает лимит {MAX_UPLOAD_MB} МБ."
-        )
-
     output = io.BytesIO()
     used_names = set()
     with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED) as archive:
@@ -1076,10 +1047,7 @@ def _build_generated_zip(files: List[tuple]) -> bytes:
                 counter += 1
             used_names.add(candidate.casefold())
             archive.writestr(candidate, file_content)
-    archive_bytes = output.getvalue()
-    if len(archive_bytes) > MAX_UPLOAD_BYTES:
-        raise ValueError(f"Собранный ZIP превышает лимит отправки {MAX_UPLOAD_MB} МБ.")
-    return archive_bytes
+    return output.getvalue()
 
 
 def _is_file_creation_request(user_text: str) -> bool:
