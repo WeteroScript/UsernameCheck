@@ -45,7 +45,7 @@ def get_video_menu_keyboard() -> InlineKeyboardMarkup:
 async def video_menu(callback: types.CallbackQuery):
     await callback.answer()
     await callback.message.edit_text(
-        "🎥 <b>Скачать видео</b>\n\nВыбери источник:",
+        "🎥 <b>Скачать видео</b>\n\nОткуда скачать видео или фото?",
         parse_mode=ParseMode.HTML,
         reply_markup=get_video_menu_keyboard()
     )
