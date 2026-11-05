@@ -220,7 +220,7 @@ def _user_chats(user_id: int) -> List[Dict[str, Any]]:
 
 def _history_message_without_old_files(content: str) -> str:
     """Не сохраняет и не передаёт модели содержимое файлов из прошлых сообщений."""
-    marker = "\\n\\nПользователь приложил файл:"
+    marker = "\n\nПользователь приложил файл:"
     if marker in content:
         return content.split(marker, 1)[0] + "\\n\\n[Содержимое ранее приложенного файла не хранится в истории.]"
     if content.startswith("Пользователь приложил файл:"):
