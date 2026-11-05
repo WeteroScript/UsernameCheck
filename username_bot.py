@@ -1011,7 +1011,7 @@ async def change_length(callback: types.CallbackQuery, state: FSMContext):
         f"<i>Чем больше длина, тем больше одинаковых букв/цифр подряд можно "
         f"будет настроить.</i>\n\n",
         parse_mode=ParseMode.HTML,
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад", callback_data="fsm_back")]])
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад", callback_data="settings")]])
     )
 
 @router.message(UsernameSettingsStates.waiting_length)
@@ -1111,7 +1111,7 @@ async def watch_add(callback: types.CallbackQuery, state: FSMContext):
     await callback.message.edit_text(
         "✏️ Введи юзернейм для отслеживания (без @):",
         parse_mode=ParseMode.HTML,
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад", callback_data="fsm_back")]])
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад", callback_data="check_availability_menu")]])
     )
 
 
