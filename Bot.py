@@ -103,11 +103,11 @@ from channels_feature import init_channels_feature
 from shakalizer import init_shakalizer
 from gifts_feature import init_gifts_feature, setup as setup_gifts_feature
 from ai_chat import init_ai_chat, pause_ai_chat
-from github_integration import configuration_error as github_configuration_error, create_install_url as github_create_install_url, get_user_installation as github_get_user_installation, list_user_repositories as github_list_user_repositories, remove_user_installation as github_remove_user_installation
+from github_integration import configuration_error as github_configuration_error, request_device_code as github_request_device_code, complete_device_flow as github_complete_device_flow, get_user_installation as github_get_user_installation, list_user_repositories as github_list_user_repositories, remove_user_installation as github_remove_user_installation
 
 load_dotenv()
 
-APP_VERSION = "v1.0.6"
+APP_VERSION = "v1.0.7"
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 if not BOT_TOKEN:
@@ -662,12 +662,53 @@ async def github_menu(callback: types.CallbackQuery):
             text += "\n\n⚠️ Администратору нужно настроить GitHub App в Bothost."
             keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад", callback_data="main")]])
         else:
-            install_url = github_create_install_url(user_id)
             keyboard = InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="🔗 Подключить GitHub", url=install_url)],
+                [InlineKeyboardButton(text="🔗 Подключить GitHub", callback_data="github_connect")],
                 [InlineKeyboardButton(text="⬅️ Назад", callback_data="main")],
             ])
     await callback.message.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=keyboard)
+
+
+@dp.callback_query(lambda c: c.data == "github_connect")
+async def github_connect(callback: types.CallbackQuery):
+    await callback.answer()
+    try:
+        device = await github_request_device_code()
+    except Exception as exc:
+        logging.exception("Не удалось начать GitHub Device Flow")
+        await callback.message.answer("Не удалось начать подключение GitHub: " + html.escape(str(exc)[:400]))
+        return
+
+    code = html.escape(device["user_code"])
+    verification_uri = html.escape(device["verification_uri"], quote=True)
+    await callback.message.answer(
+        "Для подключения GitHub открой страницу <a href=\"" + verification_uri + "\">подтверждения</a> "
+        "и введи код:\n\n<code>" + code + "</code>\n\n"
+        "Код действует около " + str(max(1, int(device["expires_in"]) // 60)) + " мин. "
+        "После подтверждения бот автоматически предложит установить GitHub App.",
+        parse_mode=ParseMode.HTML,
+        disable_web_page_preview=True,
+    )
+    asyncio.create_task(_github_finish_device_flow(callback.message, callback.from_user.id, device))
+
+
+async def _github_finish_device_flow(message: types.Message, user_id: int, device: Dict[str, Any]):
+    try:
+        install_url = await github_complete_device_flow(
+            user_id,
+            device["device_code"],
+            device["interval"],
+            device["expires_in"],
+        )
+        await message.answer(
+            "Аккаунт GitHub подтверждён. Теперь установи приложение и выбери репозитории:",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="Установить GitHub App", url=install_url)],
+            ]),
+        )
+    except Exception as exc:
+        logging.info("GitHub Device Flow завершён с сообщением: %s", exc)
+        await message.answer("Подключение GitHub не завершено: " + html.escape(str(exc)[:400]))
 
 
 @dp.callback_query(lambda c: c.data == "github_repos")
