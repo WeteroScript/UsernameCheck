@@ -33,7 +33,7 @@ from dotenv import load_dotenv
 from cryptography.fernet import Fernet, InvalidToken
 from access_control import is_premium
 from github_integration import fetch_repository_context, create_repository_pull_request
-from storage import data_file
+from storage import data_file, data_directory
 
 load_dotenv()
 
@@ -45,6 +45,9 @@ HISTORY_PATH = Path(data_file(os.getenv("AI_CHAT_HISTORY_FILE", "ai_chats.json")
 SETTINGS_PATH = Path(data_file(os.getenv("AI_CHAT_SETTINGS_FILE", "ai_chat_settings.json")))
 MAX_CUSTOM_PROMPT_CHARS = 20000
 MAX_CUSTOM_PROMPT_FILE_BYTES = 64 * 1024
+CHAT_ARCHIVE_DIR = Path(data_directory("ai_chat_archives"))
+MAX_CHAT_ARCHIVES = 8
+MAX_CHAT_ARCHIVE_CONTEXT_CHARS = 400_000
 
 MAX_CONTEXT_MESSAGES = 40
 TELEGRAM_TEXT_LIMIT = 4000
@@ -120,7 +123,12 @@ SYSTEM_PROMPT = (
     "TypeScript, CSS, SQL и другие исходники. Не выдавай обычный текст за бинарный PDF, "
     "DOCX, XLSX или PPTX. Если нужен такой формат, объясни именно это ограничение, "
     "но всё равно создай доступные исходники отдельными блоками FILE. "
-    "Не заявляй, что вложение готово, пока не вернул его полное содержимое в блоке FILE."
+    "Не заявляй, что вложение готово, пока не вернул его полное содержимое в блоке FILE. "
+    "ДОСТУП К РАНЕЕ ПРИСЛАННЫМ ZIP: содержимое ZIP-архивов, которые пользователь загрузил "
+    "в этот же диалог, сохраняется ботом отдельно и повторно передаётся тебе в следующих "
+    "запросах. Используй эти архивы как исходный код проекта на последующих этапах; "
+    "не проси загрузить их повторно, если содержимое присутствует в блоке сохранённых архивов. "
+    "Архивы других диалогов недоступны и не должны смешиваться."
 )
 SYSTEM_PROMPT += (
     "СТИЛЬ ОТОБРАЖАЕМОГО ОТВЕТА: обычные ответы пиши простым, естественным текстом на языке пользователя. "
@@ -560,6 +568,100 @@ def _history_without_old_files(messages: List[Dict[str, Any]]) -> List[Dict[str,
                 if item["role"] == "user" else content,
         })
     return cleaned
+
+
+def _chat_archive_directory(user_id: int, chat_id: str) -> Path:
+    safe_chat_id = hashlib.sha256(str(chat_id).encode("utf-8")).hexdigest()[:24]
+    return CHAT_ARCHIVE_DIR / str(int(user_id)) / safe_chat_id
+
+
+def _persist_chat_archive_context(
+    user_id: int,
+    chat: Dict[str, Any],
+    filename: str,
+    document_text: str,
+) -> None:
+    """Persist extracted ZIP contents so later turns in this chat can reuse them."""
+    marker = "Извлечённое содержимое:\\n"
+    content = document_text.split(marker, 1)[1] if marker in document_text else document_text
+    content = content.strip()
+    if not content:
+        raise ValueError("В ZIP не найдено содержимое для сохранения.")
+
+    archive_id = uuid.uuid4().hex
+    directory = _chat_archive_directory(user_id, str(chat.get("id") or ""))
+    directory.mkdir(parents=True, exist_ok=True)
+    target = directory / f"{archive_id}.txt"
+    temporary = directory / f"{archive_id}.tmp"
+    try:
+        temporary.write_text(content, encoding="utf-8")
+        os.replace(temporary, target)
+    except OSError:
+        temporary.unlink(missing_ok=True)
+        logging.exception("Не удалось сохранить содержимое ZIP для чата %s", chat.get("id"))
+        raise RuntimeError("Не удалось сохранить ZIP в постоянное хранилище бота.")
+
+    archives = chat.setdefault("project_archives", [])
+    if not isinstance(archives, list):
+        archives = []
+        chat["project_archives"] = archives
+    archives.append({
+        "id": archive_id,
+        "filename": Path(filename).name[:180],
+        "uploaded_at": _now(),
+        "chars": len(content),
+    })
+
+    # Keep a bounded, recent project context. Oldest archives are pruned first.
+    while len(archives) > MAX_CHAT_ARCHIVES or sum(
+        max(0, int(item.get("chars", 0))) for item in archives if isinstance(item, dict)
+    ) > MAX_CHAT_ARCHIVE_CONTEXT_CHARS:
+        oldest = archives.pop(0)
+        old_id = str(oldest.get("id") or "") if isinstance(oldest, dict) else ""
+        if re.fullmatch(r"[a-f0-9]{32}", old_id):
+            try:
+                (_chat_archive_directory(user_id, str(chat.get("id") or "")) / f"{old_id}.txt").unlink(missing_ok=True)
+            except OSError:
+                logging.warning("Не удалось удалить устаревший контекст ZIP %s", old_id)
+
+    if not _save_history():
+        archives[:] = [item for item in archives if item.get("id") != archive_id]
+        target.unlink(missing_ok=True)
+        raise RuntimeError("Не удалось сохранить сведения о ZIP в истории чата.")
+
+
+def _load_chat_archive_context(user_id: int, chat: Dict[str, Any]) -> str:
+    """Load persisted ZIP contents belonging only to the selected chat."""
+    archives = chat.get("project_archives", [])
+    if not isinstance(archives, list):
+        return ""
+    directory = _chat_archive_directory(user_id, str(chat.get("id") or ""))
+    sections = []
+    total_chars = 0
+    for item in archives:
+        if not isinstance(item, dict):
+            continue
+        archive_id = str(item.get("id") or "")
+        if not re.fullmatch(r"[a-f0-9]{32}", archive_id):
+            continue
+        try:
+            content = (directory / f"{archive_id}.txt").read_text(encoding="utf-8")
+        except FileNotFoundError:
+            logging.warning("Сохранённый ZIP-контекст отсутствует: chat=%s archive=%s", chat.get("id"), archive_id)
+            continue
+        except OSError:
+            logging.exception("Не удалось прочитать ZIP-контекст: chat=%s archive=%s", chat.get("id"), archive_id)
+            continue
+        remaining = MAX_CHAT_ARCHIVE_CONTEXT_CHARS - total_chars
+        if remaining <= 0:
+            break
+        if len(content) > remaining:
+            content = content[:remaining] + "\\n[Контекст архива обрезан общим лимитом чата.]"
+        sections.append(
+            f"===== Архив: {Path(str(item.get('filename') or 'archive.zip')).name} =====\\n{content}"
+        )
+        total_chars += len(content)
+    return "\\n\\n".join(sections)
 
 
 def _find_chat(user_id: int, chat_id: str) -> Optional[Dict[str, Any]]:
@@ -2305,13 +2407,23 @@ async def ai_chat_message(message: types.Message, state: FSMContext):
         return
 
     user_text = (message.text or message.caption or "").strip()
+    uploaded_archive_text = None
+    uploaded_archive_name = None
     if message.document:
         try:
             document_text = await _document_to_text(message)
         except (ValueError, RuntimeError) as exc:
             await message.answer(f"Не удалось обработать файл: {exc}")
             return
-        user_text = f"{user_text}\n\n{document_text}".strip()
+        if Path(message.document.file_name or "").suffix.lower() == ".zip":
+            uploaded_archive_text = document_text
+            uploaded_archive_name = message.document.file_name or "archive.zip"
+            user_text = (
+                f"{user_text}\\n\\nПользователь приложил файл: {uploaded_archive_name}. "
+                "Содержимое ZIP сохранено в контексте этого диалога и доступно для следующих этапов."
+            ).strip()
+        else:
+            user_text = f"{user_text}\\n\\n{document_text}".strip()
     elif not user_text:
         await message.answer(
             "Отправь текст или документ. Поддерживаются TXT, MD, CSV, JSON, XML, "
@@ -2330,6 +2442,15 @@ async def ai_chat_message(message: types.Message, state: FSMContext):
         await state.clear()
         await message.answer("Активный диалог не выбран. Открой «Мои чаты» и выбери диалог или создай новый.")
         return
+    if uploaded_archive_text is not None and uploaded_archive_name:
+        try:
+            _persist_chat_archive_context(
+                user_id, chat, uploaded_archive_name, uploaded_archive_text
+            )
+        except (OSError, RuntimeError, ValueError) as exc:
+            await message.answer(f"Не удалось сохранить ZIP для следующих этапов: {exc}")
+            return
+
     model = str(chat.get("model", "неизвестная модель"))
     if _is_paid_model(model) and not is_premium(user_id):
         await state.clear()
@@ -2393,6 +2514,14 @@ async def ai_chat_message(message: types.Message, state: FSMContext):
 
         repository_snapshot = None
         request_text = user_text
+        saved_archive_context = _load_chat_archive_context(user_id, chat)
+        if saved_archive_context:
+            request_text += (
+                "\\n\\n[СОХРАНЁННОЕ СОДЕРЖИМОЕ ZIP-АРХИВОВ ЭТОГО ДИАЛОГА]\\n"
+                + saved_archive_context
+                + "\\n\\nИспользуй сохранённые архивы как исходные материалы текущего проекта. "
+                "Сохраняй совместимость с ранее присланными файлами и не проси загрузить архив повторно."
+            )
         if repository_reference:
             if _github_reference_has_branch(repository_url):
                 branch_override = None
