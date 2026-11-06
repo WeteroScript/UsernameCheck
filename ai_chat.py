@@ -936,9 +936,9 @@ async def _answer_reply_text(message: types.Message, text: str) -> types.Message
 
 
 class _StreamingReplyDisplay:
-    """Показывает ответ по одной законченной строке/фразе с шагом 0,5 секунды."""
+    """Показывает ответ построчно, редактируя одно сообщение раз в секунду."""
 
-    EDIT_INTERVAL_SECONDS = 0.5
+    EDIT_INTERVAL_SECONDS = 1.0
 
     def __init__(
         self,
@@ -964,17 +964,9 @@ class _StreamingReplyDisplay:
 
     @staticmethod
     def _next_boundary(text: str, start: int) -> Optional[int]:
-        """Возвращает конец следующей строки или законченного предложения."""
-        candidates = []
+        """Возвращает конец только следующей строки; предложения не разделяет."""
         newline_at = text.find("\n", start)
-        if newline_at >= 0:
-            candidates.append(newline_at + 1)
-
-        sentence = re.search(r'[.!?…](?:["»”’)\]]*)\s+', text[start:])
-        if sentence:
-            candidates.append(start + sentence.end())
-
-        return min(candidates) if candidates else None
+        return newline_at + 1 if newline_at >= 0 else None
 
     async def _update_messages(self, text: str) -> None:
         new_chunks = _split_reply_chunks(text)
