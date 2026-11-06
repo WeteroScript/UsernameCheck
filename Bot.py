@@ -4578,6 +4578,7 @@ async def main():
     init_username_bot(dp)
     init_gram_bot(dp)
     init_extra_features(dp)
+    init_premium_payments(dp, bot)
     init_video_download(dp)
     init_channels_feature(dp)
     init_shakalizer(dp)
