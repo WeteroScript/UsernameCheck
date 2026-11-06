@@ -496,9 +496,10 @@ async def fetch_repository_context(telegram_user_id: int, reference: str, branch
         entries = []
         while pending_trees:
             tree_sha, parent_path = pending_trees.pop()
-            if tree_sha in visited_trees:
+            tree_key = (tree_sha, parent_path)
+            if tree_key in visited_trees:
                 continue
-            visited_trees.add(tree_sha)
+            visited_trees.add(tree_key)
             tree_data = await _api_json(
                 session, "GET",
                 "/repos/{}/git/trees/{}".format(full_name, tree_sha),
@@ -526,7 +527,7 @@ async def fetch_repository_context(telegram_user_id: int, reference: str, branch
         }
 
         def is_sensitive_path(path: str) -> bool:
-            parts = [part.lower() for part in path.split("/") ]
+            parts = [part.lower() for part in path.split("/")]
             basename = parts[-1] if parts else ""
             if basename in excluded_names:
                 return True
@@ -569,7 +570,7 @@ async def fetch_repository_context(telegram_user_id: int, reference: str, branch
                     )
                     continue
                 raw = base64.b64decode(blob["content"], validate=False)
-                if b"\\x00" in raw:
+                if b"\x00" in raw:
                     continue
                 text_content = raw.decode("utf-8")
             except (UnicodeDecodeError, ValueError, RuntimeError):
