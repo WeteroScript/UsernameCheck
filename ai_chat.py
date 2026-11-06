@@ -1551,7 +1551,7 @@ async def ai_settings(callback: types.CallbackQuery, state: FSMContext):
     await callback.answer()
     await state.clear()
     await callback.message.edit_text(
-        "⚙️ <b>Настройки ИИ-чатов</b>\\n\\n"
+        "⚙️ <b>Настройки ИИ-чатов</b>\n\n"
         "Пользовательский промпт и личный API настраиваются отдельно.",
         parse_mode="HTML",
         reply_markup=_ai_settings_keyboard(),
@@ -1917,7 +1917,7 @@ async def ai_model_folder(callback: types.CallbackQuery, state: FSMContext):
     await callback.answer()
     await state.clear()
     await callback.message.edit_text(
-        f"📁 <b>{html.escape(_model_folder_title(model))}</b>\\n\\n"
+        f"📁 <b>{html.escape(_model_folder_title(model))}</b>\n\n"
         f"Сохранено диалогов: {count}. Выбери чат, чтобы продолжить:",
         parse_mode="HTML",
         reply_markup=_my_chats_keyboard(user_id, model_filter=model),
@@ -1930,12 +1930,12 @@ async def ai_my_chats(callback: types.CallbackQuery, state: FSMContext):
     await state.clear()
     chats = _user_chats(callback.from_user.id)
     if not chats:
-        text = "📚 <b>Мои чаты</b>\\n\\nСохранённых диалогов пока нет. Создай первый чат."
+        text = "📚 <b>Мои чаты</b>\n\nСохранённых диалогов пока нет. Создай первый чат."
     else:
         model_count = len({str(chat.get("model") or "unknown") for chat in chats})
         text = (
-            "📚 <b>Мои чаты</b>\\n\\n"
-            f"Всего диалогов: {len(chats)} · Папок моделей: {model_count}.\\n"
+            "📚 <b>Мои чаты</b>\n\n"
+            f"Всего диалогов: {len(chats)} · Папок моделей: {model_count}.\n"
             "Выбери папку модели:"
         )
     await callback.message.edit_text(
