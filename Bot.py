@@ -985,9 +985,9 @@ async def dodeeper_settings(callback: types.CallbackQuery):
     user_id = callback.from_user.id
     cfg = get_session_config(user_id, phone)
     text = (
-        f"⚙️ <b>Настройки сессии</b>\n\n"
-        f"📱 <code>{phone}</code>\n"
-        tr(user_id, "dodeeper_work", work=_dodeeper_work_name(cfg.get("dodeeper_work"), user_id))
+        tr(user_id, "dodeeper_settings") + "\n\n"
+        + tr(user_id, "dodeeper_session", phone=phone) + "\n"
+        + tr(user_id, "dodeeper_work", work=_dodeeper_work_name(cfg.get("dodeeper_work"), user_id))
     )
     await safe_edit_message(
         callback.message,
