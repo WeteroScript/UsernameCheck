@@ -32,6 +32,14 @@ load_dotenv()
 router = Router()
 
 
+def _is_english(user_id: int) -> bool:
+    return tr(user_id, "username_style_random") == "🔤 Standard"
+
+
+def _premium_required_text(user_id: int) -> str:
+    return f"{PREMIUM_ICON} Premium access required" if _is_english(user_id) else _premium_required_text(user_id)
+
+
 class UsernameSettingsStates(StatesGroup):
     waiting_length = State()
     waiting_watch_username = State()
@@ -806,7 +814,7 @@ async def _run_username_search(callback: types.CallbackQuery, send_new: bool):
         for username, is_free in results.items():
             if is_free:
                 await msg.edit_text(
-                    tr(user_id, "username_found") + f"\n\n✅ <code>@{username}</code>\n\n{tr(user_id, "username_optimistic")}",
+                    tr(user_id, "username_found") + f"\n\n✅ <code>@{username}</code>" + "\n\n" + tr(user_id, "username_optimistic"),
                     parse_mode=ParseMode.HTML,
                     reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                         [InlineKeyboardButton(text=tr(user_id, "username_claim"), url=f"https://t.me/{username}")],
@@ -925,7 +933,7 @@ async def set_count(callback: types.CallbackQuery):
 async def change_digit(callback: types.CallbackQuery):
     user_id = callback.from_user.id
     if not is_premium(user_id):
-        await callback.answer(f"{PREMIUM_ICON} Доступно только с премиум-подпиской", show_alert=True)
+        await callback.answer(_premium_required_text(user_id), show_alert=True)
         return
     await callback.answer()
     await callback.message.edit_text(tr(user_id, "username_choose_digit"), reply_markup=get_digit_keyboard(user_id))
@@ -934,7 +942,7 @@ async def change_digit(callback: types.CallbackQuery):
 async def set_digit(callback: types.CallbackQuery):
     user_id = callback.from_user.id
     if not is_premium(user_id):
-        await callback.answer(f"{PREMIUM_ICON} Доступно только с премиум-подпиской", show_alert=True)
+        await callback.answer(_premium_required_text(user_id), show_alert=True)
         return
     digit = callback.data.replace("set_digit_", "")
     get_user_settings(user_id)["digit"] = digit
@@ -954,7 +962,7 @@ async def clear_digit(callback: types.CallbackQuery):
 async def change_digit_count(callback: types.CallbackQuery):
     user_id = callback.from_user.id
     if not is_premium(user_id):
-        await callback.answer(f"{PREMIUM_ICON} Premium only" if tr(user_id, "username_style_random") == "🔤 Standard" else f"{PREMIUM_ICON} Доступно только с премиум-подпиской", show_alert=True)
+        await callback.answer(f"{PREMIUM_ICON} Premium only" if tr(user_id, "username_style_random") == "🔤 Standard" else _premium_required_text(user_id), show_alert=True)
         return
     await callback.answer()
     settings = get_user_settings(user_id)
@@ -970,7 +978,7 @@ async def change_digit_count(callback: types.CallbackQuery):
 async def set_digit_count(callback: types.CallbackQuery):
     user_id = callback.from_user.id
     if not is_premium(user_id):
-        await callback.answer(f"{PREMIUM_ICON} Доступно только с премиум-подпиской", show_alert=True)
+        await callback.answer(_premium_required_text(user_id), show_alert=True)
         return
     count = int(callback.data.replace("set_digit_count_", ""))
     s = get_user_settings(user_id)
@@ -989,7 +997,7 @@ async def toggle_underscore(callback: types.CallbackQuery):
         await callback.answer("🔒 Недоступно при стиле «Красивые»", show_alert=True)
         return
     if not is_premium(user_id):
-        await callback.answer(f"{PREMIUM_ICON} Доступно только с премиум-подпиской", show_alert=True)
+        await callback.answer(_premium_required_text(user_id), show_alert=True)
         return
     s["allow_underscore"] = not s.get("allow_underscore", False)
     await callback.answer(f"✅ '_' в юзернейме: {'включено' if s['allow_underscore'] else 'выключено'}")
@@ -1081,7 +1089,7 @@ async def reset_settings(callback: types.CallbackQuery):
 async def check_availability_menu(callback: types.CallbackQuery):
     user_id = callback.from_user.id
     if not is_premium(user_id):
-        await callback.answer(f"{PREMIUM_ICON} Premium only" if tr(user_id, "username_style_random") == "🔤 Standard" else f"{PREMIUM_ICON} Доступно только с премиум-подпиской", show_alert=True)
+        await callback.answer(f"{PREMIUM_ICON} Premium only" if tr(user_id, "username_style_random") == "🔤 Standard" else _premium_required_text(user_id), show_alert=True)
         return
     await callback.answer()
     items = watched_usernames.get(user_id, [])
@@ -1106,7 +1114,7 @@ async def check_availability_menu(callback: types.CallbackQuery):
 async def watch_add(callback: types.CallbackQuery, state: FSMContext):
     user_id = callback.from_user.id
     if not is_premium(user_id):
-        await callback.answer(f"{PREMIUM_ICON} Доступно только с премиум-подпиской", show_alert=True)
+        await callback.answer(_premium_required_text(user_id), show_alert=True)
         return
     if len(watched_usernames.get(user_id, [])) >= MAX_WATCHED_PER_USER:
         await callback.answer(f"❌ Максимум {MAX_WATCHED_PER_USER} юзернеймов в отслеживании", show_alert=True)
