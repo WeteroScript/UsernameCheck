@@ -955,7 +955,6 @@ class _StreamingReplyDisplay:
 
 
 def _decode_text(data: bytes) -> str:
-def _decode_text(data: bytes) -> str:
     for encoding in ("utf-8-sig", "cp1251", "latin-1"):
         try:
             return data.decode(encoding)
