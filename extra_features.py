@@ -14,7 +14,8 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from typing import Optional, List, Dict
 
-from access_control import is_admin, get_all_admins, is_tech_support_blocked
+from access_control import is_admin, is_premium, get_all_admins, is_tech_support_blocked
+from i18n import tr
 
 router = Router()
 _bot_instance = None
@@ -151,27 +152,32 @@ async def github_query_input(message: types.Message, state: FSMContext):
 
 @router.callback_query(lambda c: c.data == "premium_menu")
 async def premium_menu(callback: types.CallbackQuery):
+    user_id = callback.from_user.id
     await callback.answer()
+
+    description = tr(user_id, "premium_description")
+    if is_premium(user_id):
+        description += "\n\n" + tr(user_id, "premium_active")
+
     await callback.message.edit_text(
-        "💎 <b>Премиум</b>\n\n"
-        "Что даёт премиум-подписка:\n\n"
-        "📱 <b>Аккаунты:</b>\n"
-        "  • До 10 аккаунтов вместо 3\n"
-        "  • Подключение номеров любых стран (без премиума — только РФ, "
-        "Украина, Беларусь, Молдова, Грузия, Армения, Азербайджан, "
-        "Кыргызстан, Туркменистан, Узбекистан, Таджикистан)\n\n"
-        "👤 <b>Юзернеймы:</b>\n"
-        "  • Стиль генерации «Красивые»\n"
-        "  • Повтор цифры в юзернейме и вставка «_»\n"
-        "  • Отслеживание доступности юзернейма (проверка каждые 10 минут)\n\n"
-        "🤖 <b>Боты (PR GRAMM):</b>\n"
-        "  • Тип заданий «Боты» (платный тип заданий)\n\n"
-        "Для покупки обратитесь к нашему менеджеру @BotFarmSupport",
+        tr(user_id, "premium_title") + "\n\n" + description,
         parse_mode=ParseMode.HTML,
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="✍️ Написать", url="https://t.me/BotFarmSupport")],
-            [InlineKeyboardButton(text="⬅️ Назад", callback_data="home_profile")],
-        ])
+            [InlineKeyboardButton(
+                text=tr(user_id, "premium_buy"),
+                callback_data="premium_buy_crypto",
+                style=ButtonStyle.SUCCESS,
+            )],
+            [InlineKeyboardButton(
+                text=tr(user_id, "premium_ton"),
+                url="https://t.me/BotFarmSupport",
+            )],
+            [InlineKeyboardButton(
+                text=tr(user_id, "premium_back"),
+                callback_data="home_profile",
+                style=ButtonStyle.DANGER,
+            )],
+        ]),
     )
 
 
