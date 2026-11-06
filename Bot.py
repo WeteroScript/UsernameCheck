@@ -636,9 +636,7 @@ async def start_command(message: types.Message, state: FSMContext):
         user_session_config[user_id] = {}
     
     await message.answer(
-        f"👋 Привет, {message.from_user.first_name or 'Пользователь'}!\n\n"
-        f"Здесь собраны инструменты для Telegram, аккаунтов, каналов и работы с ИИ.\n"
-        f"Выбирай раздел — нужная функция найдётся быстро:",
+        tr(user_id, "start_greeting", name=html.escape(message.from_user.first_name or "there")),
         parse_mode=ParseMode.HTML,
         reply_markup=get_main_keyboard(message.from_user.id)
     )
@@ -650,8 +648,7 @@ async def main_menu(callback: types.CallbackQuery, state: FSMContext):
     await callback.answer()
     await safe_edit_message(
         callback.message,
-        "🏠 <b>Главное меню</b>\n\n"
-        "Что будем делать? Выбирай нужный раздел:",
+        tr(callback.from_user.id, "main_title"),
         parse_mode=ParseMode.HTML,
         reply_markup=get_main_keyboard(callback.from_user.id)
     )
@@ -661,17 +658,17 @@ async def main_menu(callback: types.CallbackQuery, state: FSMContext):
 async def home_category_menu(callback: types.CallbackQuery):
     await callback.answer()
     pages = {
-        "home_automation": ("🤖 <b>Автоматизация</b>\n\nБоты, аккаунты и работа с каналами.", "automation"),
-        "home_tools": ("🧰 <b>Инструменты</b>\n\nЮзернеймы, подарки, видео и другие полезные штуки.", "tools"),
-        "home_ai": ("🧠 <b>ИИ и разработка</b>\n\nЧат с ИИ и работа с GitHub.", "ai"),
-        "home_profile": ("👤 <b>Профиль и помощь</b>\n\nТвой ID, Premium и связь с поддержкой.", "profile"),
+        "home_automation": (tr(callback.from_user.id, "automation_title") + "\n\n" + tr(callback.from_user.id, "automation_desc"), "automation"),
+        "home_tools": (tr(callback.from_user.id, "tools_title") + "\n\n" + tr(callback.from_user.id, "tools_desc"), "tools"),
+        "home_ai": (tr(callback.from_user.id, "ai_title") + "\n\n" + tr(callback.from_user.id, "ai_desc"), "ai"),
+        "home_profile": (tr(callback.from_user.id, "profile_title") + "\n\n" + tr(callback.from_user.id, "profile_desc"), "profile"),
     }
     page_text, category = pages[callback.data]
     await safe_edit_message(
         callback.message,
         page_text,
         parse_mode=ParseMode.HTML,
-        reply_markup=get_home_category_keyboard(category),
+        reply_markup=get_home_category_keyboard(category, callback.from_user.id),
     )
 
 
@@ -852,7 +849,7 @@ async def bots_menu(callback: types.CallbackQuery):
     await callback.answer()
     await safe_edit_message(
         callback.message,
-        "🤖 <b>Боты</b>\n\nВыбери бота:",
+        tr(callback.from_user.id, "bots_title"),
         parse_mode=ParseMode.HTML,
         reply_markup=get_bots_list_keyboard(callback.from_user.id)
     )
@@ -2221,11 +2218,9 @@ async def username_menu(callback: types.CallbackQuery):
     await callback.answer()
     await safe_edit_message(
         callback.message,
-        "👤 <b>Раздел Юзернеймы</b>\n\n"
-        "🔍 Поиск свободных юзернеймов по вашим критериям\n\n"
-        "Выбери действие:",
+        tr(callback.from_user.id, "username_title") + "\n\n" + tr(callback.from_user.id, "username_intro"),
         parse_mode=ParseMode.HTML,
-        reply_markup=get_username_keyboard()
+        reply_markup=get_username_keyboard(callback.from_user.id)
     )
 
 
