@@ -1130,7 +1130,7 @@ def _extract_zip_content(data, depth: int = 0) -> str:
                 if item.is_dir():
                     continue
 
-                relative_name = item.filename.replace("\\\\", "/").lstrip("/")
+                relative_name = item.filename.replace("\\", "/").lstrip("/")
                 if not relative_name or any(part == ".." for part in relative_name.split("/")):
                     continue
                 if Path(relative_name).suffix.lower() not in SUPPORTED_FILE_EXTENSIONS:
@@ -1161,8 +1161,8 @@ def _extract_zip_content(data, depth: int = 0) -> str:
                         extracted.append("[Остальное содержимое пропущено: достигнут лимит текста 800 000 символов.]")
                         break
                     if len(content) > remaining_chars:
-                        content = content[:remaining_chars] + "\\n[Содержимое обрезано: достигнут лимит 800 000 символов.]"
-                        extracted.append(f"===== {relative_name} =====\\n{content}")
+                        content = content[:remaining_chars] + "\n[Содержимое обрезано: достигнут лимит 800 000 символов.]"
+                        extracted.append(f"===== {relative_name} =====\n{content}")
                         total_chars = 800_000
                         skipped_files += 1
                         break
@@ -1181,7 +1181,7 @@ def _extract_zip_content(data, depth: int = 0) -> str:
             processed_files, skipped_files, total_uncompressed, total_chars,
             depth, time.monotonic() - started_at,
         )
-        return "\\n\\n".join(extracted)
+        return "\n\n".join(extracted)
     except zipfile.BadZipFile as exc:
         raise ValueError("Файл не является корректным ZIP-архивом.") from exc
 
@@ -1221,42 +1221,6 @@ async def _document_to_text(message: types.Message) -> str:
     logging.info(
         "Document extraction completed: filename=%s size=%s chars=%s elapsed=%.2fs",
         filename, document.file_size, len(content), time.monotonic() - extraction_started_at,
-    )
-    if not content:
-        raise ValueError("В файле не удалось найти текст для передачи модели.")
-    return (
-        f"Пользователь приложил файл: {filename}\\n"
-        f"Извлечённое содержимое:\\n{content}"
-    )
-
-async def _document_to_text(message: types.Message) -> str:
-    document = message.document
-    if not document:
-        raise ValueError("Документ не найден.")
-    filename = document.file_name or "document"
-    extension = Path(filename).suffix.lower()
-    if extension not in SUPPORTED_FILE_EXTENSIONS:
-        raise ValueError(
-            "Этот формат не поддерживается. Принимаются TXT, MD, CSV, JSON, "
-            "XML, код, PDF, DOCX, PPTX, XLSX и ZIP с такими файлами."
-        )
-
-    try:
-        # Временный файл не держит ещё одну копию загрузки в оперативной памяти.
-        with tempfile.TemporaryFile(mode="w+b") as buffer:
-            await message.bot.download(document, destination=buffer)
-            buffer.seek(0)
-            raw = buffer.read()
-    except Exception as exc:
-        logging.exception("Не удалось скачать документ Telegram")
-        raise RuntimeError("Не удалось скачать файл из Telegram.") from exc
-    # Извлечение PDF/Office/ZIP может быть CPU- и I/O-затратным.
-    # Выполняем его в рабочем потоке, чтобы не блокировать обработку Telegram.
-    extraction_started_at = time.monotonic()
-    content = (await asyncio.to_thread(_extract_file_content, filename, raw)).strip()
-    logging.info(
-        "Document extraction completed: filename=%s bytes=%s chars=%s elapsed=%.2fs",
-        filename, len(raw), len(content), time.monotonic() - extraction_started_at,
     )
     if not content:
         raise ValueError("В файле не удалось найти текст для передачи модели.")
