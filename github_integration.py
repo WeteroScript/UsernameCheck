@@ -447,7 +447,7 @@ async def _api_json(
             message = data.get("message", str(data)) if isinstance(data, dict) else str(data)
             hint = ""
             if response.status == 404 and path.startswith("/repos/"):
-                if "/git/ref/heads/" in path:
+                if "/git/refs/heads/" in path:
                     hint = " Ветка не найдена: проверь её имя и доступность для GitHub App."
                 else:
                     hint = (
@@ -480,7 +480,7 @@ async def fetch_repository_context(telegram_user_id: int, reference: str, branch
         encoded_branch = quote(branch, safe="")
         branch_ref = await _api_json(
             session, "GET",
-            "/repos/{}/git/ref/heads/{}".format(full_name, encoded_branch),
+            "/repos/{}/git/refs/heads/{}".format(full_name, encoded_branch),
             token,
         )
         head_commit = await _api_json(
@@ -628,7 +628,7 @@ async def create_repository_pull_request(
         repo_data = await _api_json(session, "GET", "/repos/" + full_name, token)
         base_branch = base_branch_override or repo_data.get("default_branch") or "main"
         encoded_branch = quote(base_branch, safe="")
-        ref_path = "/repos/{}/git/ref/heads/{}".format(full_name, encoded_branch)
+        ref_path = "/repos/{}/git/refs/heads/{}".format(full_name, encoded_branch)
         ref_data = await _api_json(session, "GET", ref_path, token)
         base_sha = ref_data["object"]["sha"]
         base_commit = await _api_json(
