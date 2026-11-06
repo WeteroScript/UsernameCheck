@@ -2513,7 +2513,7 @@ async def ai_chat_message(message: types.Message, state: FSMContext):
         # Если пользователь явно запросил файл, но модель не создала ни одного
         # непустого вложения, один раз просим её повторить генерацию.
         if (
-            (_is_file_creation_request(user_text) or archive_followup)
+            (_is_file_creation_request(user_text) or _is_archive_request(user_text) or archive_followup)
             and (not _is_large_project_request(user_text) or _is_archive_request(user_text) or archive_followup)
             and not generated_files
             and not github_files
@@ -2585,8 +2585,11 @@ async def ai_chat_message(message: types.Message, state: FSMContext):
         if stream_display is not None:
             stream_display.visible_text = display_text
             await stream_display.render(force=True)
-        if len(generated_files) >= 2 or _is_archive_request(user_text) or archive_followup or any(
-            not file_content for _, file_content in generated_files
+        if generated_files and (
+            len(generated_files) >= 2
+            or _is_archive_request(user_text)
+            or archive_followup
+            or any(not file_content for _, file_content in generated_files)
         ):
             try:
                 archive_content = _build_generated_zip(generated_files)
