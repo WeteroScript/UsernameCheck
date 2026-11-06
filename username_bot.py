@@ -852,23 +852,23 @@ async def open_settings_callback(callback: types.CallbackQuery):
     user_id = callback.from_user.id
     settings = get_user_settings(user_id)
     examples = "\n".join(f"• <code>{e}</code>" for e in generate_examples(settings, 4, user_id))
-    
+    style_key = "username_style_beautiful" if settings["style"] == "beautiful" else "username_style_random"
     lines = [
-        f"⚙️ <b>Настройки</b>\n",
-        f"📌 Стиль: <b>{STYLE_NAMES.get(settings['style'], settings['style'])}</b>",
-        f"📌 Длина юзернейма: <b>{settings['max_length']}</b>",
+        tr(user_id, "username_settings_title"),
+        f"🎨 {tr(user_id, 'username_style')}: <b>{tr(user_id, style_key)}</b>",
+        f"📏 {tr(user_id, 'username_length')}: <b>{settings['max_length']}</b>",
     ]
     if settings["style"] != "beautiful":
-        lines.append(f"📌 Буква: <b>{settings['letter'].upper()}</b> ×{settings['repeat_count']}")
+        lines.append(f"{tr(user_id, 'username_letter_repeat')}: <b>{settings['letter'].upper()}</b> ×{settings['repeat_count']}")
         if is_premium(user_id) and settings.get("digit") is not None and settings.get("digit_repeat_count", 0) > 0:
-            lines.append(f"📌 Цифра: <b>{settings['digit']}</b> ×{settings['digit_repeat_count']}")
+            lines.append(f"{tr(user_id, 'username_digit_repeat')}: <b>{settings['digit']}</b> ×{settings['digit_repeat_count']}")
         if is_premium(user_id) and settings.get("allow_underscore"):
-            lines.append("📌 '_' в юзернейме: <b>включено</b>")
+            lines.append(tr(user_id, "username_underscore_enabled"))
     else:
-        lines.append("<i>При стиле «Красивые» остальные настройки генерации недоступны.</i>")
-    
+        lines.append(tr(user_id, "username_beautiful_note"))
+
     await callback.message.edit_text(
-        "\n".join(lines) + f"\n\n📝 Примеры:\n{examples}",
+        "\n".join(lines) + f"\n\n{tr(user_id, 'username_examples')}:\n{examples}",
         parse_mode=ParseMode.HTML,
         reply_markup=get_settings_keyboard(user_id)
     )
@@ -883,7 +883,7 @@ async def settings_repeats_menu(callback: types.CallbackQuery):
         return
     await callback.answer()
     await callback.message.edit_text(
-        "🔁 <b>Повторения</b>\n\nНастрой повтор буквы (всем) и цифры (💎 премиум):",
+        tr(user_id, "username_repeats_title") + "\n\n" + tr(user_id, "username_repeats_desc"),
         parse_mode=ParseMode.HTML,
         reply_markup=get_repeats_keyboard(user_id)
     )
@@ -892,7 +892,7 @@ async def settings_repeats_menu(callback: types.CallbackQuery):
 @router.callback_query(lambda c: c.data == "change_letter")
 async def change_letter(callback: types.CallbackQuery):
     await callback.answer()
-    await callback.message.edit_text("🔤 Выбери букву:", reply_markup=get_letter_keyboard())
+    await callback.message.edit_text(tr(callback.from_user.id, "username_choose_letter"), reply_markup=get_letter_keyboard())
 
 @router.callback_query(lambda c: c.data.startswith("set_letter_"))
 async def set_letter(callback: types.CallbackQuery):
@@ -930,7 +930,7 @@ async def change_digit(callback: types.CallbackQuery):
         await callback.answer(f"{PREMIUM_ICON} Доступно только с премиум-подпиской", show_alert=True)
         return
     await callback.answer()
-    await callback.message.edit_text("🔢 Выбери цифру для повтора:", reply_markup=get_digit_keyboard())
+    await callback.message.edit_text(tr(user_id, "username_choose_digit"), reply_markup=get_digit_keyboard())
 
 @router.callback_query(lambda c: c.data.startswith("set_digit_") and not c.data.startswith("set_digit_count_"))
 async def set_digit(callback: types.CallbackQuery):
@@ -1043,9 +1043,9 @@ async def set_length_input(message: types.Message, state: FSMContext):
 async def change_style(callback: types.CallbackQuery):
     await callback.answer()
     await callback.message.edit_text(
-        f"🎨 Выбери стиль генерации:\n\nСтиль \"Красивые\" - премиум {PREMIUM_ICON}",
+        tr(callback.from_user.id, "username_style_prompt"),
         parse_mode=ParseMode.HTML,
-        reply_markup=get_style_keyboard()
+        reply_markup=get_style_keyboard(callback.from_user.id)
     )
 
 @router.callback_query(lambda c: c.data.startswith("set_style_"))
