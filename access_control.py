@@ -12,10 +12,11 @@ import os
 import logging
 from typing import Dict, Set, Optional, List
 from datetime import datetime, timedelta
+from storage import data_file
 
-ADMINS_FILE = "admins.json"
-PREMIUM_FILE = "premium_users.json"
-MANDATORY_CHANNELS_FILE = "mandatory_channels.json"
+ADMINS_FILE = data_file("admins.json")
+PREMIUM_FILE = data_file("premium_users.json")
+MANDATORY_CHANNELS_FILE = data_file("mandatory_channels.json")
 
 PREMIUM_ICON = "💎"
 
@@ -214,7 +215,7 @@ async def resolve_user_id(bot, arg: str) -> Optional[int]:
 MAX_SESSIONS_FREE = 3
 MAX_SESSIONS_PREMIUM = 10
 
-CUSTOM_LIMITS_FILE = "custom_session_limits.json"
+CUSTOM_LIMITS_FILE = data_file("custom_session_limits.json")
 _custom_limits: Dict[int, int] = {}
 
 
@@ -328,7 +329,7 @@ def get_mandatory_channels() -> List[int]:
 
 # ============ БАН ============
 
-BANNED_FILE = "banned_users.json"
+BANNED_FILE = data_file("banned_users.json")
 _banned: Dict[int, str] = {}  # user_id -> причина
 
 
@@ -380,7 +381,7 @@ def get_ban_reason(user_id: int) -> Optional[str]:
 
 # ============ ТЕХНИЧЕСКИЕ РАБОТЫ ============
 
-TECHNICAL_FILE = "technical_mode.json"
+TECHNICAL_FILE = data_file("technical_mode.json")
 _technical_mode = False
 
 
@@ -417,7 +418,7 @@ def is_technical_mode() -> bool:
 
 # ============ БЛОКИРОВКА ТЕХПОДДЕРЖКИ ("Сообщить о баге") ============
 
-BLOCKED_TECHPOD_FILE = "blocked_techpod.json"
+BLOCKED_TECHPOD_FILE = data_file("blocked_techpod.json")
 _blocked_techpod: Set[int] = set()
 
 

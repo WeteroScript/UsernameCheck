@@ -29,6 +29,9 @@ except ImportError:
     FONT_B64 = None
 
 from access_control import is_premium, PREMIUM_ICON
+from storage import data_directory
+
+SESSIONS_DIR = data_directory("sessions")
 
 try:
     from dotenv import load_dotenv
@@ -1450,12 +1453,12 @@ async def do_cycle(
 def cleanup_session_files(phone: str):
     try:
         pc = phone.replace('+', '')
-        if not os.path.isdir("sessions"):
+        if not os.path.isdir(SESSIONS_DIR):
             return
-        for f in os.listdir("sessions"):
+        for f in os.listdir(SESSIONS_DIR):
             if f.startswith(pc):
                 try:
-                    os.remove(os.path.join("sessions", f))
+                    os.remove(os.path.join(SESSIONS_DIR, f))
                 except:
                     pass
     except:
@@ -1507,8 +1510,8 @@ async def send_code(phone: str, bot_username: str) -> Tuple[bool, Optional[str]]
     lock = get_session_lock(phone)
     async with lock:
         try:
-            os.makedirs("sessions", exist_ok=True)
-            sn = f"sessions/{phone.replace('+', '')}"
+            os.makedirs(SESSIONS_DIR, exist_ok=True)
+            sn = os.path.join(SESSIONS_DIR, phone.replace('+', ''))
             _cleanup_wal(sn)
             client = TelegramClient(
                 sn, API_ID, API_HASH,
@@ -1574,7 +1577,7 @@ async def start_gram_bot(
     lock = get_session_lock(phone)
     async with lock:
         try:
-            sn = f"sessions/{phone.replace('+', '')}"
+            sn = os.path.join(SESSIONS_DIR, phone.replace('+', ''))
             _cleanup_wal(sn)
             client = active_clients.get(phone)
             if not client:
@@ -1634,7 +1637,7 @@ async def start_gram_worker(
         except Exception as e:
             logging.error(f"❌ Ошибка подключения: {e}")
             try:
-                session_name = f"sessions/{phone.replace('+', '')}"
+                session_name = os.path.join(SESSIONS_DIR, phone.replace('+', ''))
                 new_client = TelegramClient(
                     session_name, API_ID, API_HASH,
                     connection_retries=5, retry_delay=1,
@@ -1689,7 +1692,7 @@ async def continue_gram_bot(phone: str) -> bool:
             except Exception as e:
                 logging.error(f"❌ Ошибка подключения: {e}")
                 try:
-                    session_name = f"sessions/{phone.replace('+', '')}"
+                    session_name = os.path.join(SESSIONS_DIR, phone.replace('+', ''))
                     new_client = TelegramClient(
                         session_name, API_ID, API_HASH,
                         connection_retries=5, retry_delay=1,

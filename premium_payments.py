@@ -18,11 +18,12 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 from access_control import grant_premium
 from i18n import tr
+from storage import data_file
 
 router = Router()
 API_BASE_URL = os.getenv("CRYPTO_PAY_API_URL", "https://pay.crypt.bot/api").rstrip("/")
 API_TOKEN = os.getenv("CRYPTO_PAY_API_TOKEN", "").strip()
-PAYMENTS_FILE = os.getenv("PREMIUM_PAYMENTS_FILE", "data/premium_payments.json")
+PAYMENTS_FILE = data_file(os.getenv("PREMIUM_PAYMENTS_FILE", "premium_payments.json"))
 INVOICE_LIFETIME_SECONDS = 15 * 60
 _polling_task: asyncio.Task | None = None
 _create_lock = asyncio.Lock()

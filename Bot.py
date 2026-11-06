@@ -20,6 +20,8 @@ from aiogram.exceptions import TelegramBadRequest, TelegramNetworkError
 from dotenv import load_dotenv
 load_dotenv()
 
+from storage import data_file, data_directory
+
 from i18n import tr
 from premium_payments import init_premium_payments
 
@@ -154,7 +156,7 @@ user_bot_choice: Dict[int, str] = {}
 user_session_config: Dict[int, Dict[str, Dict[str, Any]]] = {}
 user_lang: Dict[int, str] = {}  # user_id -> "ru" | "en"
 
-LANG_FILE = "user_lang.json"
+LANG_FILE = data_file("user_lang.json")
 
 LANG_STRINGS = {
     "ru": {
@@ -196,9 +198,9 @@ def save_lang():
     except Exception as e:
         logging.error(f"Ошибка сохранения user_lang.json: {e}")
 
-SESSIONS_FILE = "user_sessions.json"
-BOT_CHOICE_FILE = "user_bot_choice.json"
-SESSION_CONFIG_FILE = "user_session_config.json"
+SESSIONS_FILE = data_file("user_sessions.json")
+BOT_CHOICE_FILE = data_file("user_bot_choice.json")
+SESSION_CONFIG_FILE = data_file("user_session_config.json")
 
 
 # ============ СОХРАНЕНИЕ ============
@@ -272,7 +274,7 @@ def get_session_config(user_id: int, phone: str) -> Dict[str, Any]:
 
 # ============ РЕЕСТР ПОЛЬЗОВАТЕЛЕЙ (для /mail и даты регистрации) ============
 
-KNOWN_USERS_FILE = "known_users.json"
+KNOWN_USERS_FILE = data_file("known_users.json")
 known_users: Dict[int, Dict[str, Any]] = {}  # user_id -> {"username":, "registered_at":}
 
 
@@ -2434,7 +2436,7 @@ BUTTON_CONTROL_BY_SLUG = {
     for section, (_, items) in BUTTON_CONTROL_SECTIONS.items()
     for slug, label, callback_data in items
 }
-BUTTON_CONTROL_FILE = os.getenv("BUTTON_RESTRICTIONS_FILE", "data/button_restrictions.json")
+BUTTON_CONTROL_FILE = data_file(os.getenv("BUTTON_RESTRICTIONS_FILE", "button_restrictions.json"))
 DISABLED_MENU_BUTTONS = set()
 
 
@@ -3049,7 +3051,7 @@ async def delpremium_command(message: types.Message):
 
 # ============ МАТЕМАТИЧЕСКАЯ КАПЧА ПЕРЕД ОБЯЗАТЕЛЬНОЙ ПОДПИСКОЙ ============
 
-MATH_CAPTCHA_FILE = os.getenv("MATH_CAPTCHA_FILE", "data/math_captcha_verified.json")
+MATH_CAPTCHA_FILE = data_file(os.getenv("MATH_CAPTCHA_FILE", "math_captcha_verified.json"))
 _math_captcha_pending: Dict[int, Dict[str, Any]] = {}
 
 
@@ -4549,7 +4551,7 @@ async def _run_crypto_autotrader(user_id: int, phone: str, notify_chat_id: int):
 async def main():
     global user_sessions, user_bot_choice, user_session_config, known_users
     
-    os.makedirs("sessions", exist_ok=True)
+    os.makedirs(data_directory("sessions"), exist_ok=True)
     os.makedirs("fonts", exist_ok=True)
     
     user_sessions.update(load_sessions())

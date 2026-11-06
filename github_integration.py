@@ -20,7 +20,9 @@ from urllib.parse import urlencode, quote
 import aiohttp
 import jwt
 
-INSTALLATIONS_PATH = Path(os.getenv("GITHUB_INSTALLATIONS_FILE", "data/github_installations.json"))
+from storage import data_file
+
+INSTALLATIONS_PATH = Path(data_file(os.getenv("GITHUB_INSTALLATIONS_FILE", "github_installations.json")))
 _STORAGE_LOCK = threading.Lock()
 
 
@@ -218,7 +220,7 @@ def _github_api_request(path: str) -> Dict[str, Any]:
             return json.loads(response.read().decode("utf-8"))
     except HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")[:500]
-        raise RuntimeError("GitHub API HTTP {}: {}".format(exc.code, detail)) from exc
+        raise RuntimeError("GitHub API HTTP {} при GET {}: {}".format(exc.code, path, detail)) from exc
     except (URLError, TimeoutError) as exc:
         raise RuntimeError("Не удалось связаться с GitHub API: {}".format(exc)) from exc
 
@@ -302,9 +304,15 @@ async def _installation_token(installation_id: int) -> str:
         async with session.post(url, headers=headers) as response:
             payload = await response.json(content_type=None)
             if response.status >= 400:
+                message = payload.get("message", str(payload)) if isinstance(payload, dict) else str(payload)
+                hint = (
+                    " Проверь, что GitHub App всё ещё установлено в этом аккаунте; "
+                    "при необходимости отключи и подключи GitHub заново."
+                    if response.status == 404 else ""
+                )
                 raise RuntimeError(
-                    "GitHub не выдал installation token (HTTP {}): {}".format(
-                        response.status, str(payload)[:500]
+                    "GitHub API HTTP {} при POST /app/installations/{}/access_tokens: {}{}".format(
+                        response.status, installation_id, str(message)[:500], hint
                     )
                 )
             token = payload.get("token")
@@ -437,7 +445,20 @@ async def _api_json(
         data = await response.json(content_type=None)
         if response.status >= 400:
             message = data.get("message", str(data)) if isinstance(data, dict) else str(data)
-            raise RuntimeError("GitHub API HTTP {}: {}".format(response.status, message[:500]))
+            hint = ""
+            if response.status == 404 and path.startswith("/repos/"):
+                if "/git/ref/heads/" in path:
+                    hint = " Ветка не найдена: проверь её имя и доступность для GitHub App."
+                else:
+                    hint = (
+                        " GitHub также возвращает 404, когда GitHub App не имеет доступа "
+                        "к репозиторию. Проверь установку приложения и список доступных репозиториев."
+                    )
+            raise RuntimeError(
+                "GitHub API HTTP {} при {} {}: {}{}".format(
+                    response.status, method.upper(), path, message[:500], hint
+                )
+            )
         return data
 
 

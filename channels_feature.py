@@ -13,10 +13,11 @@ from aiogram.enums import ParseMode, ButtonStyle
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from typing import Dict, List, Optional
+from storage import data_file
 
 router = Router()
 
-CHANNELS_FILE = "connected_channels.json"
+CHANNELS_FILE = data_file("connected_channels.json")
 MAX_CHANNELS = 10
 MAX_AUTO_ACCEPT = 10_000_000
 DEFAULT_AUTO_ACCEPT_CHANNEL_ID = -1004447078589

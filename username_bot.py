@@ -26,6 +26,7 @@ from dotenv import load_dotenv
 
 from access_control import is_premium, is_admin, PREMIUM_ICON
 from i18n import tr
+from storage import data_file
 
 load_dotenv()
 
@@ -54,9 +55,9 @@ BATCH_SIZE = 8
 CONNECTION_LIMIT = 50
 MAX_RETRIES = 3
 
-TAKEN_DB_FILE = "taken_usernames.json"
-FREE_DB_FILE = "free_usernames.json"
-BANNED_DB_FILE = "banned_usernames.json"
+TAKEN_DB_FILE = data_file("taken_usernames.json")
+FREE_DB_FILE = data_file("free_usernames.json")
+BANNED_DB_FILE = data_file("banned_usernames.json")
 DEBUG_LOG_FILE = "debug_checks.log"
 
 BANNED_INDICATORS = [
@@ -73,7 +74,7 @@ user_settings: Dict[int, Dict] = {}
 http_session: Optional[aiohttp.ClientSession] = None
 username_router_initialized = False
 
-WATCHED_FILE = "watched_usernames.json"
+WATCHED_FILE = data_file("watched_usernames.json")
 MAX_WATCHED_PER_USER = 10
 WATCH_INTERVAL_SECONDS = 10 * 60  # 10 минут
 
@@ -1168,9 +1169,9 @@ async def export_username_database(bot, chat_id: int, user_id: int):
     free_db = load_db(FREE_DB_FILE)
     banned_db = load_db(BANNED_DB_FILE)
     ts = datetime.now().strftime('%Y%m%d_%H%M%S')
-    taken_file = f"taken_{user_id}_{ts}.json"
-    free_file = f"free_{user_id}_{ts}.json"
-    banned_file = f"banned_{user_id}_{ts}.json"
+    taken_file = data_file(f"taken_{user_id}_{ts}.json")
+    free_file = data_file(f"free_{user_id}_{ts}.json")
+    banned_file = data_file(f"banned_{user_id}_{ts}.json")
 
     try:
         for path, data in ((taken_file, taken_db), (free_file, free_db), (banned_file, banned_db)):

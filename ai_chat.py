@@ -33,6 +33,7 @@ from dotenv import load_dotenv
 from cryptography.fernet import Fernet, InvalidToken
 from access_control import is_premium
 from github_integration import fetch_repository_context, create_repository_pull_request
+from storage import data_file
 
 load_dotenv()
 
@@ -40,8 +41,8 @@ router = Router(name="ai_chat")
 
 DEFAULT_API_URL = "https://tokenplan.lat/v1/chat/completions"
 API_KEY_ENV = "TOKENPLAN_API_KEY"
-HISTORY_PATH = Path(os.getenv("AI_CHAT_HISTORY_FILE", "data/ai_chats.json"))
-SETTINGS_PATH = Path(os.getenv("AI_CHAT_SETTINGS_FILE", "data/ai_chat_settings.json"))
+HISTORY_PATH = Path(data_file(os.getenv("AI_CHAT_HISTORY_FILE", "ai_chats.json")))
+SETTINGS_PATH = Path(data_file(os.getenv("AI_CHAT_SETTINGS_FILE", "ai_chat_settings.json")))
 MAX_CUSTOM_PROMPT_CHARS = 20000
 MAX_CUSTOM_PROMPT_FILE_BYTES = 64 * 1024
 
@@ -132,6 +133,9 @@ SYSTEM_PROMPT += (
     "если она нужна для смысла. Исходный код возвращай только внутри обязательных FILE или GITHUB_FILE "
     "блоков, когда пользователь прямо просит код или файлы. Вне этих блоков объясняй результат "
     "человеческим языком и не перечисляй имена созданных файлов. "
+    "ПИШИ КОМПАКТНО: не вставляй пустые строки между обычными предложениями. "
+    "Между смысловыми блоками используй максимум одну пустую строку. Не превращай "
+    "каждое предложение в отдельный абзац и не создавай большие пустые отступы. "
 )
 SYSTEM_PROMPT += (
     "РАБОТА С GITHUB: если пользователь прислал ссылку на репозиторий GitHub, бот может передать тебе "
@@ -932,6 +936,13 @@ def _visible_stream_text(raw_text: str) -> str:
     return "".join(visible)
 
 
+def _compact_display_spacing(text: str) -> str:
+    """Remove excessive empty lines without changing meaningful line breaks."""
+    normalized = str(text or "").replace("\r\n", "\n").replace("\r", "\n")
+    normalized = re.sub(r"\n[ \t]*\n+", "\n", normalized)
+    return normalized.strip()
+
+
 async def _answer_reply_text(message: types.Message, text: str) -> types.Message:
     try:
         return await message.answer(text)
@@ -943,7 +954,9 @@ async def _answer_reply_text(message: types.Message, text: str) -> types.Message
 class _StreamingReplyDisplay:
     """Показывает ответ по одной законченной строке, обновляя то же сообщение."""
 
-    EDIT_INTERVAL_SECONDS = 0.3
+    EDIT_INTERVAL_SECONDS = 0.15
+    # Telegram does not expose client-side wrapping width; this approximates a phone line.
+    VISUAL_LINE_WIDTH = 37
 
     def __init__(
         self,
@@ -965,13 +978,24 @@ class _StreamingReplyDisplay:
 
     def append(self, piece: str) -> None:
         self.raw_text += piece
-        self.visible_text = _visible_stream_text(self.raw_text)
+        self.visible_text = _compact_display_spacing(_visible_stream_text(self.raw_text))
 
-    @staticmethod
-    def _next_boundary(text: str, start: int) -> Optional[int]:
-        """Возвращает конец только следующей строки; предложения не разделяет."""
+    @classmethod
+    def _next_boundary(cls, text: str, start: int) -> Optional[int]:
+        """Find the next phone-width line boundary without splitting words."""
         newline_at = text.find("\n", start)
-        return newline_at + 1 if newline_at >= 0 else None
+        paragraph_end = newline_at if newline_at >= 0 else len(text)
+        remaining = text[start:paragraph_end]
+        if not remaining:
+            return newline_at + 1 if newline_at >= 0 else None
+        if len(remaining) <= cls.VISUAL_LINE_WIDTH:
+            return newline_at + 1 if newline_at >= 0 else None
+        split_at = remaining.rfind(" ", 0, cls.VISUAL_LINE_WIDTH + 1)
+        if split_at < 0:
+            split_at = remaining.find(" ", cls.VISUAL_LINE_WIDTH)
+        if split_at < 0:
+            return newline_at + 1 if newline_at >= 0 else None
+        return start + split_at + 1
 
     async def _update_messages(self, text: str) -> None:
         new_chunks = _split_reply_chunks(text)
@@ -2540,7 +2564,7 @@ async def ai_chat_message(message: types.Message, state: FSMContext):
 
         await _stop_waiting_timer(waiting_timer)
         waiting_timer = None
-        display_text = visible_reply if visible_reply else "Файл готов."
+        display_text = _compact_display_spacing(visible_reply) if visible_reply else "Файл готов."
         if stream_display is not None:
             stream_display.visible_text = display_text
             await stream_display.render(force=True)
