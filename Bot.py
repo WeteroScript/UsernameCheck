@@ -3047,6 +3047,122 @@ async def delpremium_command(message: types.Message):
         await message.answer(f"ℹ️ У пользователя <code>{target_id}</code> не было премиума.", parse_mode=ParseMode.HTML)
 
 
+# ============ МАТЕМАТИЧЕСКАЯ КАПЧА ПЕРЕД ОБЯЗАТЕЛЬНОЙ ПОДПИСКОЙ ============
+
+MATH_CAPTCHA_FILE = os.getenv("MATH_CAPTCHA_FILE", "data/math_captcha_verified.json")
+_math_captcha_pending: Dict[int, Dict[str, Any]] = {}
+
+
+def _load_math_captcha_verified() -> set[int]:
+    try:
+        with open(MATH_CAPTCHA_FILE, "r", encoding="utf-8") as source:
+            values = json.load(source)
+        return {int(value) for value in values}
+    except FileNotFoundError:
+        return set()
+    except Exception:
+        logging.exception("Не удалось загрузить подтверждения математической капчи")
+        return set()
+
+
+_math_captcha_verified: set[int] = _load_math_captcha_verified()
+
+
+def _save_math_captcha_verified() -> None:
+    parent = os.path.dirname(MATH_CAPTCHA_FILE)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+    temporary = MATH_CAPTCHA_FILE + ".tmp"
+    with open(temporary, "w", encoding="utf-8") as target:
+        json.dump(sorted(_math_captcha_verified), target)
+    os.replace(temporary, MATH_CAPTCHA_FILE)
+
+
+def _new_math_captcha(user_id: int) -> tuple[str, InlineKeyboardMarkup]:
+    left = random.randint(3, 12)
+    right = random.randint(1, 9)
+    operator = random.choice(("+", "−"))
+    answer = left + right if operator == "+" else left - right
+    choices = {answer}
+    while len(choices) < 4:
+        choices.add(answer + random.choice((-5, -3, -2, -1, 1, 2, 3, 5)))
+    options = list(choices)
+    random.shuffle(options)
+    _math_captcha_pending[user_id] = {"answer": answer, "options": options}
+
+    rows = []
+    for offset in range(0, len(options), 2):
+        rows.append([
+            InlineKeyboardButton(
+                text=str(options[index]),
+                callback_data=f"math_captcha_{index}",
+                style=ButtonStyle.PRIMARY,
+            )
+            for index in range(offset, min(offset + 2, len(options)))
+        ])
+    return (
+        tr(user_id, "captcha_question", left=left, operator=operator, right=right),
+        InlineKeyboardMarkup(inline_keyboard=rows),
+    )
+
+
+async def _subscription_prompt(user_id: int, intro: Optional[str] = None):
+    buttons = []
+    for chat_id in get_mandatory_channels():
+        try:
+            chat = await bot.get_chat(chat_id)
+            title = chat.title or ("Канал" if get_user_lang(user_id) == "ru" else "Channel")
+            url = MANDATORY_CHANNEL_LINKS.get(int(chat_id)) or (
+                f"https://t.me/{chat.username}" if chat.username else None
+            )
+        except Exception as exc:
+            logging.warning("Не удалось получить канал обязательной подписки %s: %s", chat_id, exc)
+            title = "Канал" if get_user_lang(user_id) == "ru" else "Channel"
+            url = MANDATORY_CHANNEL_LINKS.get(int(chat_id))
+        if url:
+            buttons.append([InlineKeyboardButton(text=f"📢 {title}", url=url)])
+    buttons.append([InlineKeyboardButton(
+        text=tr(user_id, "captcha_continue"),
+        callback_data="check_subscription",
+        style=ButtonStyle.SUCCESS,
+    )])
+    text = (intro + "\n\n" if intro else "") + tr(user_id, "subscription_required")
+    return text, InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+@dp.callback_query(lambda callback: callback.data and callback.data.startswith("math_captcha_"))
+async def math_captcha_answer(callback: types.CallbackQuery):
+    user_id = callback.from_user.id
+    challenge = _math_captcha_pending.get(user_id)
+    try:
+        selected_index = int(callback.data.rsplit("_", 1)[1])
+    except (TypeError, ValueError):
+        selected_index = -1
+
+    if not challenge or selected_index < 0 or selected_index >= len(challenge["options"]):
+        question, markup = _new_math_captcha(user_id)
+        await callback.answer(tr(user_id, "captcha_wrong"), show_alert=True)
+        await callback.message.edit_text(question, parse_mode=ParseMode.HTML, reply_markup=markup)
+        return
+
+    if challenge["options"][selected_index] != challenge["answer"]:
+        question, markup = _new_math_captcha(user_id)
+        await callback.answer(tr(user_id, "captcha_wrong"), show_alert=True)
+        await callback.message.edit_text(
+            tr(user_id, "captcha_wrong") + "\n\n" + question,
+            parse_mode=ParseMode.HTML,
+            reply_markup=markup,
+        )
+        return
+
+    _math_captcha_pending.pop(user_id, None)
+    _math_captcha_verified.add(user_id)
+    _save_math_captcha_verified()
+    await callback.answer()
+    prompt, markup = await _subscription_prompt(user_id, tr(user_id, "captcha_correct"))
+    await callback.message.edit_text(prompt, parse_mode=ParseMode.HTML, reply_markup=markup)
+
+
 # ============ MIDDLEWARE: БАН / ТЕХРАБОТЫ / ОБЯЗАТЕЛЬНАЯ ПОДПИСКА ============
 
 class AccessMiddleware(BaseMiddleware):
@@ -3141,10 +3257,22 @@ class AccessMiddleware(BaseMiddleware):
                 except Exception:
                     logging.exception("Не удалось очистить состояние диалога при возврате в меню")
 
-        if cb_data == "check_subscription":
+        if cb_data == "check_subscription" or (isinstance(cb_data, str) and cb_data.startswith("math_captcha_")):
             return await handler(event, data)
 
         mandatory = get_mandatory_channels()
+        if mandatory and user_id not in _math_captcha_verified:
+            question, markup = _new_math_captcha(user_id)
+            try:
+                if isinstance(event, types.CallbackQuery):
+                    await event.answer()
+                    await event.message.answer(question, parse_mode=ParseMode.HTML, reply_markup=markup)
+                else:
+                    await event.answer(question, parse_mode=ParseMode.HTML, reply_markup=markup)
+            except Exception:
+                logging.exception("Не удалось отправить математическую капчу пользователю %s", user_id)
+            return
+
         if mandatory:
             not_subscribed = []
             for chat_id in mandatory:
@@ -3156,32 +3284,15 @@ class AccessMiddleware(BaseMiddleware):
                     logging.error(f"❌ AccessMiddleware подписка {chat_id}: {e}")
 
             if not_subscribed:
-                buttons = []
-                for chat_id in not_subscribed:
-                    try:
-                        chat = await self.bot_ref.get_chat(chat_id)
-                        title = chat.title or "Канал"
-                        url = (
-                            MANDATORY_CHANNEL_LINKS.get(int(chat_id))
-                            or (f"https://t.me/{chat.username}" if chat.username else None)
-                        )
-                    except Exception as e:
-                        logging.error("Не удалось получить данные обязательного канала %s: %s", chat_id, e)
-                        title = "Канал"
-                        url = MANDATORY_CHANNEL_LINKS.get(int(chat_id))
-                    if url:
-                        buttons.append([InlineKeyboardButton(text=f"📢 {title}", url=url)])
-                buttons.append([InlineKeyboardButton(text="✅ Я подписался", callback_data="check_subscription")])
-                text = "🔒 Для использования бота подпишись на канал(ы):"
-                markup = InlineKeyboardMarkup(inline_keyboard=buttons)
                 try:
+                    text, markup = await _subscription_prompt(user_id)
                     if isinstance(event, types.CallbackQuery):
                         await event.answer()
-                        await event.message.answer(text, reply_markup=markup)
+                        await event.message.answer(text, parse_mode=ParseMode.HTML, reply_markup=markup)
                     else:
-                        await event.answer(text, reply_markup=markup)
-                except Exception as e:
-                    logging.error(f"❌ AccessMiddleware notify: {e}")
+                        await event.answer(text, parse_mode=ParseMode.HTML, reply_markup=markup)
+                except Exception:
+                    logging.exception("AccessMiddleware: не удалось показать обязательную подписку")
                 return
 
         return await handler(event, data)
@@ -3209,6 +3320,11 @@ async def fsm_back_callback(callback: types.CallbackQuery, state: FSMContext):
 async def check_subscription_callback(callback: types.CallbackQuery):
     user_id = callback.from_user.id
     mandatory = get_mandatory_channels()
+    if mandatory and user_id not in _math_captcha_verified:
+        question, markup = _new_math_captcha(user_id)
+        await callback.answer()
+        await callback.message.edit_text(question, parse_mode=ParseMode.HTML, reply_markup=markup)
+        return
     not_subscribed = []
     for chat_id in mandatory:
         try:
@@ -3219,15 +3335,14 @@ async def check_subscription_callback(callback: types.CallbackQuery):
             not_subscribed.append(chat_id)
 
     if not_subscribed:
-        await callback.answer("❌ Ты всё ещё не подписан на все каналы", show_alert=True)
+        await callback.answer("❌ Ты всё ещё не подписан на все каналы" if get_user_lang(user_id) == "ru" else "❌ You have not joined all required channels yet.", show_alert=True)
+        prompt, markup = await _subscription_prompt(user_id)
+        await callback.message.edit_text(prompt, parse_mode=ParseMode.HTML, reply_markup=markup)
         return
 
     await callback.answer("✅ Подписка подтверждена!")
     await callback.message.edit_text(
-        f"👋 Привет, {callback.from_user.first_name or 'Пользователь'}!\n\n"
-        f"🤖 <b>Ты попал в Telegram-Центр</b>,\n"
-        f"Здесь собраны инструменты для Telegram, аккаунтов и каналов.\n\n"
-        f"Выбирай, что нужно сделать:",
+        tr(user_id, "start_greeting", name=callback.from_user.first_name or "there"),
         parse_mode=ParseMode.HTML,
         reply_markup=get_main_keyboard(user_id)
     )
