@@ -21,7 +21,6 @@ from aiogram.fsm.state import State, StatesGroup
 
 router = Router()
 
-MAX_TELEGRAM_FILE_SIZE = 50 * 1024 * 1024  # 50 МБ — лимит Bot API на загрузку файла ботом
 
 
 class VideoStates(StatesGroup):
@@ -177,14 +176,7 @@ async def video_youtube_download(callback: types.CallbackQuery):
                 return
             
             file_path = files[0]
-            size = os.path.getsize(file_path)
-            if size > MAX_TELEGRAM_FILE_SIZE:
-                await callback.message.edit_text(
-                    f"❌ Файл слишком большой ({size // (1024*1024)} МБ) — Telegram-боты "
-                    f"не могут отправлять файлы больше 50 МБ. Попробуй меньшее качество."
-                )
-                return
-            
+
             await callback.message.edit_text("📤 Отправляю видео...")
             await callback.message.answer_video(
                 FSInputFile(file_path),
@@ -323,13 +315,7 @@ async def _handle_tiktok_video(message: types.Message, url: str):
             return
         
         file_path = files[0]
-        size = os.path.getsize(file_path)
-        if size > MAX_TELEGRAM_FILE_SIZE:
-            await wait_msg.edit_text(
-                f"❌ Файл слишком большой ({size // (1024*1024)} МБ) для отправки ботом."
-            )
-            return
-        
+
         await wait_msg.edit_text("📤 Отправляю видео...")
         await message.answer_video(FSInputFile(file_path))
 

@@ -60,7 +60,6 @@ REQUEST_COOLDOWN_SECONDS = 5
 _last_request_at: Dict[int, float] = {}
 _active_requests: set[int] = set()
 _document_processing_semaphore = asyncio.Semaphore(1)
-_MAX_ZIP_ENTRIES = 5000
 _MAX_ZIP_MEMBER_BYTES = 16 * 1024 * 1024
 _MAX_ZIP_TOTAL_BYTES = 128 * 1024 * 1024
 _MAX_ZIP_TEXT_CHARS = 400_000
@@ -1154,7 +1153,7 @@ def _extract_file_content(filename: str, data: bytes, depth: int = 0) -> str:
 
 
 def _extract_zip_content(data, depth: int = 0) -> str:
-    """Extract supported files sequentially with strict memory and expansion limits."""
+    """Extract supported archive entries sequentially; file count is unrestricted."""
     started_at = time.monotonic()
     if depth > 3:
         raise ValueError("Слишком большая глубина вложенных ZIP-архивов (максимум 3).")
@@ -1170,10 +1169,7 @@ def _extract_zip_content(data, depth: int = 0) -> str:
         if hasattr(source, "seek"):
             source.seek(0)
         with zipfile.ZipFile(source) as archive:
-            entries = archive.infolist()
-            if len(entries) > _MAX_ZIP_ENTRIES:
-                raise ValueError(f"В архиве слишком много элементов (максимум {_MAX_ZIP_ENTRIES}).")
-            for item in entries:
+            for item in archive.infolist():
                 if item.is_dir():
                     continue
 
