@@ -456,7 +456,7 @@ async def fetch_repository_context(telegram_user_id: int, reference: str, branch
         else:
             branch = branch_override or repo_data.get("default_branch") or "main"
         branch_selected = bool(branch_path or branch_override)
-        encoded_branch = quote(branch, safe="")
+        encoded_branch = quote(branch, safe="/")
         branch_ref = await _api_json(
             session, "GET",
             "/repos/{}/git/ref/heads/{}".format(full_name, encoded_branch),
@@ -606,7 +606,7 @@ async def create_repository_pull_request(
     async with aiohttp.ClientSession(timeout=timeout) as session:
         repo_data = await _api_json(session, "GET", "/repos/" + full_name, token)
         base_branch = base_branch_override or repo_data.get("default_branch") or "main"
-        encoded_branch = quote(base_branch, safe="")
+        encoded_branch = quote(base_branch, safe="/")
         ref_path = "/repos/{}/git/ref/heads/{}".format(full_name, encoded_branch)
         ref_data = await _api_json(session, "GET", ref_path, token)
         base_sha = ref_data["object"]["sha"]
