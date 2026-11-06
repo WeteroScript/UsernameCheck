@@ -941,9 +941,9 @@ async def _answer_reply_text(message: types.Message, text: str) -> types.Message
 
 
 class _StreamingReplyDisplay:
-    """Показывает ответ построчно, редактируя одно сообщение раз в секунду."""
+    """Показывает ответ по одной законченной строке, обновляя то же сообщение."""
 
-    EDIT_INTERVAL_SECONDS = 1.0
+    EDIT_INTERVAL_SECONDS = 0.3
 
     def __init__(
         self,
