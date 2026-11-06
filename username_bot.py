@@ -806,7 +806,7 @@ async def _run_username_search(callback: types.CallbackQuery, send_new: bool):
         for username, is_free in results.items():
             if is_free:
                 await msg.edit_text(
-                    tr(user_id, "username_found") + f"\n\n✅ <code>@{username}</code>\n\n<i>Optimistic availability check</i>",
+                    tr(user_id, "username_found") + f"\n\n✅ <code>@{username}</code>\n\n{tr(user_id, "username_optimistic")}",
                     parse_mode=ParseMode.HTML,
                     reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                         [InlineKeyboardButton(text=tr(user_id, "username_claim"), url=f"https://t.me/{username}")],
@@ -900,13 +900,15 @@ async def set_letter(callback: types.CallbackQuery):
 @router.callback_query(lambda c: c.data == "change_count")
 async def change_count(callback: types.CallbackQuery):
     await callback.answer()
-    s = get_user_settings(callback.from_user.id)
+    settings = get_user_settings(callback.from_user.id)
     await callback.message.edit_text(
-        "🔢 Количество одинаковых букв подряд:\n\n"
-        f"<i>Доступно больше вариантов при большей длине юзернейма (сейчас: {s['max_length']})</i>",
+        tr(callback.from_user.id, "username_repeat_count_prompt"),
         parse_mode=ParseMode.HTML,
-        reply_markup=get_count_keyboard(s["max_length"], callback.from_user.id)
+        reply_markup=get_count_keyboard(settings["max_length"], callback.from_user.id)
     )
+
+
+
 
 @router.callback_query(lambda c: c.data.startswith("set_count_"))
 async def set_count(callback: types.CallbackQuery):
@@ -952,14 +954,17 @@ async def clear_digit(callback: types.CallbackQuery):
 async def change_digit_count(callback: types.CallbackQuery):
     user_id = callback.from_user.id
     if not is_premium(user_id):
-        await callback.answer(f"{PREMIUM_ICON} Доступно только с премиум-подпиской", show_alert=True)
+        await callback.answer(f"{PREMIUM_ICON} Premium only" if tr(user_id, "username_style_random") == "🔤 Standard" else f"{PREMIUM_ICON} Доступно только с премиум-подпиской", show_alert=True)
         return
     await callback.answer()
-    s = get_user_settings(user_id)
+    settings = get_user_settings(user_id)
     await callback.message.edit_text(
-        "🔢 Количество одинаковых цифр подряд:",
-        reply_markup=get_digit_count_keyboard(s["max_length"], user_id)
+        tr(user_id, "username_digit_count_prompt"),
+        reply_markup=get_digit_count_keyboard(settings["max_length"], user_id)
     )
+
+
+
 
 @router.callback_query(lambda c: c.data.startswith("set_digit_count_"))
 async def set_digit_count(callback: types.CallbackQuery):
@@ -995,45 +1000,48 @@ async def toggle_underscore(callback: types.CallbackQuery):
 async def change_length(callback: types.CallbackQuery, state: FSMContext):
     await callback.answer()
     await state.set_state(UsernameSettingsStates.waiting_length)
+    user_id = callback.from_user.id
     await callback.message.edit_text(
-        f"📏 <b>Длина юзернейма</b>\n\n"
-        f"Введи число от {MIN_USERNAME_LENGTH} до {MAX_USERNAME_LENGTH} — "
-        f"это максимальная длина для создаваемого юзернейма.\n\n"
-        f"<i>Чем больше длина, тем больше одинаковых букв/цифр подряд можно "
-        f"будет настроить.</i>\n\n",
+        tr(user_id, "username_length_prompt", minimum=MIN_USERNAME_LENGTH, maximum=MAX_USERNAME_LENGTH),
         parse_mode=ParseMode.HTML,
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад", callback_data="settings")]])
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text=tr(user_id, "username_back_settings"), callback_data="settings")
+        ]])
     )
+
+
+
 
 @router.message(UsernameSettingsStates.waiting_length)
 async def set_length_input(message: types.Message, state: FSMContext):
+    user_id = message.from_user.id
     text = (message.text or "").strip()
-    if text.lower() in ("/cancel", "отмена"):
+    if text.lower() in ("/cancel", "отмена", "cancel"):
         await state.clear()
-        await message.answer("❌ Отменено", reply_markup=get_settings_keyboard(message.from_user.id))
+        await message.answer(tr(user_id, "username_cancel"), reply_markup=get_settings_keyboard(user_id))
         return
     if not text.isdigit():
-        await message.answer(
-            f"❌ Введи именно число от {MIN_USERNAME_LENGTH} до {MAX_USERNAME_LENGTH}."
-        )
+        await message.answer(tr(user_id, "username_length_invalid", minimum=MIN_USERNAME_LENGTH, maximum=MAX_USERNAME_LENGTH))
         return
     length = int(text)
     if not (MIN_USERNAME_LENGTH <= length <= MAX_USERNAME_LENGTH):
-        await message.answer(
-            f"❌ Число должно быть от {MIN_USERNAME_LENGTH} до {MAX_USERNAME_LENGTH}. Попробуй снова."
-        )
+        await message.answer(tr(user_id, "username_length_invalid", minimum=MIN_USERNAME_LENGTH, maximum=MAX_USERNAME_LENGTH))
         return
-    s = get_user_settings(message.from_user.id)
-    s["max_length"] = length
-    s["repeat_count"] = min(s["repeat_count"], get_max_repeat_count(length))
-    s["digit_repeat_count"] = min(s.get("digit_repeat_count", 0), get_max_repeat_count(length))
+    settings = get_user_settings(user_id)
+    settings["max_length"] = length
+    settings["repeat_count"] = min(settings["repeat_count"], get_max_repeat_count(length))
+    settings["digit_repeat_count"] = min(settings.get("digit_repeat_count", 0), get_max_repeat_count(length))
     await state.clear()
-    examples = "\n".join(f"• <code>{e}</code>" for e in generate_examples(s, 4, message.from_user.id))
+    examples = "\n".join(f"• <code>{example}</code>" for example in generate_examples(settings, 4, user_id))
     await message.answer(
-        f"✅ Длина юзернейма: <b>{length}</b>\n\n📝 Примеры:\n{examples}",
+        tr(user_id, "username_length_saved", length=length) +
+        f"\n\n{tr(user_id, 'username_examples')}:\n{examples}",
         parse_mode=ParseMode.HTML,
-        reply_markup=get_settings_keyboard(message.from_user.id)
+        reply_markup=get_settings_keyboard(user_id)
     )
+
+
+
 
 @router.callback_query(lambda c: c.data == "change_style")
 async def change_style(callback: types.CallbackQuery):
@@ -1073,19 +1081,25 @@ async def reset_settings(callback: types.CallbackQuery):
 async def check_availability_menu(callback: types.CallbackQuery):
     user_id = callback.from_user.id
     if not is_premium(user_id):
-        await callback.answer(f"{PREMIUM_ICON} Доступно только с премиум-подпиской", show_alert=True)
+        await callback.answer(f"{PREMIUM_ICON} Premium only" if tr(user_id, "username_style_random") == "🔤 Standard" else f"{PREMIUM_ICON} Доступно только с премиум-подпиской", show_alert=True)
         return
     await callback.answer()
     items = watched_usernames.get(user_id, [])
-    text = f"🔍 <b>Проверка юзернейма</b>\n\n"
+    text = tr(user_id, "username_availability_title") + "\n\n"
     if items:
-        text += "Отслеживаю:\n" + "\n".join(f"• @{it['username']}" for it in items) + "\n\n"
+        header = "Tracked usernames:" if tr(user_id, "username_style_random") == "🔤 Standard" else "Отслеживаю:"
+        text += header + "\n" + "\n".join(f"• @{item['username']}" for item in items) + "\n\n"
     text += (
-        f"Бот проверяет доступность раз в 10 минут (Telegram API + Fragment) "
-        f"и уведомит, когда юзернейм освободится.\n\n"
-        f"Слотов: {len(items)}/{MAX_WATCHED_PER_USER}"
+        tr(user_id, "username_availability_intro") + "\n\n" +
+        tr(user_id, "username_available_slots", used=len(items), maximum=MAX_WATCHED_PER_USER)
     )
-    await callback.message.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=get_check_menu_keyboard(callback.from_user.id))
+    await callback.message.edit_text(
+        text,
+        parse_mode=ParseMode.HTML,
+        reply_markup=get_check_menu_keyboard(user_id)
+    )
+
+
 
 
 @router.callback_query(lambda c: c.data == "watch_add")
