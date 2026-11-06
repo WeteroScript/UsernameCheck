@@ -4,6 +4,7 @@ import asyncio
 import json
 import html
 import re
+import random
 from datetime import datetime
 from typing import Dict, Optional, List, Any
 from aiogram import Bot, Dispatcher, types, BaseMiddleware
@@ -18,6 +19,9 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.exceptions import TelegramBadRequest, TelegramNetworkError
 from dotenv import load_dotenv
 load_dotenv()
+
+from i18n import tr
+from premium_payments import init_premium_payments
 
 from telethon import TelegramClient
 from telethon import functions, types as tl_types
