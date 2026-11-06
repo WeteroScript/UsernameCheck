@@ -1167,7 +1167,7 @@ def _extract_zip_content(data, depth: int = 0) -> str:
                         skipped_files += 1
                         break
 
-                    extracted.append(f"===== {relative_name} =====\\n{content}")
+                    extracted.append(f"===== {relative_name} =====\n{content}")
                     total_chars += len(content)
                     processed_files += 1
                 except (ValueError, RuntimeError, zipfile.BadZipFile) as exc:
