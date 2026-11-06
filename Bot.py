@@ -879,17 +879,21 @@ DODEEPER_TASK_TYPES = {
 
 def get_dodeeper_sessions_keyboard(user_id: int) -> InlineKeyboardMarkup:
     buttons = [
-        [InlineKeyboardButton(text=phone, callback_data=f"dodeeper_sess_{phone}")]
+        [InlineKeyboardButton(text=f"📱 {phone}", callback_data=f"dodeeper_sess_{phone}")]
         for phone in user_sessions.get(user_id, [])
     ]
     if not buttons:
-        buttons.append([InlineKeyboardButton(text="➕ Добавить аккаунт", callback_data="sess_add")])
-    buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="bots")])
+        buttons.append([InlineKeyboardButton(text=tr(user_id, "dodeeper_add_account"), callback_data="sess_add")])
+    buttons.append([InlineKeyboardButton(text=tr(user_id, "dodeeper_back_bots"), callback_data="bots")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
-def _dodeeper_work_name(work: Optional[str]) -> str:
-    return {"loader": "📦 Грузчик", "trader": "📈 Авто-трейдер"}.get(work, "Не выбрана")
+def _dodeeper_work_name(work: Optional[str], user_id: Optional[int] = None) -> str:
+    if work == "loader":
+        return tr(user_id, "dodeeper_loader")
+    if work == "trader":
+        return tr(user_id, "dodeeper_trader")
+    return tr(user_id, "dodeeper_not_selected")
 
 
 def _dodeeper_session_text(user_id: int, phone: str) -> str:
@@ -900,12 +904,12 @@ def _dodeeper_session_text(user_id: int, phone: str) -> str:
     ) or (
         work == "trader" and phone in crypto_trader_active
     )
-    status = "🟢 Работает" if running else "⚪ Остановлена"
+    status = tr(user_id, "dodeeper_status_running" if running else "dodeeper_status_stopped")
     return (
-        f"💼 <b>Додепер</b>\n\n"
-        f"📱 Сессия: <code>{phone}</code>\n"
-        f"⚙️ Работа: <b>{_dodeeper_work_name(work)}</b>\n"
-        f"Состояние: {status}"
+        tr(user_id, "dodeeper_title") + "\n\n"
+        + tr(user_id, "dodeeper_session", phone=phone) + "\n"
+        + tr(user_id, "dodeeper_work", work=_dodeeper_work_name(work, user_id)) + "\n"
+        + status
     )
 
 
@@ -919,27 +923,27 @@ def get_dodeeper_sess_keyboard(user_id: int, phone: str) -> InlineKeyboardMarkup
     )
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(
-            text="⏹ Стоп" if running else "▶️ Старт",
+            text=tr(user_id, "dodeeper_stop" if running else "dodeeper_start"),
             callback_data=f"dodeeper_work_toggle_{phone}",
             style=ButtonStyle.DANGER if running else ButtonStyle.SUCCESS,
         )],
-        [InlineKeyboardButton(text="⚙️ Настройки", callback_data=f"dodeeper_settings_{phone}")],
-        [InlineKeyboardButton(text="⬅️ Назад", callback_data="bot_dodeeper")],
+        [InlineKeyboardButton(text=tr(user_id, "dodeeper_settings"), callback_data=f"dodeeper_settings_{phone}")],
+        [InlineKeyboardButton(text=tr(user_id, "back"), callback_data="bot_dodeeper")],
     ])
 
 
-def get_dodeeper_settings_keyboard(phone: str) -> InlineKeyboardMarkup:
+def get_dodeeper_settings_keyboard(phone: str, user_id: Optional[int] = None) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🧭 Выбрать работу", callback_data=f"dodeeper_choose_work_{phone}")],
-        [InlineKeyboardButton(text="⬅️ Назад", callback_data=f"dodeeper_sess_{phone}")],
+        [InlineKeyboardButton(text=tr(user_id, "dodeeper_choose_work"), callback_data=f"dodeeper_choose_work_{phone}")],
+        [InlineKeyboardButton(text=tr(user_id, "back"), callback_data=f"dodeeper_sess_{phone}")],
     ])
 
 
-def get_dodeeper_work_choice_keyboard(phone: str) -> InlineKeyboardMarkup:
+def get_dodeeper_work_choice_keyboard(phone: str, user_id: Optional[int] = None) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📦 Грузчик", callback_data=f"dodeeper_work_loader_{phone}")],
-        [InlineKeyboardButton(text="📈 Авто-трейдер", callback_data=f"dodeeper_work_trader_{phone}")],
-        [InlineKeyboardButton(text="⬅️ Назад", callback_data=f"dodeeper_settings_{phone}")],
+        [InlineKeyboardButton(text=tr(user_id, "dodeeper_loader"), callback_data=f"dodeeper_work_loader_{phone}")],
+        [InlineKeyboardButton(text=tr(user_id, "dodeeper_trader"), callback_data=f"dodeeper_work_trader_{phone}")],
+        [InlineKeyboardButton(text=tr(user_id, "back"), callback_data=f"dodeeper_settings_{phone}")],
     ])
 
 
@@ -948,8 +952,10 @@ async def bot_dodeeper_menu(callback: types.CallbackQuery):
     await callback.answer()
     user_id = callback.from_user.id
     phones = user_sessions.get(user_id, [])
-    text = "💼 <b>Додепер</b>\n\nВыбери сессию:" if phones else (
-        "💼 <b>Додепер</b>\n\nНет подключённых сессий. Добавь аккаунт в разделе «Аккаунты»."
+    text = (
+        tr(user_id, "dodeeper_title") + "\n\n" +
+        (tr(user_id, "dodeeper_intro") + "\n\n" + tr(user_id, "dodeeper_choose_session")
+         if phones else tr(user_id, "dodeeper_no_sessions"))
     )
     await safe_edit_message(
         callback.message,
@@ -981,13 +987,13 @@ async def dodeeper_settings(callback: types.CallbackQuery):
     text = (
         f"⚙️ <b>Настройки сессии</b>\n\n"
         f"📱 <code>{phone}</code>\n"
-        f"Выбранная работа: <b>{_dodeeper_work_name(cfg.get('dodeeper_work'))}</b>"
+        tr(user_id, "dodeeper_work", work=_dodeeper_work_name(cfg.get("dodeeper_work"), user_id))
     )
     await safe_edit_message(
         callback.message,
         text,
         parse_mode=ParseMode.HTML,
-        reply_markup=get_dodeeper_settings_keyboard(phone),
+        reply_markup=get_dodeeper_settings_keyboard(phone, user_id),
     )
 
 
@@ -1000,9 +1006,9 @@ async def dodeeper_choose_work(callback: types.CallbackQuery):
     await callback.answer()
     await safe_edit_message(
         callback.message,
-        f"🧭 <b>Выбери работу</b>\n\n📱 <code>{phone}</code>",
+        tr(callback.from_user.id, "dodeeper_choose_work") + "\n\n" + tr(callback.from_user.id, "dodeeper_session", phone=phone),
         parse_mode=ParseMode.HTML,
-        reply_markup=get_dodeeper_work_choice_keyboard(phone),
+        reply_markup=get_dodeeper_work_choice_keyboard(phone, callback.from_user.id),
     )
 
 
@@ -1019,11 +1025,11 @@ async def _set_dodeeper_work(callback: types.CallbackQuery, work: str):
     await callback.answer(f"Выбрано: {_dodeeper_work_name(work)}")
     await safe_edit_message(
         callback.message,
-        f"⚙️ <b>Настройки сессии</b>\n\n"
-        f"📱 <code>{phone}</code>\n"
-        f"Выбранная работа: <b>{_dodeeper_work_name(work)}</b>",
+        tr(user_id, "dodeeper_settings") + "\n\n" +
+        tr(user_id, "dodeeper_session", phone=phone) + "\n" +
+        tr(user_id, "dodeeper_work", work=_dodeeper_work_name(work, user_id)),
         parse_mode=ParseMode.HTML,
-        reply_markup=get_dodeeper_settings_keyboard(phone),
+        reply_markup=get_dodeeper_settings_keyboard(phone, user_id),
     )
 
 
