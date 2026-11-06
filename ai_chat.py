@@ -2571,7 +2571,7 @@ async def ai_chat_message(message: types.Message, state: FSMContext):
             if saved_archive_context:
                 retry_context.append({
                     "role": "user",
-                    "content": "[СОХРАНЁННЫЕ ZIP-АРХИВЫ ЭТОГО ДИАЛОГА]\\n" + saved_archive_context,
+                    "content": "[СОХРАНЁННЫЕ ZIP-АРХИВЫ ЭТОГО ДИАЛОГА]\n" + saved_archive_context,
                 })
             retry_instruction = (
                 "Предыдущий ответ не содержит ни одного корректного блока GITHUB_FILE, поэтому "
@@ -2665,7 +2665,7 @@ async def ai_chat_message(message: types.Message, state: FSMContext):
             if saved_archive_context:
                 retry_context.append({
                     "role": "user",
-                    "content": "[СОХРАНЁННЫЕ ZIP-АРХИВЫ ЭТОГО ДИАЛОГА]\\n" + saved_archive_context,
+                    "content": "[СОХРАНЁННЫЕ ZIP-АРХИВЫ ЭТОГО ДИАЛОГА]\n" + saved_archive_context,
                 })
             retry_instruction = (
                 "Предыдущая попытка не дала пригодного вложения. Пользователь просил готовый "
