@@ -1001,7 +1001,7 @@ async def dodeeper_settings(callback: types.CallbackQuery):
 async def dodeeper_choose_work(callback: types.CallbackQuery):
     phone = callback.data.replace("dodeeper_choose_work_", "", 1)
     if phone in dodeeper_active or phone in crypto_trader_active:
-        await callback.answer("Сначала останови текущую работу", show_alert=True)
+        await callback.answer(tr(callback.from_user.id, "dodeeper_stop_first"), show_alert=True)
         return
     await callback.answer()
     await safe_edit_message(
@@ -1017,12 +1017,12 @@ async def _set_dodeeper_work(callback: types.CallbackQuery, work: str):
     phone = callback.data.replace(prefix, "", 1)
     user_id = callback.from_user.id
     if phone in dodeeper_active or phone in crypto_trader_active:
-        await callback.answer("Сначала останови текущую работу", show_alert=True)
+        await callback.answer(tr(callback.from_user.id, "dodeeper_stop_first"), show_alert=True)
         return
     cfg = get_session_config(user_id, phone)
     cfg["dodeeper_work"] = work
     save_session_config()
-    await callback.answer(f"Выбрано: {_dodeeper_work_name(work)}")
+    await callback.answer(tr(user_id, "dodeeper_work_selected", work=_dodeeper_work_name(work, user_id)))
     await safe_edit_message(
         callback.message,
         tr(user_id, "dodeeper_settings") + "\n\n" +
@@ -1051,24 +1051,24 @@ async def dodeeper_work_toggle(callback: types.CallbackQuery):
     work = cfg.get("dodeeper_work")
 
     if work not in ("loader", "trader"):
-        await callback.answer("Сначала выбери работу в настройках", show_alert=True)
+        await callback.answer(tr(user_id, "dodeeper_choose_first"), show_alert=True)
         return
 
     active_set = dodeeper_active if work == "loader" else crypto_trader_active
     if phone in active_set:
         active_set.discard(phone)
-        await callback.answer("Работа остановлена")
+        await callback.answer(tr(user_id, "dodeeper_work_stopped"))
     else:
         client = await _get_connected_client(phone)
         if not client:
-            await callback.answer("Сессия не подключена", show_alert=True)
+            await callback.answer(tr(user_id, "dodeeper_session_offline"), show_alert=True)
             return
         active_set.add(phone)
         if work == "loader":
             asyncio.create_task(_run_dodeeper_loader(user_id, phone, callback.message.chat.id))
         else:
             asyncio.create_task(_run_crypto_autotrader(user_id, phone, callback.message.chat.id))
-        await callback.answer("Работа запущена")
+        await callback.answer(tr(user_id, "dodeeper_work_started"))
 
     await safe_edit_message(
         callback.message,
