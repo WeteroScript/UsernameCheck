@@ -605,6 +605,7 @@ def _persist_chat_archive_context(
     if not isinstance(archives, list):
         archives = []
         chat["project_archives"] = archives
+    original_archives = list(archives)
     archives.append({
         "id": archive_id,
         "filename": Path(filename).name[:180],
@@ -613,21 +614,25 @@ def _persist_chat_archive_context(
     })
 
     # Keep a bounded, recent project context. Oldest archives are pruned first.
+    removed_ids = []
     while len(archives) > MAX_CHAT_ARCHIVES or sum(
         max(0, int(item.get("chars", 0))) for item in archives if isinstance(item, dict)
     ) > MAX_CHAT_ARCHIVE_CONTEXT_CHARS:
         oldest = archives.pop(0)
         old_id = str(oldest.get("id") or "") if isinstance(oldest, dict) else ""
         if re.fullmatch(r"[a-f0-9]{32}", old_id):
-            try:
-                (_chat_archive_directory(user_id, str(chat.get("id") or "")) / f"{old_id}.txt").unlink(missing_ok=True)
-            except OSError:
-                logging.warning("Не удалось удалить устаревший контекст ZIP %s", old_id)
+            removed_ids.append(old_id)
 
     if not _save_history():
-        archives[:] = [item for item in archives if item.get("id") != archive_id]
+        chat["project_archives"] = original_archives
         target.unlink(missing_ok=True)
         raise RuntimeError("Не удалось сохранить сведения о ZIP в истории чата.")
+
+    for old_id in removed_ids:
+        try:
+            (directory / f"{old_id}.txt").unlink(missing_ok=True)
+        except OSError:
+            logging.warning("Не удалось удалить устаревший контекст ZIP %s", old_id)
 
 
 def _load_chat_archive_context(user_id: int, chat: Dict[str, Any]) -> str:
@@ -2423,7 +2428,7 @@ async def ai_chat_message(message: types.Message, state: FSMContext):
                 "Содержимое ZIP сохранено в контексте этого диалога и доступно для следующих этапов."
             ).strip()
         else:
-            user_text = f"{user_text}\\n\\n{document_text}".strip()
+            user_text = f"{user_text}\n\n{document_text}".strip()
     elif not user_text:
         await message.answer(
             "Отправь текст или документ. Поддерживаются TXT, MD, CSV, JSON, XML, "
