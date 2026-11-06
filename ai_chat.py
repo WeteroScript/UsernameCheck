@@ -548,7 +548,7 @@ def _history_message_without_old_files(content: str) -> str:
     """Не сохраняет и не передаёт модели содержимое файлов из прошлых сообщений."""
     marker = "\n\nПользователь приложил файл:"
     if marker in content:
-        return content.split(marker, 1)[0] + "\\n\\n[Содержимое ранее приложенного файла не хранится в истории.]"
+        return content.split(marker, 1)[0] + "\n\n[Содержимое ранее приложенного файла не хранится в истории.]"
     if content.startswith("Пользователь приложил файл:"):
         return "[Содержимое ранее приложенного файла не хранится в истории.]"
     return content
@@ -656,12 +656,12 @@ def _load_chat_archive_context(user_id: int, chat: Dict[str, Any]) -> str:
         if remaining <= 0:
             break
         if len(content) > remaining:
-            content = content[:remaining] + "\\n[Контекст архива обрезан общим лимитом чата.]"
+            content = content[:remaining] + "\n[Контекст архива обрезан общим лимитом чата.]"
         sections.append(
-            f"===== Архив: {Path(str(item.get('filename') or 'archive.zip')).name} =====\\n{content}"
+            f"===== Архив: {Path(str(item.get('filename') or 'archive.zip')).name} =====\n{content}"
         )
         total_chars += len(content)
-    return "\\n\\n".join(sections)
+    return "\n\n".join(sections)
 
 
 def _find_chat(user_id: int, chat_id: str) -> Optional[Dict[str, Any]]:
@@ -2419,7 +2419,7 @@ async def ai_chat_message(message: types.Message, state: FSMContext):
             uploaded_archive_text = document_text
             uploaded_archive_name = message.document.file_name or "archive.zip"
             user_text = (
-                f"{user_text}\\n\\nПользователь приложил файл: {uploaded_archive_name}. "
+                f"{user_text}\n\nПользователь приложил файл: {uploaded_archive_name}. "
                 "Содержимое ZIP сохранено в контексте этого диалога и доступно для следующих этапов."
             ).strip()
         else:
@@ -2517,9 +2517,9 @@ async def ai_chat_message(message: types.Message, state: FSMContext):
         saved_archive_context = _load_chat_archive_context(user_id, chat)
         if saved_archive_context:
             request_text += (
-                "\\n\\n[СОХРАНЁННОЕ СОДЕРЖИМОЕ ZIP-АРХИВОВ ЭТОГО ДИАЛОГА]\\n"
+                "\n\n[СОХРАНЁННОЕ СОДЕРЖИМОЕ ZIP-АРХИВОВ ЭТОГО ДИАЛОГА]\n"
                 + saved_archive_context
-                + "\\n\\nИспользуй сохранённые архивы как исходные материалы текущего проекта. "
+                + "\n\nИспользуй сохранённые архивы как исходные материалы текущего проекта. "
                 "Сохраняй совместимость с ранее присланными файлами и не проси загрузить архив повторно."
             )
         if repository_reference:
