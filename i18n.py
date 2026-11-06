@@ -1,0 +1,223 @@
+"""Локализация основных экранов бота.
+
+Язык хранится в user_lang.json — том же файле, который обновляет Bot.py.
+"""
+import json
+import os
+from typing import Any
+
+LANG_FILE = os.getenv("USER_LANG_FILE", "user_lang.json")
+_LANG_CACHE: dict[int, str] = {}
+_LANG_MTIME: float | None = None
+
+TEXTS = {
+    "ru": {
+        "menu_automation": "🤖 Автоматизация",
+        "menu_tools": "🧰 Инструменты",
+        "menu_ai": "🧠 ИИ и GitHub",
+        "menu_profile": "👤 Профиль и помощь",
+        "menu_settings": "⚙️ Настройки",
+        "menu_admin": "🛠 Адм. панель",
+        "main_title": "🏠 <b>Главное меню</b>\n\nЧто будем делать? Выбирай нужный раздел:",
+        "start_greeting": "👋 Привет, {name}!\n\nЗдесь собраны инструменты для Telegram, аккаунтов, каналов и работы с ИИ.\nВыбирай раздел — нужная функция найдётся быстро:",
+        "automation_title": "🤖 <b>Автоматизация</b>",
+        "automation_desc": "Управляй ботами, аккаунтами и каналами из одного места.",
+        "tools_title": "🧰 <b>Инструменты</b>",
+        "tools_desc": "Юзернеймы, подарки, видео и другие полезные функции.",
+        "ai_title": "🧠 <b>ИИ и разработка</b>",
+        "ai_desc": "Работа с ИИ и подключёнными GitHub-репозиториями.",
+        "profile_title": "👤 <b>Профиль и помощь</b>",
+        "profile_desc": "Твой ID, Premium и связь с поддержкой.",
+        "automation_bots": "🤖 Боты",
+        "automation_accounts": "📱 Аккаунты",
+        "automation_channels": "📢 Каналы",
+        "tools_usernames": "👤 Юзернеймы",
+        "tools_shakalizer": "📉 Шакализатор",
+        "tools_gifts": "🎁 Подарки",
+        "tools_video": "🎥 Скачать видео",
+        "tools_ai_chat": "💬 Чат с ИИ",
+        "tools_github": "🐙 GitHub",
+        "profile_get_id": "🆔 Получить ID",
+        "profile_premium": "💎 Премиум",
+        "profile_bug": "🐛 Сообщить о баге",
+        "back_home": "⬅️ Главное меню",
+        "back": "⬅️ Назад",
+        "bots_title": "🤖 <b>Боты</b>\n\nВыбери нужный сервис:",
+        "bot_prgramm": "📢 PR GRAMM 💎",
+        "bot_prgramm_locked": "🔒 PR GRAMM 💎",
+        "bot_dodeeper": "💼 Додепер",
+        "username_title": "👤 <b>Юзернеймы</b>",
+        "username_intro": "━━━━━━━━━━━━━━━━━━\n🔎 <b>Поиск свободных имён</b>\nГенерируй варианты по своим параметрам и проверяй доступность.\n\n✨ Настрой стиль, длину и повторения символов.\n💎 Premium открывает дополнительные параметры и отслеживание.",
+        "username_generate": "✨ Сгенерировать юзернейм",
+        "username_settings": "⚙️ Настройки генерации",
+        "username_settings_title": "⚙️ <b>Параметры генерации</b>",
+        "username_style": "🎨 Стиль",
+        "username_length": "📏 Длина",
+        "username_repeats": "🔁 Повторения",
+        "username_underscore": "〰️ Подчёркивание",
+        "username_availability": "🔍 Отслеживание",
+        "username_reset": "↩️ Сбросить настройки",
+        "username_back": "⬅️ К юзернеймам",
+        "username_examples": "📝 <b>Примеры</b>",
+        "username_beautiful_note": "<i>Для стиля «Красивые» остальные параметры повторений не используются.</i>",
+        "username_searching": "🔎 Ищу свободный юзернейм…",
+        "username_checking": "✨ Проверяю варианты… {current}/{total}",
+        "username_found": "🎉 <b>Найден свободный вариант</b>",
+        "username_claim": "✅ Открыть",
+        "username_fragment": "🔎 Fragment",
+        "username_more": "🔄 Ещё варианты",
+        "username_not_found": "😔 Не удалось найти свободный вариант за {attempts} попыток.\n\n<i>Попробуй изменить настройки.</i>",
+        "dodeeper_title": "💼 <b>Додепер</b>",
+        "dodeeper_intro": "━━━━━━━━━━━━━━━━━━\nУправление задачами подключённых аккаунтов.\n\nВыбери сессию для просмотра состояния и настройки работы.",
+        "dodeeper_no_sessions": "Подключённых сессий пока нет. Добавь аккаунт в разделе «Аккаунты».",
+        "dodeeper_add_account": "➕ Подключить аккаунт",
+        "dodeeper_choose_session": "Выбери сессию:",
+        "dodeeper_session": "📱 <b>Сессия:</b> <code>{phone}</code>",
+        "dodeeper_work": "⚙️ <b>Задача:</b> {work}",
+        "dodeeper_status_running": "🟢 Работает",
+        "dodeeper_status_stopped": "⚪ Остановлена",
+        "dodeeper_start": "▶️ Запустить",
+        "dodeeper_stop": "⏹ Остановить",
+        "dodeeper_settings": "⚙️ Настройки",
+        "dodeeper_choose_work": "🧭 Выбрать задачу",
+        "dodeeper_loader": "📦 Грузчик",
+        "dodeeper_trader": "📈 Авто-трейдер",
+        "dodeeper_not_selected": "Не выбрана",
+        "dodeeper_back_bots": "⬅️ К списку ботов",
+        "premium_title": "💎 <b>Premium навсегда</b>",
+        "premium_description": "━━━━━━━━━━━━━━━━━━\n📱 <b>Аккаунты</b>\n• До 10 аккаунтов вместо 3\n• Подключение номеров любых стран\n\n👤 <b>Юзернеймы</b>\n• Стиль генерации «Красивые»\n• Повтор цифр и символ «_»\n• Отслеживание доступности каждые 10 минут\n\n🤖 <b>PR GRAMM</b>\n• Доступ к типу заданий «Боты»\n\n💎 <b>Стоимость: 300 ₽ — один раз, навсегда.</b>\n\n💳 Оплата через Crypto Bot доступна кнопкой ниже.\n\n💠 <b>Оплата переводом на TON-адрес:</b> напиши менеджеру @BotFarmSupport. Он отправит актуальный адрес и подтвердит оплату вручную.",
+        "premium_buy": "💳 Оплатить через Crypto Bot · 300 ₽",
+        "premium_ton": "💠 Оплатить на TON-адрес",
+        "premium_back": "⬅️ Назад",
+        "premium_active": "✅ У тебя уже есть Premium без срока действия.",
+        "payment_not_configured": "⚠️ Автоматическая оплата пока не настроена. Для оплаты через TON-адрес напиши менеджеру @BotFarmSupport.",
+        "payment_invoice_text": "💎 <b>Счёт на Premium создан</b>\n\nСумма: <b>300 ₽</b>\nСрок оплаты: <b>15 минут</b>\n\nОплати счёт по кнопке ниже. После подтверждения Premium активируется автоматически и останется навсегда.",
+        "payment_existing": "У тебя уже есть активный счёт. Используй его для оплаты в течение оставшегося времени.",
+        "payment_expired": "⌛ <b>Время оплаты истекло</b>\nСчёт на Premium был удалён. Создай новый счёт, чтобы попробовать ещё раз.",
+        "payment_success": "✅ <b>Оплата подтверждена!</b>\n\n💎 Premium активирован навсегда. Спасибо за покупку.",
+        "payment_invoice_paid": "✅ Счёт оплачен. Premium активирован навсегда.",
+        "captcha_question": "🧩 <b>Проверка перед подпиской</b>\n\nРеши пример: <b>{left} {operator} {right} = ?</b>\nВыбери правильный ответ, чтобы перейти к подписке.",
+        "captcha_correct": "✅ Проверка пройдена. Теперь нажми кнопку ниже, чтобы проверить подписку.",
+        "captcha_wrong": "❌ Неверный ответ. Попробуй новый пример.",
+        "captcha_continue": "✅ Проверить подписку",
+        "subscription_required": "🔒 <b>Для продолжения подпишись на каналы:</b>",
+    },
+    "en": {
+        "menu_automation": "🤖 Automation",
+        "menu_tools": "🧰 Tools",
+        "menu_ai": "🧠 AI & GitHub",
+        "menu_profile": "👤 Profile & Support",
+        "menu_settings": "⚙️ Settings",
+        "menu_admin": "🛠 Admin panel",
+        "main_title": "🏠 <b>Main menu</b>\n\nWhat would you like to do? Choose a section:",
+        "start_greeting": "👋 Hello, {name}!\n\nYour Telegram, account, channel and AI tools are gathered here. Choose a section to get started:",
+        "automation_title": "🤖 <b>Automation</b>",
+        "automation_desc": "Manage bots, accounts and channels in one place.",
+        "tools_title": "🧰 <b>Tools</b>",
+        "tools_desc": "Usernames, gifts, videos and other useful features.",
+        "ai_title": "🧠 <b>AI & Development</b>",
+        "ai_desc": "Work with AI and your connected GitHub repositories.",
+        "profile_title": "👤 <b>Profile & Support</b>",
+        "profile_desc": "Your ID, Premium and support contacts.",
+        "automation_bots": "🤖 Bots",
+        "automation_accounts": "📱 Accounts",
+        "automation_channels": "📢 Channels",
+        "tools_usernames": "👤 Usernames",
+        "tools_shakalizer": "📉 Shakalizer",
+        "tools_gifts": "🎁 Gifts",
+        "tools_video": "🎥 Download video",
+        "tools_ai_chat": "💬 AI chat",
+        "tools_github": "🐙 GitHub",
+        "profile_get_id": "🆔 Get ID",
+        "profile_premium": "💎 Premium",
+        "profile_bug": "🐛 Report a bug",
+        "back_home": "⬅️ Main menu",
+        "back": "⬅️ Back",
+        "bots_title": "🤖 <b>Bots</b>\n\nChoose a service:",
+        "bot_prgramm": "📢 PR GRAMM 💎",
+        "bot_prgramm_locked": "🔒 PR GRAMM 💎",
+        "bot_dodeeper": "💼 Dodeeper",
+        "username_title": "👤 <b>Usernames</b>",
+        "username_intro": "━━━━━━━━━━━━━━━━━━\n🔎 <b>Find available usernames</b>\nGenerate options using your preferences and check availability.\n\n✨ Choose a style, length and repeated characters.\n💎 Premium unlocks extra settings and availability tracking.",
+        "username_generate": "✨ Generate username",
+        "username_settings": "⚙️ Generation settings",
+        "username_settings_title": "⚙️ <b>Generation settings</b>",
+        "username_style": "🎨 Style",
+        "username_length": "📏 Length",
+        "username_repeats": "🔁 Repetitions",
+        "username_underscore": "〰️ Underscore",
+        "username_availability": "🔍 Availability tracking",
+        "username_reset": "↩️ Reset settings",
+        "username_back": "⬅️ Back to usernames",
+        "username_examples": "📝 <b>Examples</b>",
+        "username_beautiful_note": "<i>Other repetition settings are not used with the Beautiful style.</i>",
+        "username_searching": "🔎 Searching for an available username…",
+        "username_checking": "✨ Checking options… {current}/{total}",
+        "username_found": "🎉 <b>Available username found</b>",
+        "username_claim": "✅ Open",
+        "username_fragment": "🔎 Fragment",
+        "username_more": "🔄 More options",
+        "username_not_found": "😔 No available username found after {attempts} attempts.\n\n<i>Try changing your settings.</i>",
+        "dodeeper_title": "💼 <b>Dodeeper</b>",
+        "dodeeper_intro": "━━━━━━━━━━━━━━━━━━\nManage tasks for your connected accounts.\n\nChoose a session to view its status and configure its task.",
+        "dodeeper_no_sessions": "No sessions connected yet. Add an account in the Accounts section.",
+        "dodeeper_add_account": "➕ Connect account",
+        "dodeeper_choose_session": "Choose a session:",
+        "dodeeper_session": "📱 <b>Session:</b> <code>{phone}</code>",
+        "dodeeper_work": "⚙️ <b>Task:</b> {work}",
+        "dodeeper_status_running": "🟢 Running",
+        "dodeeper_status_stopped": "⚪ Stopped",
+        "dodeeper_start": "▶️ Start",
+        "dodeeper_stop": "⏹ Stop",
+        "dodeeper_settings": "⚙️ Settings",
+        "dodeeper_choose_work": "🧭 Choose task",
+        "dodeeper_loader": "📦 Loader",
+        "dodeeper_trader": "📈 Auto trader",
+        "dodeeper_not_selected": "Not selected",
+        "dodeeper_back_bots": "⬅️ Back to bots",
+        "premium_title": "💎 <b>Premium — Lifetime</b>",
+        "premium_description": "━━━━━━━━━━━━━━━━━━\n📱 <b>Accounts</b>\n• Up to 10 accounts instead of 3\n• Phone numbers from any country\n\n👤 <b>Usernames</b>\n• Beautiful generation style\n• Repeated digits and underscore support\n• Availability tracking every 10 minutes\n\n🤖 <b>PR GRAMM</b>\n• Access to the Bots task type\n\n💎 <b>Price: 300 RUB — one-time payment for lifetime access.</b>\n\n💳 Pay with Crypto Bot using the button below.\n\n💠 <b>TON address payment:</b> message @BotFarmSupport. The manager will provide the current address and confirm the payment manually.",
+        "premium_buy": "💳 Pay with Crypto Bot · 300 RUB",
+        "premium_ton": "💠 Pay to a TON address",
+        "premium_back": "⬅️ Back",
+        "premium_active": "✅ Your Premium access is already active and has no expiry date.",
+        "payment_not_configured": "⚠️ Automatic payments are not configured yet. To pay to a TON address, contact @BotFarmSupport.",
+        "payment_invoice_text": "💎 <b>Premium invoice created</b>\n\nAmount: <b>300 RUB</b>\nPayment window: <b>15 minutes</b>\n\nPay using the button below. Once the payment is confirmed, Premium will be activated automatically for lifetime access.",
+        "payment_existing": "You already have an active invoice. Use it to complete the payment before it expires.",
+        "payment_expired": "⌛ <b>Payment time expired</b>\nYour Premium invoice has been deleted. Create a new invoice to try again.",
+        "payment_success": "✅ <b>Payment confirmed!</b>\n\n💎 Premium is now active for lifetime access. Thank you for your purchase.",
+        "payment_invoice_paid": "✅ Invoice paid. Premium is now active for lifetime access.",
+        "captcha_question": "🧩 <b>Quick check before joining</b>\n\nSolve: <b>{left} {operator} {right} = ?</b>\nChoose the correct answer to continue to the channel subscription step.",
+        "captcha_correct": "✅ Verification passed. Press the button below to check your subscriptions.",
+        "captcha_wrong": "❌ Incorrect answer. Try a new problem.",
+        "captcha_continue": "✅ Check subscription",
+        "subscription_required": "🔒 <b>Subscribe to the channels below to continue:</b>",
+    },
+}
+
+
+def get_language(user_id: int | None) -> str:
+    global _LANG_MTIME, _LANG_CACHE
+    try:
+        mtime = os.path.getmtime(LANG_FILE)
+        if _LANG_MTIME != mtime:
+            with open(LANG_FILE, "r", encoding="utf-8") as source:
+                raw = json.load(source)
+            _LANG_CACHE = {
+                int(user_id): lang
+                for user_id, lang in raw.items()
+                if str(lang) in ("ru", "en")
+            }
+            _LANG_MTIME = mtime
+    except (OSError, ValueError, TypeError):
+        pass
+    return _LANG_CACHE.get(int(user_id or 0), "ru")
+
+
+def tr(user_id: int | None, key: str, **kwargs: Any) -> str:
+    lang = get_language(user_id)
+    template = TEXTS.get(lang, TEXTS["ru"]).get(key, TEXTS["ru"].get(key, key))
+    try:
+        return template.format(**kwargs) if kwargs else template
+    except (KeyError, ValueError):
+        return template
