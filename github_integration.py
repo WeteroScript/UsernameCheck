@@ -491,11 +491,11 @@ async def fetch_repository_context(telegram_user_id: int, reference: str, branch
         # Обходим дерево каталог за каталогом. Recursive tree API может вернуть
         # truncated=true на больших репозиториях, поэтому не используем один
         # рекурсивный снимок всего репозитория.
-        pending_trees = [head_commit["tree"]["sha"]]
+        pending_trees = [(head_commit["tree"]["sha"], "")]
         visited_trees = set()
         entries = []
         while pending_trees:
-            tree_sha = pending_trees.pop()
+            tree_sha, parent_path = pending_trees.pop()
             if tree_sha in visited_trees:
                 continue
             visited_trees.add(tree_sha)
@@ -510,10 +510,12 @@ async def fetch_repository_context(telegram_user_id: int, reference: str, branch
                     "Невозможно подтвердить полный просмотр дерева репозитория."
                 )
             for item in tree_data.get("tree", []):
+                item_path = str(item.get("path") or "")
+                full_path = parent_path + "/" + item_path if parent_path else item_path
                 if item.get("type") == "tree" and item.get("sha"):
-                    pending_trees.append(item["sha"])
-                elif item.get("type") == "blob" and isinstance(item.get("path"), str):
-                    entries.append(item)
+                    pending_trees.append((item["sha"], full_path))
+                elif item.get("type") == "blob" and item_path:
+                    entries.append({**item, "path": full_path})
 
         # Полный список путей включает также бинарные и чувствительные файлы.
         # Содержимое credential-файлов намеренно не передаётся внешней модели.
@@ -524,7 +526,7 @@ async def fetch_repository_context(telegram_user_id: int, reference: str, branch
         }
 
         def is_sensitive_path(path: str) -> bool:
-            parts = [part.lower() for part in path.replace("\\\\", "/").split("/")]
+            parts = [part.lower() for part in path.split("/") ]
             basename = parts[-1] if parts else ""
             if basename in excluded_names:
                 return True
