@@ -544,45 +544,23 @@ def _find_chat(user_id: int, chat_id: str) -> Optional[Dict[str, Any]]:
 def _root_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [
-            InlineKeyboardButton(
-                text="➕ Новый чат",
-                callback_data="ai_new",
-                style=ButtonStyle.SUCCESS,
-            ),
-            InlineKeyboardButton(
-                text="📚 Мои чаты",
-                callback_data="ai_my_chats",
-                style=ButtonStyle.PRIMARY,
-            ),
+            InlineKeyboardButton(text="➕ Новый чат", callback_data="ai_new", style=ButtonStyle.SUCCESS),
+            InlineKeyboardButton(text="📁 Мои чаты", callback_data="ai_my_chats", style=ButtonStyle.PRIMARY),
         ],
         [
-            InlineKeyboardButton(
-                text="✍️ Свой промпт",
-                callback_data="ai_prompt_settings",
-                style=ButtonStyle.PRIMARY,
-            ),
-            InlineKeyboardButton(
-                text="🔑 Свой API key",
-                callback_data="ai_api_settings",
-                style=ButtonStyle.PRIMARY,
-            ),
+            InlineKeyboardButton(text="⚙️", callback_data="ai_settings", style=ButtonStyle.PRIMARY),
+            InlineKeyboardButton(text="🐙 GitHub", callback_data="github_menu", style=ButtonStyle.PRIMARY),
         ],
-        [
-            InlineKeyboardButton(
-                text="🐙 GitHub",
-                callback_data="github_menu",
-                style=ButtonStyle.PRIMARY,
-            )
-        ],
-        [
-            InlineKeyboardButton(
-                text="🏠 Главное меню",
-                callback_data="home_ai",
-                style=ButtonStyle.DANGER,
-            )
-        ],
+        [InlineKeyboardButton(text="🏠 Главное меню", callback_data="home_ai", style=ButtonStyle.DANGER)],
     ])
 
+
+def _ai_settings_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✍️ Свой промпт", callback_data="ai_prompt_settings", style=ButtonStyle.PRIMARY)],
+        [InlineKeyboardButton(text="🔑 Свой API key", callback_data="ai_api_settings", style=ButtonStyle.PRIMARY)],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="ai_menu", style=ButtonStyle.DANGER)],
+    ])
 
 def _new_chat_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
@@ -678,52 +656,105 @@ def _short_title(value: str, limit: int = 32) -> str:
     return value or "Новый чат"
 
 
-def _my_chats_keyboard(user_id: int) -> InlineKeyboardMarkup:
+def _model_folder_key(model: str) -> str:
+    """Короткий стабильный идентификатор папки модели для callback_data."""
+    return hashlib.sha256(model.encode("utf-8")).hexdigest()[:12]
+
+
+def _model_folder_title(model: str) -> str:
+    """Преобразует ID модели в читаемое имя папки."""
+    parts = model.strip().split("-")
+    if model.lower().startswith("claude-") and len(parts) >= 4:
+        if parts[-1].isdigit() and parts[-2].isdigit():
+            version = f"{parts[-2]}.{parts[-1]}"
+            family = " ".join(part.capitalize() for part in parts[1:-2])
+            return f"Claude {family} {version}"
+    labels = {
+        "gpt": "GPT", "deepseek": "DeepSeek", "kimi": "Kimi",
+        "gemini": "Gemini", "glm": "GLM", "qwen": "Qwen",
+        "minimax": "MiniMax", "hy": "HY",
+    }
+    return " ".join(labels.get(part.lower(), part.upper() if part.lower() == "v" else part.capitalize())
+                    for part in parts)
+
+
+def _chat_count_label(count: int) -> str:
+    last_two = count % 100
+    last_one = count % 10
+    if 11 <= last_two <= 14:
+        noun = "чатов"
+    elif last_one == 1:
+        noun = "чат"
+    elif 2 <= last_one <= 4:
+        noun = "чата"
+    else:
+        noun = "чатов"
+    return f"{count} {noun}"
+
+
+def _my_chats_keyboard(
+    user_id: int,
+    model_filter: Optional[str] = None,
+) -> InlineKeyboardMarkup:
+    chats = _user_chats(user_id)
     rows = []
-    chats = sorted(
-        _user_chats(user_id),
-        key=lambda item: item.get("updated_at", ""),
-        reverse=True,
-    )
-    for chat in chats[:30]:
-        title = _short_title(str(chat.get("title", "Новый чат")), 27)
-        rows.append([
-            InlineKeyboardButton(
-                text=f"💬 {title}",
-                callback_data=f"ai_open_{chat['id']}",
+
+    if model_filter is None:
+        folders: Dict[str, List[Dict[str, Any]]] = {}
+        for chat in chats:
+            model = str(chat.get("model") or "unknown")
+            folders.setdefault(model, []).append(chat)
+
+        ordered_folders = sorted(
+            folders.items(),
+            key=lambda item: max(str(chat.get("updated_at") or "") for chat in item[1]),
+            reverse=True,
+        )
+        for model, model_chats in ordered_folders:
+            rows.append([InlineKeyboardButton(
+                text=f"📁 {_model_folder_title(model)} · {_chat_count_label(len(model_chats))}",
+                callback_data=f"ai_folder_{_model_folder_key(model)}",
                 style=ButtonStyle.PRIMARY,
-            ),
-            InlineKeyboardButton(
-                text="⚙️",
-                callback_data=f"ai_chat_settings_{chat['id']}",
-                style=ButtonStyle.SUCCESS,
-            ),
-        ])
+            )])
+    else:
+        model_chats = sorted(
+            (chat for chat in chats if str(chat.get("model") or "unknown") == model_filter),
+            key=lambda item: str(item.get("updated_at") or ""),
+            reverse=True,
+        )
+        for chat in model_chats[:30]:
+            title = _short_title(str(chat.get("title", "Новый чат")), 28)
+            rows.append([
+                InlineKeyboardButton(
+                    text=f"💬 {title}",
+                    callback_data=f"ai_open_{chat['id']}",
+                    style=ButtonStyle.PRIMARY,
+                ),
+                InlineKeyboardButton(
+                    text="⚙️",
+                    callback_data=f"ai_chat_settings_{chat['id']}",
+                    style=ButtonStyle.SUCCESS,
+                ),
+            ])
+
     rows.extend([
-        [
-            InlineKeyboardButton(
-                text="➕ Новый чат",
-                callback_data="ai_new",
-                style=ButtonStyle.SUCCESS,
-            )
-        ],
-        [
-            InlineKeyboardButton(
-                text="⬅️ Назад",
-                callback_data="ai_menu",
-                style=ButtonStyle.DANGER,
-            )
-        ],
+        [InlineKeyboardButton(text="➕ Новый чат", callback_data="ai_new", style=ButtonStyle.SUCCESS)],
+        [InlineKeyboardButton(
+            text="⬅️ Назад к папкам" if model_filter is not None else "⬅️ Назад",
+            callback_data="ai_my_chats" if model_filter is not None else "ai_menu",
+            style=ButtonStyle.DANGER,
+        )],
     ])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
-def _chat_settings_keyboard(chat_id: str) -> InlineKeyboardMarkup:
+
+def _chat_settings_keyboard(chat_id: str, model: Optional[str] = None) -> InlineKeyboardMarkup:
+    back_callback = f"ai_folder_{_model_folder_key(model)}" if model else "ai_my_chats"
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🗑 Удалить чат", callback_data=f"ai_chat_delete_{chat_id}", style=ButtonStyle.DANGER)],
         [InlineKeyboardButton(text="🎛 Поменять модель", callback_data=f"ai_chat_change_model_{chat_id}", style=ButtonStyle.SUCCESS)],
-        [InlineKeyboardButton(text="⬅️ Назад", callback_data="ai_my_chats", style=ButtonStyle.PRIMARY)],
+        [InlineKeyboardButton(text="⬅️ Назад к папке", callback_data=back_callback, style=ButtonStyle.PRIMARY)],
     ])
-
 
 def _chat_model_keyboard(chat_id: str) -> InlineKeyboardMarkup:
     buttons = [
@@ -747,7 +778,7 @@ def _prompt_settings_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✏️ Изменить промпт", callback_data="ai_prompt_edit", style=ButtonStyle.SUCCESS)],
         [InlineKeyboardButton(text="🗑 Сбросить промпт", callback_data="ai_prompt_reset", style=ButtonStyle.DANGER)],
-        [InlineKeyboardButton(text="⬅️ Назад", callback_data="ai_menu", style=ButtonStyle.PRIMARY)],
+        [InlineKeyboardButton(text="⬅️ К настройкам", callback_data="ai_settings", style=ButtonStyle.PRIMARY)],
     ])
 
 
@@ -757,7 +788,7 @@ def _api_settings_keyboard() -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="🌐 Установить API URL", callback_data="ai_api_set_url", style=ButtonStyle.PRIMARY)],
         [InlineKeyboardButton(text="🗑 Удалить ключ", callback_data="ai_api_delete_key", style=ButtonStyle.DANGER)],
         [InlineKeyboardButton(text="♻️ Сбросить свой API", callback_data="ai_api_reset", style=ButtonStyle.DANGER)],
-        [InlineKeyboardButton(text="⬅️ Назад", callback_data="ai_menu", style=ButtonStyle.PRIMARY)],
+        [InlineKeyboardButton(text="⬅️ К настройкам", callback_data="ai_settings", style=ButtonStyle.PRIMARY)],
     ])
 
 
@@ -1515,6 +1546,18 @@ async def ai_menu(callback: types.CallbackQuery, state: FSMContext):
 
 
 
+@router.callback_query(lambda callback: callback.data == "ai_settings")
+async def ai_settings(callback: types.CallbackQuery, state: FSMContext):
+    await callback.answer()
+    await state.clear()
+    await callback.message.edit_text(
+        "⚙️ <b>Настройки ИИ-чатов</b>\\n\\n"
+        "Пользовательский промпт и личный API настраиваются отдельно.",
+        parse_mode="HTML",
+        reply_markup=_ai_settings_keyboard(),
+    )
+
+
 @router.callback_query(lambda callback: callback.data == "ai_prompt_settings")
 async def ai_prompt_settings(callback: types.CallbackQuery, state: FSMContext):
     await callback.answer()
@@ -1682,7 +1725,7 @@ async def ai_chat_settings(callback: types.CallbackQuery, state: FSMContext):
         f"Имя: <b>{html.escape(str(chat.get('title') or 'Новый чат'))}</b>\n"
         f"Модель: <code>{html.escape(str(chat.get('model') or 'неизвестна'))}</code>",
         parse_mode="HTML",
-        reply_markup=_chat_settings_keyboard(chat_id),
+        reply_markup=_chat_settings_keyboard(chat_id, str(chat.get("model") or "unknown")),
     )
 
 
@@ -1700,7 +1743,7 @@ async def ai_chat_change_model(callback: types.CallbackQuery, state: FSMContext)
         await callback.message.edit_text(
             f"Не удалось загрузить модели: {html.escape(str(exc))}",
             parse_mode="HTML",
-            reply_markup=_chat_settings_keyboard(chat_id),
+            reply_markup=_chat_settings_keyboard(chat_id, str(chat.get("model") or "unknown")),
         )
         return
     await callback.message.edit_text(
@@ -1751,7 +1794,7 @@ async def ai_chat_set_model(callback: types.CallbackQuery, state: FSMContext):
         f"Имя: <b>{html.escape(str(chat.get('title') or 'Новый чат'))}</b>\n"
         f"Модель: <code>{html.escape(model)}</code>",
         parse_mode="HTML",
-        reply_markup=_chat_settings_keyboard(chat_id),
+        reply_markup=_chat_settings_keyboard(chat_id, str(chat.get("model") or "unknown")),
     )
 
 
@@ -1856,23 +1899,52 @@ async def ai_chat_models_page(callback: types.CallbackQuery):
     )
 
 
+@router.callback_query(lambda callback: callback.data and callback.data.startswith("ai_folder_"))
+async def ai_model_folder(callback: types.CallbackQuery, state: FSMContext):
+    folder_key = callback.data[len("ai_folder_"):]
+    user_id = callback.from_user.id
+    chats = _user_chats(user_id)
+    matching_models = {
+        str(chat.get("model") or "unknown")
+        for chat in chats
+        if _model_folder_key(str(chat.get("model") or "unknown")) == folder_key
+    }
+    if not matching_models:
+        await callback.answer("Папка не найдена или в ней больше нет чатов.", show_alert=True)
+        return
+    model = next(iter(matching_models))
+    count = sum(1 for chat in chats if str(chat.get("model") or "unknown") == model)
+    await callback.answer()
+    await state.clear()
+    await callback.message.edit_text(
+        f"📁 <b>{html.escape(_model_folder_title(model))}</b>\\n\\n"
+        f"Сохранено диалогов: {count}. Выбери чат, чтобы продолжить:",
+        parse_mode="HTML",
+        reply_markup=_my_chats_keyboard(user_id, model_filter=model),
+    )
+
+
 @router.callback_query(lambda callback: callback.data == "ai_my_chats")
 async def ai_my_chats(callback: types.CallbackQuery, state: FSMContext):
     await callback.answer()
     await state.clear()
     chats = _user_chats(callback.from_user.id)
     if not chats:
-        text = "📚 <b>Мои чаты</b>\n\nСохранённых диалогов пока нет."
+        text = "📚 <b>Мои чаты</b>\\n\\nСохранённых диалогов пока нет. Создай первый чат."
     else:
+        model_count = len({str(chat.get("model") or "unknown") for chat in chats})
         text = (
-            f"📚 <b>Мои чаты</b>\n\n"
-            f"Сохранено диалогов: {len(chats)}. Выбери диалог, затем отправь сообщение:"
+            "📚 <b>Мои чаты</b>\\n\\n"
+            f"Всего диалогов: {len(chats)} · Папок моделей: {model_count}.\\n"
+            "Выбери папку модели:"
         )
     await callback.message.edit_text(
         text,
         parse_mode="HTML",
         reply_markup=_my_chats_keyboard(callback.from_user.id),
     )
+
+
 
 
 @router.callback_query(lambda callback: callback.data and callback.data.startswith("ai_model_"))
