@@ -699,7 +699,7 @@ def get_repeats_keyboard(user_id: int) -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text=tr(user_id, "username_back_settings"), callback_data="settings")],
     ])
 
-def get_letter_keyboard() -> InlineKeyboardMarkup:
+def get_letter_keyboard(user_id: Optional[int] = None) -> InlineKeyboardMarkup:
     rows, row = [], []
     for letter in string.ascii_lowercase:
         row.append(InlineKeyboardButton(text=letter.upper(), callback_data=f"set_letter_{letter}"))
@@ -708,14 +708,14 @@ def get_letter_keyboard() -> InlineKeyboardMarkup:
             row = []
     if row:
         rows.append(row)
-    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="settings_repeats")])
+    rows.append([InlineKeyboardButton(text=tr(user_id, "username_back_settings"), callback_data="settings_repeats")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
-def get_count_keyboard(max_length: int = 5) -> InlineKeyboardMarkup:
+
+def get_count_keyboard(max_length: int = 5, user_id: Optional[int] = None) -> InlineKeyboardMarkup:
     max_repeat = get_max_repeat_count(max_length)
     options = [n for n in range(2, max_repeat + 1)]
-    rows = []
-    row = []
+    rows, row = [], []
     for n in options:
         row.append(InlineKeyboardButton(text=str(n), callback_data=f"set_count_{n}"))
         if len(row) == 5:
@@ -723,38 +723,36 @@ def get_count_keyboard(max_length: int = 5) -> InlineKeyboardMarkup:
             row = []
     if row:
         rows.append(row)
-    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="settings_repeats")])
+    rows.append([InlineKeyboardButton(text=tr(user_id, "username_back_settings"), callback_data="settings_repeats")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def get_digit_keyboard() -> InlineKeyboardMarkup:
-    rows = []
-    row = []
-    for d in range(10):
-        row.append(InlineKeyboardButton(text=str(d), callback_data=f"set_digit_{d}"))
+def get_digit_keyboard(user_id: Optional[int] = None) -> InlineKeyboardMarkup:
+    rows, row = [], []
+    for digit in range(10):
+        row.append(InlineKeyboardButton(text=str(digit), callback_data=f"set_digit_{digit}"))
         if len(row) == 5:
             rows.append(row)
             row = []
     if row:
         rows.append(row)
-    rows.append([InlineKeyboardButton(text="❌ Убрать цифру", callback_data="clear_digit")])
-    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="settings_repeats")])
+    rows.append([InlineKeyboardButton(text=tr(user_id, "username_clear_digit"), callback_data="clear_digit")])
+    rows.append([InlineKeyboardButton(text=tr(user_id, "username_back_settings"), callback_data="settings_repeats")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def get_digit_count_keyboard(max_length: int = 5) -> InlineKeyboardMarkup:
+def get_digit_count_keyboard(max_length: int = 5, user_id: Optional[int] = None) -> InlineKeyboardMarkup:
     max_repeat = get_max_repeat_count(max_length)
     options = [n for n in range(0, max_repeat + 1)]
-    rows = []
-    row = []
-    for n in options:
-        row.append(InlineKeyboardButton(text=str(n), callback_data=f"set_digit_count_{n}"))
+    rows, row = [], []
+    for number in options:
+        row.append(InlineKeyboardButton(text=str(number), callback_data=f"set_digit_count_{number}"))
         if len(row) == 5:
             rows.append(row)
             row = []
     if row:
         rows.append(row)
-    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="settings_repeats")])
+    rows.append([InlineKeyboardButton(text=tr(user_id, "username_back_settings"), callback_data="settings_repeats")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -766,13 +764,11 @@ def get_style_keyboard(user_id: Optional[int] = None) -> InlineKeyboardMarkup:
     ])
 
 
-def get_check_menu_keyboard() -> InlineKeyboardMarkup:
+def get_check_menu_keyboard(user_id: Optional[int] = None) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✏️ Ввести юзернейм", callback_data="watch_add")],
-        [InlineKeyboardButton(text="⬅️ Назад", callback_data="settings")],
+        [InlineKeyboardButton(text=tr(user_id, "username_watch_add"), callback_data="watch_add")],
+        [InlineKeyboardButton(text=tr(user_id, "username_back_settings"), callback_data="settings")],
     ])
-
-
 
 
 # ============ CALLBACK ============
@@ -892,7 +888,7 @@ async def settings_repeats_menu(callback: types.CallbackQuery):
 @router.callback_query(lambda c: c.data == "change_letter")
 async def change_letter(callback: types.CallbackQuery):
     await callback.answer()
-    await callback.message.edit_text(tr(callback.from_user.id, "username_choose_letter"), reply_markup=get_letter_keyboard())
+    await callback.message.edit_text(tr(callback.from_user.id, "username_choose_letter"), reply_markup=get_letter_keyboard(callback.from_user.id))
 
 @router.callback_query(lambda c: c.data.startswith("set_letter_"))
 async def set_letter(callback: types.CallbackQuery):
@@ -909,7 +905,7 @@ async def change_count(callback: types.CallbackQuery):
         "🔢 Количество одинаковых букв подряд:\n\n"
         f"<i>Доступно больше вариантов при большей длине юзернейма (сейчас: {s['max_length']})</i>",
         parse_mode=ParseMode.HTML,
-        reply_markup=get_count_keyboard(s["max_length"])
+        reply_markup=get_count_keyboard(s["max_length"], callback.from_user.id)
     )
 
 @router.callback_query(lambda c: c.data.startswith("set_count_"))
@@ -930,7 +926,7 @@ async def change_digit(callback: types.CallbackQuery):
         await callback.answer(f"{PREMIUM_ICON} Доступно только с премиум-подпиской", show_alert=True)
         return
     await callback.answer()
-    await callback.message.edit_text(tr(user_id, "username_choose_digit"), reply_markup=get_digit_keyboard())
+    await callback.message.edit_text(tr(user_id, "username_choose_digit"), reply_markup=get_digit_keyboard(user_id))
 
 @router.callback_query(lambda c: c.data.startswith("set_digit_") and not c.data.startswith("set_digit_count_"))
 async def set_digit(callback: types.CallbackQuery):
@@ -962,7 +958,7 @@ async def change_digit_count(callback: types.CallbackQuery):
     s = get_user_settings(user_id)
     await callback.message.edit_text(
         "🔢 Количество одинаковых цифр подряд:",
-        reply_markup=get_digit_count_keyboard(s["max_length"])
+        reply_markup=get_digit_count_keyboard(s["max_length"], user_id)
     )
 
 @router.callback_query(lambda c: c.data.startswith("set_digit_count_"))
@@ -1089,7 +1085,7 @@ async def check_availability_menu(callback: types.CallbackQuery):
         f"и уведомит, когда юзернейм освободится.\n\n"
         f"Слотов: {len(items)}/{MAX_WATCHED_PER_USER}"
     )
-    await callback.message.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=get_check_menu_keyboard())
+    await callback.message.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=get_check_menu_keyboard(callback.from_user.id))
 
 
 @router.callback_query(lambda c: c.data == "watch_add")
@@ -1116,7 +1112,7 @@ async def watch_add_input(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
     if text.lower() in ("/cancel", "отмена"):
         await state.clear()
-        await message.answer("❌ Отменено", reply_markup=get_check_menu_keyboard())
+        await message.answer("❌ Отменено", reply_markup=get_check_menu_keyboard(callback.from_user.id))
         return
     if not re.match(r'^[a-zA-Z][a-zA-Z0-9_]{4,31}$', text):
         await message.answer("❌ Неверный формат юзернейма. Попробуй снова или нажми «Назад».")
@@ -1126,7 +1122,7 @@ async def watch_add_input(message: types.Message, state: FSMContext):
     if any(it["username"].lower() == text.lower() for it in watched_usernames[user_id]):
         await message.answer(
             f"ℹ️ @{text} уже отслеживается.",
-            reply_markup=get_check_menu_keyboard()
+            reply_markup=get_check_menu_keyboard(callback.from_user.id)
         )
         return
     watched_usernames[user_id].append({
@@ -1137,7 +1133,7 @@ async def watch_add_input(message: types.Message, state: FSMContext):
     await message.answer(
         f"✅ @{text} добавлен в отслеживание.\n\n"
         f"Проверяю каждые 10 минут — уведомлю, как только он освободится.",
-        reply_markup=get_check_menu_keyboard()
+        reply_markup=get_check_menu_keyboard(callback.from_user.id)
     )
 
 
