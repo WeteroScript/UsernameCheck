@@ -20,7 +20,7 @@ import html
 from urllib.parse import urlsplit, urlunsplit
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Dict, List, Optional
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 
 import aiohttp
 from aiogram import Router, types
@@ -60,6 +60,9 @@ _last_request_at: Dict[int, float] = {}
 _active_requests: set[int] = set()
 _active_tasks: Dict[int, asyncio.Task] = {}
 _waiting_messages: Dict[int, types.Message] = {}
+_MESSAGE_DEDUPE_TTL_SECONDS = 600
+_MAX_SEEN_AI_MESSAGES = 10000
+_seen_ai_messages: Dict[Tuple[int, int], float] = {}
 SYSTEM_PROMPT = (
     "Ты — ИИ-помощник внутри Telegram-бота. Отвечай на языке пользователя. "
     "ПОДХОД К БОЛЬШИМ ПРОЕКТАМ: если пользователь просит создать полноценное приложение, "
@@ -200,6 +203,27 @@ class AIChatStates(StatesGroup):
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def _is_duplicate_ai_message(message: types.Message) -> bool:
+    """Не запускает один Telegram message_id повторно в пределах процесса."""
+    key = (int(message.chat.id), int(message.message_id))
+    now = time.monotonic()
+    previous = _seen_ai_messages.get(key)
+    if previous is not None and now - previous <= _MESSAGE_DEDUPE_TTL_SECONDS:
+        return True
+
+    _seen_ai_messages[key] = now
+    if len(_seen_ai_messages) > _MAX_SEEN_AI_MESSAGES:
+        cutoff = now - _MESSAGE_DEDUPE_TTL_SECONDS
+        for old_key, seen_at in list(_seen_ai_messages.items()):
+            if seen_at < cutoff:
+                _seen_ai_messages.pop(old_key, None)
+        overflow = len(_seen_ai_messages) - _MAX_SEEN_AI_MESSAGES
+        if overflow > 0:
+            for old_key in list(_seen_ai_messages)[:overflow]:
+                _seen_ai_messages.pop(old_key, None)
+    return False
 
 
 
@@ -912,7 +936,9 @@ async def _answer_reply_text(message: types.Message, text: str) -> types.Message
 
 
 class _StreamingReplyDisplay:
-    """Edits Telegram messages as model tokens arrive, with rate and length limits."""
+    """Показывает ответ по одной законченной строке/фразе с шагом 0,5 секунды."""
+
+    EDIT_INTERVAL_SECONDS = 0.5
 
     def __init__(
         self,
@@ -924,7 +950,9 @@ class _StreamingReplyDisplay:
         self.chunks: List[str] = ["👀 Ии готовит ответ. 0s."] if waiting else []
         self.raw_text = ""
         self.visible_text = ""
+        self.rendered_text = ""
         self.last_edit_at = 0.0
+        self._render_lock = asyncio.Lock()
 
     @property
     def has_visible_text(self) -> bool:
@@ -934,15 +962,21 @@ class _StreamingReplyDisplay:
         self.raw_text += piece
         self.visible_text = _visible_stream_text(self.raw_text)
 
-    async def render(self, force: bool = False) -> None:
-        text = self.visible_text
-        if not text.strip():
-            return
+    @staticmethod
+    def _next_boundary(text: str, start: int) -> Optional[int]:
+        """Возвращает конец следующей строки или законченного предложения."""
+        candidates = []
+        newline_at = text.find("\n", start)
+        if newline_at >= 0:
+            candidates.append(newline_at + 1)
 
-        now = time.monotonic()
-        if not force and self.last_edit_at and now - self.last_edit_at < 1.0:
-            return
+        sentence = re.search(r'[.!?…](?:["»”’)\]]*)\s+', text[start:])
+        if sentence:
+            candidates.append(start + sentence.end())
 
+        return min(candidates) if candidates else None
+
+    async def _update_messages(self, text: str) -> None:
         new_chunks = _split_reply_chunks(text)
         for index, chunk in enumerate(new_chunks):
             if index < len(self.messages):
@@ -956,7 +990,6 @@ class _StreamingReplyDisplay:
                         await asyncio.sleep(float(exc.retry_after) + 0.1)
                         await target.edit_text(chunk)
                 except Exception:
-                    # A Telegram edit failure must not interrupt model generation.
                     logging.exception("Не удалось обновить потоковый ответ в Telegram")
                     try:
                         replacement = await _answer_reply_text(self.message, chunk)
@@ -964,6 +997,10 @@ class _StreamingReplyDisplay:
                         logging.exception("Не удалось отправить резервное сообщение потокового ответа")
                         continue
                     self.messages[index] = replacement
+                    try:
+                        await target.delete()
+                    except Exception:
+                        logging.debug("Не удалось удалить заменённое сообщение ожидания", exc_info=True)
                 self.chunks[index] = chunk
             else:
                 try:
@@ -982,9 +1019,41 @@ class _StreamingReplyDisplay:
             except Exception:
                 logging.debug("Не удалось удалить лишнюю часть потокового ответа", exc_info=True)
 
-        self.last_edit_at = time.monotonic()
+    async def render(self, force: bool = False) -> None:
+        async with self._render_lock:
+            text = self.visible_text
+            if not text.strip():
+                return
 
+            # При повторной генерации (например, после внутреннего retry)
+            # начинаем отображение заново, но редактируем прежнее сообщение.
+            if self.rendered_text and not text.startswith(self.rendered_text):
+                self.rendered_text = ""
 
+            while len(self.rendered_text) < len(text):
+                boundary = self._next_boundary(text, len(self.rendered_text))
+                if boundary is None:
+                    if not force:
+                        break
+                    boundary = len(text)
+
+                next_text = text[:boundary]
+                if not next_text or next_text == self.rendered_text:
+                    break
+
+                if self.last_edit_at:
+                    delay = self.EDIT_INTERVAL_SECONDS - (time.monotonic() - self.last_edit_at)
+                    if delay > 0:
+                        await asyncio.sleep(delay)
+
+                await self._update_messages(next_text)
+                self.rendered_text = next_text
+                self.last_edit_at = time.monotonic()
+
+                # visible_text мог измениться, пока ждали Telegram rate limit.
+                text = self.visible_text
+                if not text.startswith(self.rendered_text):
+                    self.rendered_text = ""
 def _decode_text(data: bytes) -> str:
     for encoding in ("utf-8-sig", "cp1251", "latin-1"):
         try:
@@ -2136,6 +2205,14 @@ async def ai_save_custom_api_url(message: types.Message, state: FSMContext):
 
 @router.message(AIChatStates.chatting)
 async def ai_chat_message(message: types.Message, state: FSMContext):
+    if _is_duplicate_ai_message(message):
+        logging.warning(
+            "Повторное Telegram-сообщение пропущено: chat_id=%s message_id=%s",
+            message.chat.id,
+            message.message_id,
+        )
+        return
+
     user_id = message.from_user.id
     interrupted_previous = False
     active_task = _active_tasks.get(user_id)
