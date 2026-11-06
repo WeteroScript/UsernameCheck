@@ -25,6 +25,7 @@ from typing import Optional, Dict, List
 from dotenv import load_dotenv
 
 from access_control import is_premium, is_admin, PREMIUM_ICON
+from i18n import tr
 
 load_dotenv()
 
@@ -664,44 +665,39 @@ async def check_usernames_batch(usernames: List[str], user_id=None) -> Dict[str,
 # ============ КЛАВИАТУРЫ ============
 
 def get_settings_keyboard(user_id: int) -> InlineKeyboardMarkup:
-    s = get_user_settings(user_id)
+    settings = get_user_settings(user_id)
     premium = is_premium(user_id)
-    beautiful = s["style"] == "beautiful"
+    beautiful = settings["style"] == "beautiful"
     lock = "🔒 " if beautiful else ""
-
-    underscore_label = f"{'✅' if s.get('allow_underscore') else '❌'} '_' в юзернейме"
+    underscore_label = f"{'✅' if settings.get('allow_underscore') else '❌'} {tr(user_id, 'username_underscore')}"
     if not premium:
         underscore_label = f"{PREMIUM_ICON} " + underscore_label
-
-    check_label = f"{PREMIUM_ICON} 🔍 Проверка юзернейма"
-
+    style_key = "username_style_beautiful" if beautiful else "username_style_random"
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=f"{lock}🔁 Повторения", callback_data="settings_repeats")],
-        [InlineKeyboardButton(text=f"{lock}{underscore_label}", callback_data="toggle_underscore")],
-        [InlineKeyboardButton(text=f"🎨 Стиль: {STYLE_NAMES.get(s['style'], s['style'])}", callback_data="change_style")],
-        [InlineKeyboardButton(text=f"📏 Длина юзернейма: {s['max_length']}", callback_data="change_length")],
-        [InlineKeyboardButton(text=check_label, callback_data="check_availability_menu")],
-        [InlineKeyboardButton(text="🔄 Сбросить настройки", callback_data="reset_settings")],
-        [InlineKeyboardButton(text="⬅️ Назад", callback_data="users")],
+        [InlineKeyboardButton(text=f"{lock}{tr(user_id, 'username_repeats')}", callback_data="settings_repeats")],
+        [InlineKeyboardButton(text=underscore_label, callback_data="toggle_underscore")],
+        [InlineKeyboardButton(text=f"{tr(user_id, 'username_style')}: {tr(user_id, style_key)}", callback_data="change_style")],
+        [InlineKeyboardButton(text=f"{tr(user_id, 'username_length')}: {settings['max_length']}", callback_data="change_length")],
+        [InlineKeyboardButton(text=tr(user_id, "username_availability"), callback_data="check_availability_menu")],
+        [InlineKeyboardButton(text=tr(user_id, "username_reset"), callback_data="reset_settings")],
+        [InlineKeyboardButton(text=tr(user_id, "username_back"), callback_data="users")],
     ])
 
-
 def get_repeats_keyboard(user_id: int) -> InlineKeyboardMarkup:
-    s = get_user_settings(user_id)
+    settings = get_user_settings(user_id)
     premium = is_premium(user_id)
-    digit_label = f"Цифра для повтора: {s['digit'] if s.get('digit') is not None else '—'}"
-    digit_count_label = f"Кол-во повторений цифры: {s.get('digit_repeat_count', 0)}"
+    digit_label = f"{tr(user_id, 'username_digit_repeat')}: {settings['digit'] if settings.get('digit') is not None else '—'}"
+    digit_count_label = f"{tr(user_id, 'username_digit_count')}: {settings.get('digit_repeat_count', 0)}"
     if not premium:
         digit_label = f"{PREMIUM_ICON} " + digit_label
         digit_count_label = f"{PREMIUM_ICON} " + digit_count_label
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=f"🔤 Буква для повтора: {s['letter'].upper()}", callback_data="change_letter")],
-        [InlineKeyboardButton(text=f"🔢 Кол-во повторений буквы: {s['repeat_count']}", callback_data="change_count")],
-        [InlineKeyboardButton(text=f"🔢 {digit_label}", callback_data="change_digit")],
-        [InlineKeyboardButton(text=f"🔢 {digit_count_label}", callback_data="change_digit_count")],
-        [InlineKeyboardButton(text="⬅️ Назад", callback_data="settings")],
+        [InlineKeyboardButton(text=f"{tr(user_id, 'username_letter_repeat')}: {settings['letter'].upper()}", callback_data="change_letter")],
+        [InlineKeyboardButton(text=f"{tr(user_id, 'username_letter_count')}: {settings['repeat_count']}", callback_data="change_count")],
+        [InlineKeyboardButton(text=digit_label, callback_data="change_digit")],
+        [InlineKeyboardButton(text=digit_count_label, callback_data="change_digit_count")],
+        [InlineKeyboardButton(text=tr(user_id, "username_back_settings"), callback_data="settings")],
     ])
-
 
 def get_letter_keyboard() -> InlineKeyboardMarkup:
     rows, row = [], []
@@ -762,13 +758,12 @@ def get_digit_count_keyboard(max_length: int = 5) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def get_style_keyboard() -> InlineKeyboardMarkup:
-    rows = [
-        [InlineKeyboardButton(text="Обычные", callback_data="set_style_random")],
-        [InlineKeyboardButton(text="Красивые", callback_data="set_style_beautiful")],
-    ]
-    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="settings")])
-    return InlineKeyboardMarkup(inline_keyboard=rows)
+def get_style_keyboard(user_id: Optional[int] = None) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=tr(user_id, "username_style_random"), callback_data="set_style_random")],
+        [InlineKeyboardButton(text=tr(user_id, "username_style_beautiful"), callback_data="set_style_beautiful")],
+        [InlineKeyboardButton(text=tr(user_id, "username_back_settings"), callback_data="settings")],
+    ])
 
 
 def get_check_menu_keyboard() -> InlineKeyboardMarkup:
