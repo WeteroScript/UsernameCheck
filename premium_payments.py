@@ -201,7 +201,7 @@ async def premium_buy_crypto(callback: types.CallbackQuery):
             if int(record.get("user_id", 0)) == user_id and record.get("status") == "active":
                 if int(record.get("expires_at", 0)) > now and record.get("invoice_url"):
                     markup = InlineKeyboardMarkup(inline_keyboard=[[
-                        InlineKeyboardButton(text="💳 Открыть счёт · 300 ₽", url=record["invoice_url"])
+                        InlineKeyboardButton(text=tr(user_id, "payment_open_invoice"), url=record["invoice_url"])
                     ]])
                     await callback.message.answer(
                         tr(user_id, "payment_existing"),
@@ -225,7 +225,7 @@ async def premium_buy_crypto(callback: types.CallbackQuery):
         except Exception:
             logging.exception("Не удалось создать Crypto Pay invoice для пользователя %s", user_id)
             await callback.message.answer(
-                "⚠️ Не удалось создать счёт. Попробуй позже или напиши @BotFarmSupport.",
+                tr(user_id, "payment_create_error"),
                 parse_mode=ParseMode.HTML,
             )
             return
@@ -234,7 +234,7 @@ async def premium_buy_crypto(callback: types.CallbackQuery):
         invoice_url = invoice.get("bot_invoice_url") or invoice.get("pay_url")
         if not invoice_id or not invoice_url:
             logging.error("Crypto Pay вернул неполный объект счёта: invoice_id/url отсутствует")
-            await callback.message.answer("⚠️ Платёжный сервис вернул некорректный счёт. Попробуй позже.")
+            await callback.message.answer(tr(user_id, "payment_invalid_invoice"), parse_mode=ParseMode.HTML)
             return
 
         record = {
@@ -252,7 +252,7 @@ async def premium_buy_crypto(callback: types.CallbackQuery):
         _save_payments()
 
         markup = InlineKeyboardMarkup(inline_keyboard=[[
-            InlineKeyboardButton(text="💳 Оплатить 300 ₽", url=invoice_url)
+            InlineKeyboardButton(text=tr(user_id, "payment_invoice_button"), url=invoice_url)
         ]])
         sent = await callback.message.answer(
             tr(user_id, "payment_invoice_text"),
