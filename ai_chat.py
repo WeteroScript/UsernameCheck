@@ -1109,62 +1109,125 @@ def _extract_file_content(filename: str, data: bytes, depth: int = 0) -> str:
     )
 
 
-def _extract_zip_content(data: bytes, depth: int = 0) -> str:
+def _extract_zip_content(data, depth: int = 0) -> str:
+    """Extract supported files sequentially with strict memory and expansion limits."""
     started_at = time.monotonic()
+    if depth > 3:
+        raise ValueError("Слишком большая глубина вложенных ZIP-архивов (максимум 3).")
+
+    source = data if hasattr(data, "read") else io.BytesIO(data)
+    extracted = []
+    total_uncompressed = 0
+    total_chars = 0
+    processed_files = 0
+    skipped_files = 0
+
     try:
-        with zipfile.ZipFile(io.BytesIO(data)) as archive:
-            # Сохраняем путь внутри проекта: одинаковые имена в разных папках
-            # больше не смешиваются в контексте модели.
-            entries = []
+        if hasattr(source, "seek"):
+            source.seek(0)
+        with zipfile.ZipFile(source) as archive:
             for item in archive.infolist():
                 if item.is_dir():
                     continue
-                relative_name = item.filename.replace("\\", "/").lstrip("/")
+
+                relative_name = item.filename.replace("\\\\", "/").lstrip("/")
                 if not relative_name or any(part == ".." for part in relative_name.split("/")):
                     continue
                 if Path(relative_name).suffix.lower() not in SUPPORTED_FILE_EXTENSIONS:
                     continue
-                entries.append((relative_name, archive.read(item)))
 
-        if not entries:
-            raise ValueError(
-                "В ZIP не найдено поддерживаемых файлов с извлекаемым содержимым."
-            )
+                # Не читаем гигантские элементы и ZIP-бомбы в память.
+                if item.file_size > 32 * 1024 * 1024:
+                    skipped_files += 1
+                    extracted.append(f"[Файл {relative_name} пропущен: размер после распаковки превышает 32 МБ.]")
+                    continue
+                if total_uncompressed + item.file_size > 256 * 1024 * 1024:
+                    skipped_files += 1
+                    extracted.append("[Остальные файлы пропущены: общий лимит распаковки 256 МБ достигнут.]")
+                    break
 
-        def extract_entry(entry):
-            filename, file_data = entry
-            try:
-                content = _extract_file_content(
-                    filename, file_data, depth=depth
-                ).strip()
-                if not content:
-                    return None
-                return f"===== {filename} =====\n{content}"
-            except (ValueError, RuntimeError) as exc:
-                return f"[Файл {filename}: {exc}]"
+                total_uncompressed += item.file_size
+                try:
+                    file_data = archive.read(item)
+                    content = _extract_file_content(
+                        relative_name, file_data, depth=depth
+                    ).strip()
+                    if not content:
+                        continue
 
-        # Параллелим разбор уже прочитанных файлов. Вложенные архивы
-        # обрабатываются последовательно, чтобы не создавать каскад потоков.
-        if depth == 0 and len(entries) > 1:
-            from concurrent.futures import ThreadPoolExecutor
-            workers = min(8, len(entries), os.cpu_count() or 4)
-            with ThreadPoolExecutor(max_workers=workers) as executor:
-                extracted = [part for part in executor.map(extract_entry, entries) if part]
-        else:
-            extracted = [part for entry in entries if (part := extract_entry(entry))]
+                    remaining_chars = 800_000 - total_chars
+                    if remaining_chars <= 0:
+                        skipped_files += 1
+                        extracted.append("[Остальное содержимое пропущено: достигнут лимит текста 800 000 символов.]")
+                        break
+                    if len(content) > remaining_chars:
+                        content = content[:remaining_chars] + "\\n[Содержимое обрезано: достигнут лимит 800 000 символов.]"
+                        extracted.append(f"===== {relative_name} =====\\n{content}")
+                        total_chars = 800_000
+                        skipped_files += 1
+                        break
+
+                    extracted.append(f"===== {relative_name} =====\\n{content}")
+                    total_chars += len(content)
+                    processed_files += 1
+                except (ValueError, RuntimeError, zipfile.BadZipFile) as exc:
+                    extracted.append(f"[Файл {relative_name}: {exc}]")
 
         if not extracted:
-            raise ValueError(
-                "В ZIP не найдено поддерживаемых файлов с извлекаемым содержимым."
-            )
+            raise ValueError("В ZIP не найдено поддерживаемых файлов с извлекаемым содержимым.")
+
         logging.info(
-            "ZIP extraction completed: files=%s depth=%s elapsed=%.2fs",
-            len(entries), depth, time.monotonic() - started_at,
+            "ZIP extraction completed: files=%s skipped=%s uncompressed_bytes=%s chars=%s depth=%s elapsed=%.2fs",
+            processed_files, skipped_files, total_uncompressed, total_chars,
+            depth, time.monotonic() - started_at,
         )
-        return "\n\n".join(extracted)
+        return "\\n\\n".join(extracted)
     except zipfile.BadZipFile as exc:
         raise ValueError("Файл не является корректным ZIP-архивом.") from exc
 
+
+async def _document_to_text(message: types.Message) -> str:
+    document = message.document
+    if not document:
+        raise ValueError("Документ не найден.")
+    filename = document.file_name or "document"
+    extension = Path(filename).suffix.lower()
+    if extension not in SUPPORTED_FILE_EXTENSIONS:
+        raise ValueError(
+            "Этот формат не поддерживается. Принимаются TXT, MD, CSV, JSON, "
+            "XML, код, PDF, DOCX, PPTX, XLSX и ZIP с такими файлами."
+        )
+
+    try:
+        # Архив остаётся во временном файле: не создаём дополнительную копию
+        # всего ZIP на 100+ МБ в оперативной памяти.
+        with tempfile.TemporaryFile(mode="w+b") as buffer:
+            await message.bot.download(document, destination=buffer)
+            buffer.flush()
+            extraction_started_at = time.monotonic()
+            if extension == ".zip":
+                content = await asyncio.to_thread(_extract_zip_content, buffer)
+            else:
+                buffer.seek(0)
+                raw = buffer.read()
+                content = await asyncio.to_thread(_extract_file_content, filename, raw)
+    except Exception as exc:
+        logging.exception("Не удалось скачать или обработать документ Telegram: %s", filename)
+        if isinstance(exc, (ValueError, RuntimeError)):
+            raise
+        raise RuntimeError("Не удалось скачать или обработать файл. Проверь размер и целостность архива.") from exc
+
+    content = content.strip()
+    logging.info(
+        "Document extraction completed: filename=%s size=%s chars=%s elapsed=%.2fs",
+        filename, document.file_size, len(content), time.monotonic() - extraction_started_at,
+    )
+    if not content:
+        raise ValueError("В файле не удалось найти текст для передачи модели.")
+    return (
+        f"Пользователь приложил файл: {filename}\\n"
+        f"Извлечённое содержимое:\\n{content}"
+    )
 
 async def _document_to_text(message: types.Message) -> str:
     document = message.document
