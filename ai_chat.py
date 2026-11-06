@@ -16,6 +16,7 @@ import re
 import uuid
 import time
 import tempfile
+import shutil
 import html
 from urllib.parse import urlsplit, urlunsplit
 from datetime import datetime, timezone
@@ -2069,6 +2070,12 @@ async def ai_chat_delete(callback: types.CallbackQuery, state: FSMContext):
         chats.append(target)
         await callback.answer("Не удалось удалить чат.", show_alert=True)
         return
+    try:
+        shutil.rmtree(_chat_archive_directory(callback.from_user.id, chat_id))
+    except FileNotFoundError:
+        pass
+    except OSError:
+        logging.warning("Не удалось удалить ZIP-контекст удалённого чата %s", chat_id, exc_info=True)
     active_data = await state.get_data()
     if active_data.get("ai_chat_id") == chat_id:
         await state.clear()
