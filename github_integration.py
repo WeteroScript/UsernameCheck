@@ -522,7 +522,7 @@ async def fetch_repository_context(telegram_user_id: int, reference: str, branch
                 return False
             if any(term in basename for term in ("secret", "credential", "private_key", "token")):
                 return False
-            return (basename in allowed_names or extension in allowed_extensions) and int(item.get("size", 0)) <= 20000
+            return basename in allowed_names or extension in allowed_extensions
 
         candidates = [item for item in entries if safe_entry(item)]
         # Полный манифест путей не даёт модели принять ограниченный снимок за весь репозиторий.
@@ -540,10 +540,7 @@ async def fetch_repository_context(telegram_user_id: int, reference: str, branch
             item["path"],
         ))
         files = []
-        total_bytes = 0
         for item in candidates:
-            if len(files) >= 60 or total_bytes >= 250000:
-                break
             try:
                 blob = await _api_json(
                     session, "GET",
@@ -553,11 +550,12 @@ async def fetch_repository_context(telegram_user_id: int, reference: str, branch
                 raw = base64.b64decode(blob.get("content", ""))
                 text_content = raw.decode("utf-8")
             except (UnicodeDecodeError, ValueError, RuntimeError):
-                continue
-            if total_bytes + len(raw) > 100000:
+                logging.exception(
+                    "Не удалось загрузить GitHub-файл %s из %s",
+                    item.get("path"), full_name,
+                )
                 continue
             files.append((item["path"], text_content))
-            total_bytes += len(raw)
 
     if not files:
         raise RuntimeError("В репозитории не найдено доступных текстовых исходников.")
@@ -565,12 +563,11 @@ async def fetch_repository_context(telegram_user_id: int, reference: str, branch
         "GitHub repository: " + full_name,
         "Selected branch: " + branch,
         "Repository URL: " + repo_data.get("html_url", "https://github.com/" + full_name),
-        "Ниже приведён манифест путей и ограниченный снимок содержимого. Отсутствие файла в снимке "
-        "НЕ означает, что файла нет в GitHub. Если для изменения нужен файл, который не попал в снимок, "
-        "запроси его путь/содержимое.",
+        "Ниже приведён список доступных путей и содержимое всех подходящих текстовых файлов "
+        "из выбранной ветки. Файлы с секретами и служебные каталоги исключены из соображений безопасности.",
         "Repository file inventory (" + str(len(repository_inventory)) + " paths):",
-        *repository_inventory[:2000],
-        "Fetched file contents (" + str(len(files)) + " files; cap 60 files / 250 KB):",
+        *repository_inventory,
+        "Fetched file contents (" + str(len(files)) + " files):",
     ]
     for path, file_content in files:
         sections.append("\n--- FILE: " + path + " ---\n" + file_content)
