@@ -156,7 +156,7 @@ user_bot_choice: Dict[int, str] = {}
 user_session_config: Dict[int, Dict[str, Dict[str, Any]]] = {}
 user_lang: Dict[int, str] = {}  # user_id -> "ru" | "en"
 
-LANG_FILE = data_file("user_lang.json")
+LANG_FILE = data_file(os.getenv("USER_LANG_FILE", "user_lang.json"))
 
 LANG_STRINGS = {
     "ru": {

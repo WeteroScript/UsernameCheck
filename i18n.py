@@ -5,8 +5,9 @@
 import json
 import os
 from typing import Any
+from storage import data_file
 
-LANG_FILE = os.getenv("USER_LANG_FILE", "user_lang.json")
+LANG_FILE = data_file(os.getenv("USER_LANG_FILE", "user_lang.json"))
 _LANG_CACHE: dict[int, str] = {}
 _LANG_SIGNATURE: tuple[int, int] | None = None
 
