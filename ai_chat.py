@@ -582,7 +582,7 @@ def _persist_chat_archive_context(
     document_text: str,
 ) -> None:
     """Persist extracted ZIP contents so later turns in this chat can reuse them."""
-    marker = "Извлечённое содержимое:\\n"
+    marker = "Извлечённое содержимое:\n"
     content = document_text.split(marker, 1)[1] if marker in document_text else document_text
     content = content.strip()
     if not content:
@@ -2568,6 +2568,11 @@ async def ai_chat_message(message: types.Message, state: FSMContext):
                 {"role": "user", "content": user_text},
                 {"role": "assistant", "content": reply},
             ]
+            if saved_archive_context:
+                retry_context.append({
+                    "role": "user",
+                    "content": "[СОХРАНЁННЫЕ ZIP-АРХИВЫ ЭТОГО ДИАЛОГА]\\n" + saved_archive_context,
+                })
             retry_instruction = (
                 "Предыдущий ответ не содержит ни одного корректного блока GITHUB_FILE, поэтому "
                 "никакие изменения в GitHub ещё не выполнялись. Выполни исходную просьбу пользователя "
@@ -2657,6 +2662,11 @@ async def ai_chat_message(message: types.Message, state: FSMContext):
                 {"role": "user", "content": user_text},
                 {"role": "assistant", "content": reply},
             ]
+            if saved_archive_context:
+                retry_context.append({
+                    "role": "user",
+                    "content": "[СОХРАНЁННЫЕ ZIP-АРХИВЫ ЭТОГО ДИАЛОГА]\\n" + saved_archive_context,
+                })
             retry_instruction = (
                 "Предыдущая попытка не дала пригодного вложения. Пользователь просил готовый "
                 "проект/архив. Не выдавай план, скрипт-сборщик, bash-команды или инструкцию "
