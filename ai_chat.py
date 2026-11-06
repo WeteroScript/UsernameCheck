@@ -1186,7 +1186,7 @@ def _extract_zip_content(data, depth: int = 0) -> str:
                     if len(content) > remaining_chars:
                         content = content[:remaining_chars] + "\n[Содержимое обрезано: достигнут лимит 400 000 символов.]"
                         extracted.append(f"===== {relative_name} =====\n{content}")
-                        total_chars = 800_000
+                        total_chars = _MAX_ZIP_TEXT_CHARS
                         skipped_files += 1
                         break
 
