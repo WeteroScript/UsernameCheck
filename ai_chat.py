@@ -1438,6 +1438,25 @@ def _is_archive_request(user_text: str) -> bool:
     return any(re.search(term, user_text, re.IGNORECASE) for term in terms)
 
 
+def _is_archive_followup_request(user_text: str, history: List[Dict[str, Any]]) -> bool:
+    """Recognize short 'send it' follow-ups when the previous AI turn discussed an archive."""
+    request = str(user_text or "").strip()
+    if len(request) > 80 or not re.fullmatch(
+        r"(?:скинь|пришли|отправь|дай|загрузи|выдай)(?:\s+(?:его|архив|файл|проект))?[.!?…]*",
+        request,
+        re.IGNORECASE,
+    ):
+        return False
+
+    for item in reversed(history[-8:]):
+        if not isinstance(item, dict) or item.get("role") != "assistant":
+            continue
+        content = str(item.get("content") or "")
+        if re.search(r"\b(?:zip|архив|файлы собраны|полный комплект|проект готов)\b", content, re.IGNORECASE):
+            return True
+    return False
+
+
 def _is_large_project_request(user_text: str) -> bool:
     """Определяет запросы на создание крупных многофайловых проектов."""
     project_terms = (
@@ -2277,12 +2296,13 @@ async def ai_chat_message(message: types.Message, state: FSMContext):
         return
 
     user_id = message.from_user.id
-    interrupted_previous = False
     active_task = _active_tasks.get(user_id)
     if active_task and active_task is not asyncio.current_task() and not active_task.done():
-        interrupted_previous = True
-        active_task.cancel()
-        await asyncio.gather(active_task, return_exceptions=True)
+        await message.answer(
+            "Предыдущий запрос ещё выполняется. Дождись отправки ответа и файлов, "
+            "затем отправь следующее сообщение."
+        )
+        return
 
     user_text = (message.text or message.caption or "").strip()
     if message.document:
@@ -2315,15 +2335,16 @@ async def ai_chat_message(message: types.Message, state: FSMContext):
         await state.clear()
         await message.answer("Эта модель доступна только с премиум-доступом. Выбери другую модель.")
         return
-    # Если прошлый запрос был прерван новым сообщением, разрешаем начать
-    # следующий запрос сразу, без обычного пятисекундного кулдауна.
+    archive_followup = _is_archive_followup_request(
+        user_text, chat.get("messages", [])
+    )
     if user_id in _active_requests:
         await message.answer("Предыдущий запрос ещё завершается. Повтори сообщение через секунду.")
         return
 
     now = time.monotonic()
     previous = _last_request_at.get(user_id)
-    if not interrupted_previous and previous is not None:
+    if previous is not None:
         remaining = REQUEST_COOLDOWN_SECONDS - (now - previous)
         if remaining > 0:
             await message.answer(f"Следующий запрос можно отправить через {int(remaining) + 1} сек.")
@@ -2492,8 +2513,8 @@ async def ai_chat_message(message: types.Message, state: FSMContext):
         # Если пользователь явно запросил файл, но модель не создала ни одного
         # непустого вложения, один раз просим её повторить генерацию.
         if (
-            _is_file_creation_request(user_text)
-            and (not _is_large_project_request(user_text) or _is_archive_request(user_text))
+            (_is_file_creation_request(user_text) or archive_followup)
+            and (not _is_large_project_request(user_text) or _is_archive_request(user_text) or archive_followup)
             and not generated_files
             and not github_files
         ):
@@ -2572,16 +2593,32 @@ async def ai_chat_message(message: types.Message, state: FSMContext):
             except ValueError as exc:
                 await message.answer(f"Не удалось собрать ZIP-архив: {exc}")
             else:
-                await message.answer_document(
-                    BufferedInputFile(archive_content, filename="generated_files.zip"),
-                    caption=f'Архив с {len(generated_files)} файлами от модели {model}',
-                )
+                try:
+                    await message.answer_document(
+                        BufferedInputFile(archive_content, filename="generated_files.zip"),
+                        caption=f'Архив с {len(generated_files)} файлами от модели {model}',
+                    )
+                except Exception as exc:
+                    logging.exception("Не удалось отправить ZIP-архив пользователю")
+                    await message.answer(
+                        "ZIP собран, но Telegram не смог его отправить. "
+                        f"Ошибка: {type(exc).__name__}: {str(exc)[:300]}"
+                    )
         elif generated_files:
             filename, file_content = generated_files[0]
-            await message.answer_document(
-                BufferedInputFile(file_content, filename=filename),
-                caption=f"Файл от модели {model}",
-            )
+            try:
+                await message.answer_document(
+                    BufferedInputFile(file_content, filename=filename),
+                    caption=f"Файл от модели {model}",
+                )
+            except Exception as exc:
+                logging.exception("Не удалось отправить файл пользователю: %s", filename)
+                await message.answer(
+                    f"Файл {filename} создан, но Telegram не смог его отправить. "
+                    f"Ошибка: {type(exc).__name__}: {str(exc)[:300]}"
+                )
+
+        await message.answer("✅ ИИ закончил отвечать.")
     except RuntimeError as exc:
         await _stop_waiting_timer(waiting_timer)
         waiting_timer = None
