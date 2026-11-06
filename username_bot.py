@@ -902,7 +902,7 @@ async def change_letter(callback: types.CallbackQuery):
 async def set_letter(callback: types.CallbackQuery):
     letter = callback.data.replace("set_letter_", "")
     get_user_settings(callback.from_user.id)["letter"] = letter
-    await callback.answer(f"✅ Буква: {letter.upper()}")
+    await callback.answer(f"✅ Letter: {letter.upper()}" if _is_english(callback.from_user.id) else f"✅ Буква: {letter.upper()}")
     await settings_repeats_menu(callback)
 
 @router.callback_query(lambda c: c.data == "change_count")
@@ -925,7 +925,7 @@ async def set_count(callback: types.CallbackQuery):
     max_repeat = get_max_repeat_count(s["max_length"])
     count = min(count, max_repeat)
     s["repeat_count"] = count
-    await callback.answer(f"✅ Повторений: {count}")
+    await callback.answer((f"✅ Repetitions: {count}" if _is_english(callback.from_user.id) else f"✅ Повторений: {count}"))
     await settings_repeats_menu(callback)
 
 
@@ -946,7 +946,7 @@ async def set_digit(callback: types.CallbackQuery):
         return
     digit = callback.data.replace("set_digit_", "")
     get_user_settings(user_id)["digit"] = digit
-    await callback.answer(f"✅ Цифра: {digit}")
+    await callback.answer(f"✅ Digit: {digit}" if _is_english(user_id) else f"✅ Цифра: {digit}")
     await settings_repeats_menu(callback)
 
 @router.callback_query(lambda c: c.data == "clear_digit")
@@ -955,7 +955,7 @@ async def clear_digit(callback: types.CallbackQuery):
     s = get_user_settings(user_id)
     s["digit"] = None
     s["digit_repeat_count"] = 0
-    await callback.answer("✅ Цифра убрана")
+    await callback.answer("✅ Digit cleared" if _is_english(user_id) else "✅ Цифра убрана")
     await settings_repeats_menu(callback)
 
 @router.callback_query(lambda c: c.data == "change_digit_count")
@@ -985,7 +985,7 @@ async def set_digit_count(callback: types.CallbackQuery):
     max_repeat = get_max_repeat_count(s["max_length"])
     count = min(count, max_repeat)
     s["digit_repeat_count"] = count
-    await callback.answer(f"✅ Повторений цифры: {count}")
+    await callback.answer(f"✅ Digit repetitions: {count}" if _is_english(user_id) else f"✅ Повторений цифры: {count}")
     await settings_repeats_menu(callback)
 
 
@@ -1000,7 +1000,7 @@ async def toggle_underscore(callback: types.CallbackQuery):
         await callback.answer(_premium_required_text(user_id), show_alert=True)
         return
     s["allow_underscore"] = not s.get("allow_underscore", False)
-    await callback.answer(f"✅ '_' в юзернейме: {'включено' if s['allow_underscore'] else 'выключено'}")
+    await callback.answer(f"✅ '_' {'enabled' if s['allow_underscore'] else 'disabled'}" if _is_english(user_id) else f"✅ '_' в юзернейме: {'включено' if s['allow_underscore'] else 'выключено'}")
     await open_settings_callback(callback)
 
 
@@ -1070,7 +1070,7 @@ async def set_style(callback: types.CallbackQuery):
         await callback.answer(f"{PREMIUM_ICON} Стиль «Красивые» доступен только с премиум-подпиской", show_alert=True)
         return
     get_user_settings(user_id)["style"] = style
-    await callback.answer(f"✅ Стиль: {STYLE_NAMES[style]}")
+    await callback.answer(f"✅ Style: {tr(user_id, 'username_style_beautiful' if style == 'beautiful' else 'username_style_random')}" if _is_english(user_id) else f"✅ Стиль: {STYLE_NAMES[style]}")
     await open_settings_callback(callback)
 
 @router.callback_query(lambda c: c.data == "reset_settings")
@@ -1079,7 +1079,7 @@ async def reset_settings(callback: types.CallbackQuery):
         "letter": "s", "repeat_count": 2, "max_length": 5, "style": "random",
         "digit": None, "digit_repeat_count": 0, "allow_underscore": False,
     }
-    await callback.answer("✅ Сброшено")
+    await callback.answer("✅ Settings reset" if _is_english(callback.from_user.id) else "✅ Сброшено")
     await open_settings_callback(callback)
 
 
