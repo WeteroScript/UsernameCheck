@@ -24,7 +24,7 @@ from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 
 import aiohttp
 from aiogram import Router, types
-from aiogram.exceptions import TelegramRetryAfter
+from aiogram.exceptions import TelegramBadRequest, TelegramRetryAfter
 from aiogram.enums import ButtonStyle
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -58,6 +58,11 @@ SUPPORTED_FILE_EXTENSIONS = TEXT_EXTENSIONS | {".zip", ".pdf", ".docx", ".pptx",
 REQUEST_COOLDOWN_SECONDS = 5
 _last_request_at: Dict[int, float] = {}
 _active_requests: set[int] = set()
+_document_processing_semaphore = asyncio.Semaphore(1)
+_MAX_ZIP_ENTRIES = 5000
+_MAX_ZIP_MEMBER_BYTES = 16 * 1024 * 1024
+_MAX_ZIP_TOTAL_BYTES = 128 * 1024 * 1024
+_MAX_ZIP_TEXT_CHARS = 400_000
 _active_tasks: Dict[int, asyncio.Task] = {}
 _waiting_messages: Dict[int, types.Message] = {}
 _MESSAGE_DEDUPE_TTL_SECONDS = 600
@@ -981,6 +986,21 @@ class _StreamingReplyDisplay:
                     except TelegramRetryAfter as exc:
                         await asyncio.sleep(float(exc.retry_after) + 0.1)
                         await target.edit_text(chunk)
+                except TelegramBadRequest as exc:
+                    if "message is not modified" in str(exc).lower():
+                        self.chunks[index] = chunk
+                        continue
+                    logging.exception("Не удалось обновить потоковый ответ в Telegram")
+                    try:
+                        replacement = await _answer_reply_text(self.message, chunk)
+                    except Exception:
+                        logging.exception("Не удалось отправить резервное сообщение потокового ответа")
+                        continue
+                    self.messages[index] = replacement
+                    try:
+                        await target.delete()
+                    except Exception:
+                        logging.debug("Не удалось удалить заменённое сообщение ожидания", exc_info=True)
                 except Exception:
                     logging.exception("Не удалось обновить потоковый ответ в Telegram")
                     try:
@@ -1126,7 +1146,10 @@ def _extract_zip_content(data, depth: int = 0) -> str:
         if hasattr(source, "seek"):
             source.seek(0)
         with zipfile.ZipFile(source) as archive:
-            for item in archive.infolist():
+            entries = archive.infolist()
+            if len(entries) > _MAX_ZIP_ENTRIES:
+                raise ValueError(f"В архиве слишком много элементов (максимум {_MAX_ZIP_ENTRIES}).")
+            for item in entries:
                 if item.is_dir():
                     continue
 
@@ -1137,13 +1160,13 @@ def _extract_zip_content(data, depth: int = 0) -> str:
                     continue
 
                 # Не читаем гигантские элементы и ZIP-бомбы в память.
-                if item.file_size > 32 * 1024 * 1024:
+                if item.file_size > _MAX_ZIP_MEMBER_BYTES:
                     skipped_files += 1
-                    extracted.append(f"[Файл {relative_name} пропущен: размер после распаковки превышает 32 МБ.]")
+                    extracted.append(f"[Файл {relative_name} пропущен: размер после распаковки превышает {_MAX_ZIP_MEMBER_BYTES // (1024 * 1024)} МБ.]")
                     continue
-                if total_uncompressed + item.file_size > 256 * 1024 * 1024:
+                if total_uncompressed + item.file_size > _MAX_ZIP_TOTAL_BYTES:
                     skipped_files += 1
-                    extracted.append("[Остальные файлы пропущены: общий лимит распаковки 256 МБ достигнут.]")
+                    extracted.append("[Остальные файлы пропущены: общий лимит распаковки 128 МБ достигнут.]")
                     break
 
                 total_uncompressed += item.file_size
@@ -1155,13 +1178,13 @@ def _extract_zip_content(data, depth: int = 0) -> str:
                     if not content:
                         continue
 
-                    remaining_chars = 800_000 - total_chars
+                    remaining_chars = _MAX_ZIP_TEXT_CHARS - total_chars
                     if remaining_chars <= 0:
                         skipped_files += 1
-                        extracted.append("[Остальное содержимое пропущено: достигнут лимит текста 800 000 символов.]")
+                        extracted.append("[Остальное содержимое пропущено: достигнут лимит текста 400 000 символов.]")
                         break
                     if len(content) > remaining_chars:
-                        content = content[:remaining_chars] + "\n[Содержимое обрезано: достигнут лимит 800 000 символов.]"
+                        content = content[:remaining_chars] + "\n[Содержимое обрезано: достигнут лимит 400 000 символов.]"
                         extracted.append(f"===== {relative_name} =====\n{content}")
                         total_chars = 800_000
                         skipped_files += 1
@@ -1201,16 +1224,17 @@ async def _document_to_text(message: types.Message) -> str:
     try:
         # Архив остаётся во временном файле: не создаём дополнительную копию
         # всего ZIP на 100+ МБ в оперативной памяти.
-        with tempfile.TemporaryFile(mode="w+b") as buffer:
-            await message.bot.download(document, destination=buffer)
-            buffer.flush()
-            extraction_started_at = time.monotonic()
-            if extension == ".zip":
-                content = await asyncio.to_thread(_extract_zip_content, buffer)
-            else:
-                buffer.seek(0)
-                raw = buffer.read()
-                content = await asyncio.to_thread(_extract_file_content, filename, raw)
+        async with _document_processing_semaphore:
+            with tempfile.TemporaryFile(mode="w+b") as buffer:
+                await message.bot.download(document, destination=buffer)
+                buffer.flush()
+                extraction_started_at = time.monotonic()
+                if extension == ".zip":
+                    content = await asyncio.to_thread(_extract_zip_content, buffer)
+                else:
+                    buffer.seek(0)
+                    raw = buffer.read()
+                    content = await asyncio.to_thread(_extract_file_content, filename, raw)
     except Exception as exc:
         logging.exception("Не удалось скачать или обработать документ Telegram: %s", filename)
         if isinstance(exc, (ValueError, RuntimeError)):
