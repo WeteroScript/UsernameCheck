@@ -2585,7 +2585,7 @@ async def ai_chat_message(message: types.Message, state: FSMContext):
         if stream_display is not None:
             stream_display.visible_text = display_text
             await stream_display.render(force=True)
-        if len(generated_files) >= 2 or _is_archive_request(user_text) or any(
+        if len(generated_files) >= 2 or _is_archive_request(user_text) or archive_followup or any(
             not file_content for _, file_content in generated_files
         ):
             try:
