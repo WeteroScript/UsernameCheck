@@ -1083,7 +1083,7 @@ async def _run_dodeeper_loader(user_id: int, phone: str, notify_chat_id: int):
     client = await _get_connected_client(phone)
     if not client:
         dodeeper_active.discard(phone)
-        await bot.send_message(notify_chat_id, f"❌ Сессия {phone} не подключена")
+        await bot.send_message(notify_chat_id, tr(user_id, "dodeeper_session_error", phone=phone))
         return
 
     try:
@@ -1139,7 +1139,7 @@ async def _run_dodeeper_loader(user_id: int, phone: str, notify_chat_id: int):
         pass
     except Exception as e:
         logging.error(f"❌ _run_dodeeper_loader({phone}): {e}")
-        await bot.send_message(notify_chat_id, f"❌ Ошибка Додепер ({phone}): {e}")
+        await bot.send_message(notify_chat_id, tr(user_id, "dodeeper_task_error", phone=phone, error=e))
     finally:
         dodeeper_active.discard(phone)
 
@@ -4429,7 +4429,7 @@ async def _run_crypto_autotrader(user_id: int, phone: str, notify_chat_id: int):
     client = await _get_connected_client(phone)
     if not client:
         crypto_trader_active.discard(phone)
-        await bot.send_message(notify_chat_id, f"❌ Сессия {phone} не подключена")
+        await bot.send_message(notify_chat_id, tr(user_id, "dodeeper_session_error", phone=phone))
         return
 
     # { coin: base_price }  — цена в момент первого замера (до покупки)
