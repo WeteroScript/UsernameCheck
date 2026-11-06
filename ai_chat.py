@@ -2508,7 +2508,9 @@ async def ai_chat_message(message: types.Message, state: FSMContext):
         progress_message = await message.answer("🔄 Сейчас: Подготавливает запрос")
         _waiting_messages[user_id] = waiting
         waiting_timer = asyncio.create_task(_animate_waiting_message(waiting))
-        stream_display = _StreamingReplyDisplay(message, waiting)
+        # Оставляем статус ожидания и журнал этапов отдельными сообщениями;
+        # потоковый ответ отправляется ниже них и не перемешивается с журналом.
+        stream_display = _StreamingReplyDisplay(message, None)
 
         async def on_model_delta(piece: str) -> None:
             nonlocal waiting_timer
@@ -2516,6 +2518,10 @@ async def ai_chat_message(message: types.Message, state: FSMContext):
             if stream_display.has_visible_text and waiting_timer is not None:
                 await _stop_waiting_timer(waiting_timer)
                 waiting_timer = None
+                try:
+                    await waiting.edit_text("🤖 ИИ формирует ответ")
+                except Exception:
+                    logging.debug("Не удалось обновить статус ожидания ИИ", exc_info=True)
             await stream_display.render()
         # Контекст берётся только из выбранного chat_id, не из других чатов
         # этой же модели или других моделей.
@@ -2808,19 +2814,30 @@ async def ai_chat_message(message: types.Message, state: FSMContext):
                 )
 
         await _update_ai_progress(progress_message, "Готово")
-        await message.answer("✅ ИИ закончил отвечать.")
+        if waiting:
+            try:
+                await waiting.edit_text("✅ ИИ закончил отвечать.")
+            except Exception:
+                logging.debug("Не удалось обновить финальный статус ИИ", exc_info=True)
     except RuntimeError as exc:
         await _update_ai_progress(progress_message, "Завершено с ошибкой")
         await _stop_waiting_timer(waiting_timer)
         waiting_timer = None
         error_text = f'"{model}" - Ошибка запроса: {exc}'
         if stream_display is not None and stream_display.has_visible_text:
+            if waiting:
+                await waiting.edit_text("⚠️ Запрос завершился с ошибкой.")
             await message.answer(error_text)
         elif waiting:
             await waiting.edit_text(error_text)
     except asyncio.CancelledError:
         await _update_ai_progress(progress_message, "Запрос прерван")
         if stream_display is not None and stream_display.has_visible_text:
+            if waiting:
+                try:
+                    await waiting.edit_text("Ответ прерван.")
+                except Exception:
+                    logging.debug("Не удалось обновить статус прерванного запроса", exc_info=True)
             try:
                 await message.answer("Ответ прерван.")
             except Exception:
@@ -2836,6 +2853,8 @@ async def ai_chat_message(message: types.Message, state: FSMContext):
         logging.exception("Непредвиденная ошибка при запросе к TokenPlan")
         error_text = f'"{model}" - Произошла внутренняя ошибка при обращении к API.'
         if stream_display is not None and stream_display.has_visible_text:
+            if waiting:
+                await waiting.edit_text("⚠️ Внутренняя ошибка запроса.")
             await message.answer(error_text)
         elif waiting:
             await waiting.edit_text(error_text)
