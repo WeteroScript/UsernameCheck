@@ -781,7 +781,7 @@ async def _run_username_search(callback: types.CallbackQuery, send_new: bool):
     user_id = callback.from_user.id
     settings = get_user_settings(user_id)
 
-    progress_text = "🔎 поиск..."
+    progress_text = tr(user_id, "username_searching")
     if send_new:
         # "Ещё" — продолжаем поиск НОВЫМ сообщением, не трогая предыдущий
         # найденный результат.
@@ -803,19 +803,19 @@ async def _run_username_search(callback: types.CallbackQuery, send_new: bool):
             continue
         
         if i > 0 and i % 16 == 0:
-            await msg.edit_text(f"✨ Проверяю... {i}/{max_attempts}", parse_mode=ParseMode.HTML)
+            await msg.edit_text(tr(user_id, "username_checking", current=i, total=max_attempts), parse_mode=ParseMode.HTML)
         
         results = await check_usernames_batch(batch, user_id)
         
         for username, is_free in results.items():
             if is_free:
                 await msg.edit_text(
-                    f"🎉 <b>НАЙДЕН!</b>\n\n✅ <code>@{username}</code>\n\n<i>Оптимистичная проверка</i>",
+                    tr(user_id, "username_found") + f"\n\n✅ <code>@{username}</code>\n\n<i>Optimistic availability check</i>",
                     parse_mode=ParseMode.HTML,
                     reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                        [InlineKeyboardButton(text="✅ Забрать", url=f"https://t.me/{username}")],
+                        [InlineKeyboardButton(text=tr(user_id, "username_claim"), url=f"https://t.me/{username}")],
                         [InlineKeyboardButton(text="🔎 Fragment", url=f"https://fragment.com/username/{username}")],
-                        [InlineKeyboardButton(text="🔄 Ещё", callback_data="gen_more"), InlineKeyboardButton(text="⬅️ Назад", callback_data="users")],
+                        [InlineKeyboardButton(text=tr(user_id, "username_more"), callback_data="gen_more"), InlineKeyboardButton(text=tr(user_id, "username_back"), callback_data="users")],
                     ])
                 )
                 found = True
@@ -825,12 +825,12 @@ async def _run_username_search(callback: types.CallbackQuery, send_new: bool):
     
     if not found:
         await msg.edit_text(
-            f"😔 Не найдено за {max_attempts} попыток\n\n<i>Попробуй изменить настройки</i>",
+            tr(user_id, "username_not_found", attempts=max_attempts),
             parse_mode=ParseMode.HTML,
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="🔄 Снова", callback_data="gen_more" if send_new else "gen")],
-                [InlineKeyboardButton(text="⚙️ Настройки", callback_data="settings")],
-                [InlineKeyboardButton(text="⬅️ Назад", callback_data="users")],
+                [InlineKeyboardButton(text=tr(user_id, "username_generate"), callback_data="gen_more" if send_new else "gen")],
+                [InlineKeyboardButton(text=tr(user_id, "username_settings"), callback_data="settings")],
+                [InlineKeyboardButton(text=tr(user_id, "username_back"), callback_data="users")],
             ])
         )
 
