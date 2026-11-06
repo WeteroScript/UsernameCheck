@@ -244,6 +244,19 @@ def _is_duplicate_ai_message(message: types.Message) -> bool:
 
 
 
+async def _update_ai_progress(message: Optional[types.Message], stage: str) -> None:
+    """Обновляет отдельное сообщение с текущим этапом обработки запроса."""
+    if message is None:
+        return
+    try:
+        await message.edit_text(f"🔄 Сейчас: {stage}")
+    except TelegramBadRequest as exc:
+        if "message is not modified" not in str(exc).lower():
+            logging.debug("Не удалось обновить этап работы ИИ", exc_info=True)
+    except Exception:
+        logging.debug("Не удалось обновить этап работы ИИ", exc_info=True)
+
+
 async def _animate_waiting_message(message: types.Message) -> None:
     """Показывает фактическое время ожидания ответа модели."""
     elapsed = 0
@@ -2487,10 +2500,12 @@ async def ai_chat_message(message: types.Message, state: FSMContext):
     _active_requests.add(user_id)
     _active_tasks[user_id] = asyncio.current_task()
     waiting = None
+    progress_message = None
     waiting_timer = None
     stream_display = None
     try:
-        waiting = await message.answer("👀 Ии готовит ответ. 0s.")
+        waiting = await message.answer("👀 ИИ думает. 0s.")
+        progress_message = await message.answer("🔄 Сейчас: Подготавливает запрос")
         _waiting_messages[user_id] = waiting
         waiting_timer = asyncio.create_task(_animate_waiting_message(waiting))
         stream_display = _StreamingReplyDisplay(message, waiting)
@@ -2506,6 +2521,7 @@ async def ai_chat_message(message: types.Message, state: FSMContext):
         # этой же модели или других моделей.
         # Модели получают историю только своего chat_id. Удаляем содержимое
         # старых вложений также из сохранённой истории, а не только из API-контекста.
+        await _update_ai_progress(progress_message, "Собирает контекст диалога")
         stored_messages = chat.setdefault("messages", [])
         for stored_message in stored_messages:
             if (
@@ -2526,6 +2542,7 @@ async def ai_chat_message(message: types.Message, state: FSMContext):
 
         repository_snapshot = None
         request_text = user_text
+        await _update_ai_progress(progress_message, "Подключает сохранённые файлы проекта")
         saved_archive_context = _load_chat_archive_context(user_id, chat)
         if saved_archive_context:
             request_text += (
@@ -2535,6 +2552,7 @@ async def ai_chat_message(message: types.Message, state: FSMContext):
                 "Сохраняй совместимость с ранее присланными файлами и не проси загрузить архив повторно."
             )
         if repository_reference:
+            await _update_ai_progress(progress_message, "Получает исходники репозитория GitHub")
             if _github_reference_has_branch(repository_url):
                 branch_override = None
             else:
@@ -2557,8 +2575,13 @@ async def ai_chat_message(message: types.Message, state: FSMContext):
                    else "")
             )
             request_text += "\n\n[СНИМОК GITHUB-РЕПОЗИТОРИЯ]\n" + repository_snapshot["context"]
+        await _update_ai_progress(progress_message, "Отправляет запрос модели")
+        async def tracked_model_delta(piece: str) -> None:
+            await _update_ai_progress(progress_message, "Анализирует запрос и формирует ответ")
+            await on_model_delta(piece)
+
         reply = await _request_model(
-            model, model_history, request_text, user_id=user_id, on_delta=on_model_delta
+            model, model_history, request_text, user_id=user_id, on_delta=tracked_model_delta
         )
         reply_without_github_files, github_files = _extract_github_files(reply)
         visible_reply, generated_files, empty_files = _extract_generated_files(reply_without_github_files)
@@ -2566,6 +2589,7 @@ async def ai_chat_message(message: types.Message, state: FSMContext):
         # Не доверяем текстовому заявлению модели о созданном PR: GitHub-операция
         # выполняется только по разобранным GITHUB_FILE-блокам.
         if repository_snapshot and _is_github_change_request(user_text) and not github_files:
+            await _update_ai_progress(progress_message, "Уточняет формат файлов для GitHub")
             logging.warning(
                 "Модель %s не вернула GITHUB_FILE для запроса изменения %s",
                 model, repository_snapshot["full_name"],
@@ -2593,6 +2617,7 @@ async def ai_chat_message(message: types.Message, state: FSMContext):
                 "Верни только нужные GITHUB_FILE-блоки и краткое пояснение вне блоков."
             )
             try:
+                await _update_ai_progress(progress_message, "Повторно генерирует файлы для GitHub")
                 retry_reply = await _request_model(
                     model, retry_context, retry_instruction, user_id=user_id
                 )
@@ -2626,6 +2651,7 @@ async def ai_chat_message(message: types.Message, state: FSMContext):
                 github_files = []
 
         if github_files:
+            await _update_ai_progress(progress_message, "Применяет изменения в GitHub")
             if not repository_snapshot:
                 raise RuntimeError("Для отправки изменений в GitHub сначала пришли ссылку на репозиторий.")
             target_branch = chat.get("github_target_branch")
@@ -2687,6 +2713,7 @@ async def ai_chat_message(message: types.Message, state: FSMContext):
                 "Бот сам отправит это содержимое как вложение."
             )
             try:
+                await _update_ai_progress(progress_message, "Повторно запрашивает недостающие файлы")
                 retry_reply = await _request_model(model, retry_context, retry_instruction, user_id=user_id)
                 retry_visible, retry_files, retry_empty_files = _extract_generated_files(retry_reply)
                 if retry_files:
@@ -2730,6 +2757,7 @@ async def ai_chat_message(message: types.Message, state: FSMContext):
         if not _save_history():
             logging.error("Ответ ИИ получен, но историю диалога не удалось сохранить.")
 
+        await _update_ai_progress(progress_message, "Подготавливает итоговый ответ и вложения")
         await _stop_waiting_timer(waiting_timer)
         waiting_timer = None
         display_text = _compact_display_spacing(visible_reply) if visible_reply else "Файл готов."
@@ -2742,6 +2770,7 @@ async def ai_chat_message(message: types.Message, state: FSMContext):
             or archive_followup
             or any(not file_content for _, file_content in generated_files)
         ):
+            await _update_ai_progress(progress_message, "Собирает ZIP-архив с результатами")
             try:
                 archive_content = _build_generated_zip(generated_files)
             except ValueError as exc:
@@ -2759,6 +2788,7 @@ async def ai_chat_message(message: types.Message, state: FSMContext):
                         f"Ошибка: {type(exc).__name__}: {str(exc)[:300]}"
                     )
         elif generated_files:
+            await _update_ai_progress(progress_message, "Отправляет созданный файл")
             filename, file_content = generated_files[0]
             try:
                 await message.answer_document(
@@ -2772,8 +2802,10 @@ async def ai_chat_message(message: types.Message, state: FSMContext):
                     f"Ошибка: {type(exc).__name__}: {str(exc)[:300]}"
                 )
 
+        await _update_ai_progress(progress_message, "Готово")
         await message.answer("✅ ИИ закончил отвечать.")
     except RuntimeError as exc:
+        await _update_ai_progress(progress_message, "Завершено с ошибкой")
         await _stop_waiting_timer(waiting_timer)
         waiting_timer = None
         error_text = f'"{model}" - Ошибка запроса: {exc}'
@@ -2782,6 +2814,7 @@ async def ai_chat_message(message: types.Message, state: FSMContext):
         elif waiting:
             await waiting.edit_text(error_text)
     except asyncio.CancelledError:
+        await _update_ai_progress(progress_message, "Запрос прерван")
         if stream_display is not None and stream_display.has_visible_text:
             try:
                 await message.answer("Ответ прерван.")
@@ -2794,6 +2827,7 @@ async def ai_chat_message(message: types.Message, state: FSMContext):
                 logging.debug("Не удалось обновить сообщение прерванного запроса", exc_info=True)
         return
     except Exception:
+        await _update_ai_progress(progress_message, "Внутренняя ошибка")
         logging.exception("Непредвиденная ошибка при запросе к TokenPlan")
         error_text = f'"{model}" - Произошла внутренняя ошибка при обращении к API.'
         if stream_display is not None and stream_display.has_visible_text:
