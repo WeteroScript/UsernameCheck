@@ -2826,7 +2826,10 @@ async def ai_chat_message(message: types.Message, state: FSMContext):
         error_text = f'"{model}" - Ошибка запроса: {exc}'
         if stream_display is not None and stream_display.has_visible_text:
             if waiting:
-                await waiting.edit_text("⚠️ Запрос завершился с ошибкой.")
+                try:
+                    await waiting.edit_text("⚠️ Запрос завершился с ошибкой.")
+                except Exception:
+                    logging.debug("Не удалось обновить статус ошибки ИИ", exc_info=True)
             await message.answer(error_text)
         elif waiting:
             await waiting.edit_text(error_text)
@@ -2854,7 +2857,10 @@ async def ai_chat_message(message: types.Message, state: FSMContext):
         error_text = f'"{model}" - Произошла внутренняя ошибка при обращении к API.'
         if stream_display is not None and stream_display.has_visible_text:
             if waiting:
-                await waiting.edit_text("⚠️ Внутренняя ошибка запроса.")
+                try:
+                    await waiting.edit_text("⚠️ Внутренняя ошибка запроса.")
+                except Exception:
+                    logging.debug("Не удалось обновить статус внутренней ошибки ИИ", exc_info=True)
             await message.answer(error_text)
         elif waiting:
             await waiting.edit_text(error_text)
