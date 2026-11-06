@@ -20,7 +20,7 @@ import html
 from urllib.parse import urlsplit, urlunsplit
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 import aiohttp
 from aiogram import Router, types
@@ -47,7 +47,6 @@ MAX_CUSTOM_PROMPT_FILE_BYTES = 64 * 1024
 
 MAX_CONTEXT_MESSAGES = 40
 TELEGRAM_TEXT_LIMIT = 4000
-REPLY_LINE_DELAY_SECONDS = 0.35
 TEXT_EXTENSIONS = {
     ".txt", ".md", ".csv", ".tsv", ".json", ".xml", ".html", ".htm",
     ".py", ".js", ".ts", ".jsx", ".tsx", ".css", ".scss", ".yaml", ".yml",
@@ -816,28 +815,61 @@ def _telegram_text_length(text: str) -> int:
     return len(text.encode("utf-16-le")) // 2
 
 
-def _split_reply_lines(text: str, limit: int = TELEGRAM_TEXT_LIMIT) -> List[str]:
-    """Keep original line breaks while splitting any line that exceeds Telegram's limit."""
-    result = []
-    normalized = str(text or "").replace("\r\n", "\n").replace("\r", "\n")
-    for line in normalized.split("\n"):
-        if _telegram_text_length(line) <= limit:
-            result.append(line)
-            continue
+def _split_reply_chunks(text: str, limit: int = TELEGRAM_TEXT_LIMIT) -> List[str]:
+    """Split text into Telegram-safe chunks measured in UTF-16 code units."""
+    chunks: List[str] = []
+    current: List[str] = []
+    current_length = 0
+    for character in str(text or ""):
+        character_length = 2 if ord(character) > 0xFFFF else 1
+        if current and current_length + character_length > limit:
+            chunks.append("".join(current))
+            current = []
+            current_length = 0
+        current.append(character)
+        current_length += character_length
+    if current:
+        chunks.append("".join(current))
+    return chunks or [" "]
 
-        fragment = []
-        fragment_length = 0
-        for character in line:
-            char_length = 2 if ord(character) > 0xFFFF else 1
-            if fragment and fragment_length + char_length > limit:
-                result.append("".join(fragment))
-                fragment = []
-                fragment_length = 0
-            fragment.append(character)
-            fragment_length += char_length
-        if fragment:
-            result.append("".join(fragment))
-    return result or ["Пустой ответ от API."]
+
+def _visible_stream_text(raw_text: str) -> str:
+    """Hide generated-file payloads while allowing ordinary answer text to stream."""
+    opening_tokens = (
+        ("[[GITHUB_FILE:", "[[/GITHUB_FILE]]"),
+        ("[[FILE:", "[[/FILE]]"),
+    )
+    lowered = raw_text.lower()
+    visible: List[str] = []
+    cursor = 0
+
+    while cursor < len(raw_text):
+        matches = [
+            (lowered.find(opening.lower(), cursor), opening, closing)
+            for opening, closing in opening_tokens
+        ]
+        matches = [match for match in matches if match[0] >= 0]
+        if not matches:
+            safe_end = len(raw_text)
+            tail = lowered[cursor:]
+            for opening, _ in opening_tokens:
+                token = opening.lower()
+                max_overlap = min(len(token) - 1, len(tail))
+                for overlap in range(max_overlap, 0, -1):
+                    if tail.endswith(token[:overlap]):
+                        safe_end = min(safe_end, len(raw_text) - overlap)
+                        break
+            visible.append(raw_text[cursor:safe_end])
+            break
+
+        start, opening, closing = min(matches, key=lambda item: item[0])
+        visible.append(raw_text[cursor:start])
+        closing_index = lowered.find(closing.lower(), start + len(opening))
+        if closing_index < 0:
+            break
+        cursor = closing_index + len(closing)
+
+    return "".join(visible)
 
 
 async def _answer_reply_text(message: types.Message, text: str) -> types.Message:
@@ -848,50 +880,81 @@ async def _answer_reply_text(message: types.Message, text: str) -> types.Message
         return await message.answer(text)
 
 
-async def _edit_reply_text(target: types.Message, text: str) -> None:
-    try:
-        await target.edit_text(text)
-    except TelegramRetryAfter as exc:
-        await asyncio.sleep(float(exc.retry_after) + 0.1)
-        await target.edit_text(text)
+class _StreamingReplyDisplay:
+    """Edits Telegram messages as model tokens arrive, with rate and length limits."""
 
+    def __init__(
+        self,
+        message: types.Message,
+        waiting: Optional[types.Message],
+    ) -> None:
+        self.message = message
+        self.messages: List[types.Message] = [waiting] if waiting else []
+        self.chunks: List[str] = ["👀 Ии готовит ответ. 0s."] if waiting else []
+        self.raw_text = ""
+        self.visible_text = ""
+        self.last_edit_at = 0.0
 
-async def _animate_reply(
-    message: types.Message,
-    waiting: Optional[types.Message],
-    text: str,
-) -> None:
-    """Reveal the completed model response one line at a time in editable messages."""
-    lines = _split_reply_lines(text)
-    current_message = waiting
-    current_text = ""
+    @property
+    def has_visible_text(self) -> bool:
+        return bool(self.visible_text.strip())
 
-    for index, line in enumerate(lines):
-        candidate = current_text + "\n" + line if current_text else (line or " ")
-        if current_text and _telegram_text_length(candidate) > TELEGRAM_TEXT_LIMIT:
-            current_text = line or " "
-            current_message = await _answer_reply_text(message, current_text)
-        elif current_message is None:
-            current_text = candidate
-            current_message = await _answer_reply_text(message, current_text)
-        else:
+    def append(self, piece: str) -> None:
+        self.raw_text += piece
+        self.visible_text = _visible_stream_text(self.raw_text)
+
+    async def render(self, force: bool = False) -> None:
+        text = self.visible_text
+        if not text.strip():
+            return
+
+        now = time.monotonic()
+        if not force and self.last_edit_at and now - self.last_edit_at < 1.0:
+            return
+
+        new_chunks = _split_reply_chunks(text)
+        for index, chunk in enumerate(new_chunks):
+            if index < len(self.messages):
+                if self.chunks[index] == chunk:
+                    continue
+                target = self.messages[index]
+                try:
+                    try:
+                        await target.edit_text(chunk)
+                    except TelegramRetryAfter as exc:
+                        await asyncio.sleep(float(exc.retry_after) + 0.1)
+                        await target.edit_text(chunk)
+                except Exception:
+                    # A Telegram edit failure must not interrupt model generation.
+                    logging.exception("Не удалось обновить потоковый ответ в Telegram")
+                    try:
+                        replacement = await _answer_reply_text(self.message, chunk)
+                    except Exception:
+                        logging.exception("Не удалось отправить резервное сообщение потокового ответа")
+                        continue
+                    self.messages[index] = replacement
+                self.chunks[index] = chunk
+            else:
+                try:
+                    new_message = await _answer_reply_text(self.message, chunk)
+                except Exception:
+                    logging.exception("Не удалось отправить следующую часть потокового ответа")
+                    continue
+                self.messages.append(new_message)
+                self.chunks.append(chunk)
+
+        while len(self.messages) > len(new_chunks):
+            old_message = self.messages.pop()
+            self.chunks.pop()
             try:
-                await _edit_reply_text(current_message, candidate)
-                current_text = candidate
+                await old_message.delete()
             except Exception:
-                # Continue with a new message if Telegram refuses to edit the current one.
-                logging.exception("Не удалось обновить анимируемый ответ; продолжаем новым сообщением")
-                # Предыдущий текст уже остался в предыдущем сообщении, поэтому
-                # в новом сообщении показываем только текущую строку, без дубля.
-                current_text = line or " "
-                current_message = await _answer_reply_text(message, current_text)
+                logging.debug("Не удалось удалить лишнюю часть потокового ответа", exc_info=True)
 
-        if index < len(lines) - 1:
-            await asyncio.sleep(REPLY_LINE_DELAY_SECONDS)
+        self.last_edit_at = time.monotonic()
 
 
-
-
+def _decode_text(data: bytes) -> str:
 def _decode_text(data: bytes) -> str:
     for encoding in ("utf-8-sig", "cp1251", "latin-1"):
         try:
@@ -1251,6 +1314,7 @@ async def _request_model(
     previous_messages: List[Dict[str, str]],
     user_text: str,
     user_id: Optional[int] = None,
+    on_delta: Optional[Callable[[str], Awaitable[None]]] = None,
 ) -> str:
     custom_api = _custom_api_pair(user_id) if user_id is not None else None
     if custom_api is not None:
@@ -1287,6 +1351,7 @@ async def _request_model(
     }
 
     started_at = time.monotonic()
+    first_token_at = None
     logging.info("TokenPlan request started: model=%s user_id=%s stream=true", model, user_id)
     try:
         async with aiohttp.ClientSession(timeout=timeout) as session:
@@ -1337,6 +1402,8 @@ async def _request_model(
                             if not isinstance(fallback_data, dict):
                                 raise RuntimeError("TokenPlan вернул ответ в неизвестном формате")
                             fallback_result = _extract_reply(fallback_data)
+                            if on_delta is not None:
+                                await on_delta(fallback_result)
                             logging.info(
                                 "TokenPlan non-stream fallback completed: model=%s elapsed=%.1fs",
                                 model, time.monotonic() - started_at,
@@ -1385,6 +1452,14 @@ async def _request_model(
                                 )
                             if isinstance(piece, str) and piece:
                                 chunks.append(piece)
+                                if first_token_at is None:
+                                    first_token_at = time.monotonic()
+                                    logging.info(
+                                        "TokenPlan first token: model=%s user_id=%s ttft=%.1fs",
+                                        model, user_id, first_token_at - started_at,
+                                    )
+                                if on_delta is not None:
+                                    await on_delta(piece)
                             if choice.get("finish_reason") is not None:
                                 stream_finished = True
                     result = "".join(chunks).strip()
@@ -1413,6 +1488,8 @@ async def _request_model(
                 if not isinstance(data, dict):
                     raise RuntimeError("TokenPlan вернул ответ в неизвестном формате")
                 result = _extract_reply(data)
+                if on_delta is not None:
+                    await on_delta(result)
                 logging.info(
                     "TokenPlan non-stream response completed: model=%s chars=%s elapsed=%.1fs",
                     model, len(result), time.monotonic() - started_at,
@@ -2046,10 +2123,20 @@ async def ai_chat_message(message: types.Message, state: FSMContext):
     _active_tasks[user_id] = asyncio.current_task()
     waiting = None
     waiting_timer = None
+    stream_display = None
     try:
         waiting = await message.answer("👀 Ии готовит ответ. 0s.")
         _waiting_messages[user_id] = waiting
         waiting_timer = asyncio.create_task(_animate_waiting_message(waiting))
+        stream_display = _StreamingReplyDisplay(message, waiting)
+
+        async def on_model_delta(piece: str) -> None:
+            nonlocal waiting_timer
+            stream_display.append(piece)
+            if stream_display.has_visible_text and waiting_timer is not None:
+                await _stop_waiting_timer(waiting_timer)
+                waiting_timer = None
+            await stream_display.render()
         # Контекст берётся только из выбранного chat_id, не из других чатов
         # этой же модели или других моделей.
         # Модели получают историю только своего chat_id. Удаляем содержимое
@@ -2097,7 +2184,9 @@ async def ai_chat_message(message: types.Message, state: FSMContext):
                    else "")
             )
             request_text += "\n\n[СНИМОК GITHUB-РЕПОЗИТОРИЯ]\n" + repository_snapshot["context"]
-        reply = await _request_model(model, model_history, request_text, user_id=user_id)
+        reply = await _request_model(
+            model, model_history, request_text, user_id=user_id, on_delta=on_model_delta
+        )
         reply_without_github_files, github_files = _extract_github_files(reply)
         visible_reply, generated_files, empty_files = _extract_generated_files(reply_without_github_files)
 
@@ -2261,7 +2350,9 @@ async def ai_chat_message(message: types.Message, state: FSMContext):
         await _stop_waiting_timer(waiting_timer)
         waiting_timer = None
         display_text = visible_reply if visible_reply else "Файл готов."
-        await _animate_reply(message, waiting, display_text)
+        if stream_display is not None:
+            stream_display.visible_text = display_text
+            await stream_display.render(force=True)
         if len(generated_files) >= 2 or _is_archive_request(user_text) or any(
             not file_content for _, file_content in generated_files
         ):
@@ -2283,10 +2374,18 @@ async def ai_chat_message(message: types.Message, state: FSMContext):
     except RuntimeError as exc:
         await _stop_waiting_timer(waiting_timer)
         waiting_timer = None
-        if waiting:
-            await waiting.edit_text(f'"{model}" - Ошибка запроса: {exc}')
+        error_text = f'"{model}" - Ошибка запроса: {exc}'
+        if stream_display is not None and stream_display.has_visible_text:
+            await message.answer(error_text)
+        elif waiting:
+            await waiting.edit_text(error_text)
     except asyncio.CancelledError:
-        if waiting:
+        if stream_display is not None and stream_display.has_visible_text:
+            try:
+                await message.answer("Ответ прерван.")
+            except Exception:
+                logging.debug("Не удалось отправить сообщение о прерывании", exc_info=True)
+        elif waiting:
             try:
                 await waiting.edit_text("Ответ прерван.")
             except Exception:
@@ -2294,8 +2393,11 @@ async def ai_chat_message(message: types.Message, state: FSMContext):
         return
     except Exception:
         logging.exception("Непредвиденная ошибка при запросе к TokenPlan")
-        if waiting:
-            await waiting.edit_text(f'"{model}" - Произошла внутренняя ошибка при обращении к API.')
+        error_text = f'"{model}" - Произошла внутренняя ошибка при обращении к API.'
+        if stream_display is not None and stream_display.has_visible_text:
+            await message.answer(error_text)
+        elif waiting:
+            await waiting.edit_text(error_text)
     finally:
         try:
             await _stop_waiting_timer(waiting_timer)
