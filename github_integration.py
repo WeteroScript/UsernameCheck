@@ -488,74 +488,96 @@ async def fetch_repository_context(telegram_user_id: int, reference: str, branch
             "/repos/{}/git/commits/{}".format(full_name, branch_ref["object"]["sha"]),
             token,
         )
-        tree_data = await _api_json(
-            session, "GET",
-            "/repos/{}/git/trees/{}?recursive=1".format(full_name, head_commit["tree"]["sha"]),
-            token,
-        )
-        entries = [
-            item for item in tree_data.get("tree", [])
-            if item.get("type") == "blob" and isinstance(item.get("path"), str)
-        ]
+        # Обходим дерево каталог за каталогом. Recursive tree API может вернуть
+        # truncated=true на больших репозиториях, поэтому не используем один
+        # рекурсивный снимок всего репозитория.
+        pending_trees = [head_commit["tree"]["sha"]]
+        visited_trees = set()
+        entries = []
+        while pending_trees:
+            tree_sha = pending_trees.pop()
+            if tree_sha in visited_trees:
+                continue
+            visited_trees.add(tree_sha)
+            tree_data = await _api_json(
+                session, "GET",
+                "/repos/{}/git/trees/{}".format(full_name, tree_sha),
+                token,
+            )
+            if tree_data.get("truncated"):
+                raise RuntimeError(
+                    "GitHub обрезал список элементов одного каталога. "
+                    "Невозможно подтвердить полный просмотр дерева репозитория."
+                )
+            for item in tree_data.get("tree", []):
+                if item.get("type") == "tree" and item.get("sha"):
+                    pending_trees.append(item["sha"])
+                elif item.get("type") == "blob" and isinstance(item.get("path"), str):
+                    entries.append(item)
+
+        # Полный список путей включает также бинарные и чувствительные файлы.
+        # Содержимое credential-файлов намеренно не передаётся внешней модели.
+        repository_inventory = sorted(item["path"] for item in entries)
         excluded_names = {
             ".env", ".env.local", ".env.production", ".npmrc", ".pypirc",
             ".netrc", "id_rsa", "id_ed25519", "credentials.json", "secrets.json",
         }
-        allowed_names = {"dockerfile", "makefile", "procfile", ".gitignore", "license", "readme"}
-        allowed_extensions = {
-            ".py", ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".html", ".htm",
-            ".css", ".scss", ".json", ".md", ".txt", ".yml", ".yaml", ".toml",
-            ".ini", ".cfg", ".sh", ".sql", ".go", ".rs", ".java", ".kt", ".php",
-            ".rb", ".swift", ".c", ".cpp", ".h", ".hpp", ".cs", ".xml", ".vue",
-            ".svelte", ".gradle", ".properties",
+
+        def is_sensitive_path(path: str) -> bool:
+            parts = [part.lower() for part in path.replace("\\\\", "/").split("/")]
+            basename = parts[-1] if parts else ""
+            if basename in excluded_names:
+                return True
+            if basename.startswith(".env.") and basename != ".env.example":
+                return True
+            sensitive_terms = ("secret", "credential", "private_key", "token")
+            return any(
+                term in component
+                for component in parts
+                for term in sensitive_terms
+            )
+
+        candidates = [item for item in entries if not is_sensitive_path(item["path"])]
+        priority_names = {
+            "readme", "readme.md", "dockerfile", "makefile", "pyproject.toml",
+            "requirements.txt", "package.json", "compose.yaml", "compose.yml",
+            "tsconfig.json",
         }
-
-        def safe_entry(item: Dict[str, Any]) -> bool:
-            path = item["path"]
-            lower = path.lower()
-            basename = lower.rsplit("/", 1)[-1]
-            extension = Path(lower).suffix
-            if basename in excluded_names or basename.startswith(".env."):
-                return False
-            excluded_dirs = (".git/", "node_modules/", "vendor/", "dist/", "build/", ".venv/")
-            if any(lower.startswith(directory) or ("/" + directory) in lower for directory in excluded_dirs):
-                return False
-            if any(term in basename for term in ("secret", "credential", "private_key", "token")):
-                return False
-            return basename in allowed_names or extension in allowed_extensions
-
-        candidates = [item for item in entries if safe_entry(item)]
-        # Полный манифест путей не даёт модели принять ограниченный снимок за весь репозиторий.
-        repository_inventory = [
-            item["path"] for item in entries
-            if isinstance(item.get("path"), str) and safe_entry(item)
-        ]
-        priority_names = (
-            "readme", "readme.md", "dockerfile", "makefile", "pyproject.toml", "requirements.txt", "package.json",
-            "dockerfile", "compose.yaml", "compose.yml", "tsconfig.json",
-        )
         candidates.sort(key=lambda item: (
             0 if item["path"].lower().rsplit("/", 1)[-1] in priority_names else 1,
             item["path"].count("/"),
             item["path"],
         ))
+
         files = []
+        failed_files = []
         for item in candidates:
+            path = item["path"]
             try:
                 blob = await _api_json(
                     session, "GET",
                     "/repos/{}/git/blobs/{}".format(full_name, item["sha"]),
                     token,
                 )
-                raw = base64.b64decode(blob.get("content", ""))
+                if blob.get("encoding") != "base64" or not blob.get("content"):
+                    failed_files.append(path)
+                    logging.warning(
+                        "GitHub не вернул содержимое blob %s из %s (encoding=%s)",
+                        path, full_name, blob.get("encoding"),
+                    )
+                    continue
+                raw = base64.b64decode(blob["content"], validate=False)
+                if b"\\x00" in raw:
+                    continue
                 text_content = raw.decode("utf-8")
             except (UnicodeDecodeError, ValueError, RuntimeError):
+                failed_files.append(path)
                 logging.exception(
-                    "Не удалось загрузить GitHub-файл %s из %s",
-                    item.get("path"), full_name,
+                    "Не удалось загрузить текст GitHub-файла %s из %s",
+                    path, full_name,
                 )
                 continue
-            files.append((item["path"], text_content))
+            files.append((path, text_content))
 
     if not files:
         raise RuntimeError("В репозитории не найдено доступных текстовых исходников.")
@@ -563,11 +585,14 @@ async def fetch_repository_context(telegram_user_id: int, reference: str, branch
         "GitHub repository: " + full_name,
         "Selected branch: " + branch,
         "Repository URL: " + repo_data.get("html_url", "https://github.com/" + full_name),
-        "Ниже приведён список доступных путей и содержимое всех подходящих текстовых файлов "
-        "из выбранной ветки. Файлы с секретами и служебные каталоги исключены из соображений безопасности.",
-        "Repository file inventory (" + str(len(repository_inventory)) + " paths):",
+        "Ниже перечислены все пути файлов выбранной ветки и содержимое всех успешно "
+        "прочитанных UTF-8 текстовых файлов независимо от расширения и каталога. "
+        "Содержимое файлов с именами, указывающими на секреты или учётные данные, исключено. "
+        "Бинарные файлы перечислены, но не вставлены как текст.",
+        "Complete repository file inventory (" + str(len(repository_inventory)) + " paths):",
         *repository_inventory,
-        "Fetched file contents (" + str(len(files)) + " files):",
+        "Fetched UTF-8 file contents (" + str(len(files)) + " files):",
+        "Files whose contents could not be fetched: " + json.dumps(failed_files, ensure_ascii=False),
     ]
     for path, file_content in files:
         sections.append("\n--- FILE: " + path + " ---\n" + file_content)
