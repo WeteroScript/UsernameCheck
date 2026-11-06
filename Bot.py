@@ -546,29 +546,21 @@ def get_home_category_keyboard(category: str, user_id: Optional[int] = None) -> 
 def get_bots_list_keyboard(user_id: int = None) -> InlineKeyboardMarkup:
     premium = is_premium(user_id) if user_id else False
     if premium:
-        prgramm_btn = InlineKeyboardButton(
-            text=f"📢 PR GRAMM {PREMIUM_ICON}",
-            callback_data="bot_prgramm",
-            style=ButtonStyle.PRIMARY,
-        )
+        prgramm_btn = InlineKeyboardButton(text=tr(user_id, "bot_prgramm"), callback_data="bot_prgramm", style=ButtonStyle.PRIMARY)
     else:
-        prgramm_btn = InlineKeyboardButton(
-            text=f"🔒 PR GRAMM {PREMIUM_ICON}",
-            callback_data="bot_prgramm_locked",
-            style=ButtonStyle.DANGER,
-        )
+        prgramm_btn = InlineKeyboardButton(text=tr(user_id, "bot_prgramm_locked"), callback_data="bot_prgramm_locked", style=ButtonStyle.DANGER)
     return InlineKeyboardMarkup(inline_keyboard=[
         [prgramm_btn],
-        [InlineKeyboardButton(text="💼 Додепер", callback_data="bot_dodeeper", style=ButtonStyle.SUCCESS)],
-        [InlineKeyboardButton(text="⬅️ Назад",   callback_data="home_automation", style=ButtonStyle.DANGER)],
+        [InlineKeyboardButton(text=tr(user_id, "bot_dodeeper"), callback_data="bot_dodeeper", style=ButtonStyle.SUCCESS)],
+        [InlineKeyboardButton(text=tr(user_id, "back"), callback_data="home_automation", style=ButtonStyle.DANGER)],
     ])
 
 
-def get_username_keyboard() -> InlineKeyboardMarkup:
+def get_username_keyboard(user_id: Optional[int] = None) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✨ Генерировать", callback_data="gen")],
-        [InlineKeyboardButton(text="⚙️ Настройки", callback_data="settings")],
-        [InlineKeyboardButton(text="⬅️ Назад", callback_data="home_tools")],
+        [InlineKeyboardButton(text=tr(user_id, "username_generate"), callback_data="gen", style=ButtonStyle.SUCCESS)],
+        [InlineKeyboardButton(text=tr(user_id, "username_settings"), callback_data="settings", style=ButtonStyle.PRIMARY)],
+        [InlineKeyboardButton(text=tr(user_id, "back"), callback_data="home_tools", style=ButtonStyle.DANGER)],
     ])
 
 
