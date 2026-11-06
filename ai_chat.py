@@ -2575,9 +2575,14 @@ async def ai_chat_message(message: types.Message, state: FSMContext):
                    else "")
             )
             request_text += "\n\n[СНИМОК GITHUB-РЕПОЗИТОРИЯ]\n" + repository_snapshot["context"]
-        await _update_ai_progress(progress_message, "Отправляет запрос модели")
+        await _update_ai_progress(progress_message, "Ожидает ответ модели")
+        model_generation_started = False
+
         async def tracked_model_delta(piece: str) -> None:
-            await _update_ai_progress(progress_message, "Анализирует запрос и формирует ответ")
+            nonlocal model_generation_started
+            if not model_generation_started:
+                model_generation_started = True
+                await _update_ai_progress(progress_message, "Получает и формирует ответ модели")
             await on_model_delta(piece)
 
         reply = await _request_model(
