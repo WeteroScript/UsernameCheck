@@ -88,12 +88,6 @@ def _invoice_items(result: dict[str, Any]) -> list[dict[str, Any]]:
     return []
 
 
-async def _fetch_invoice(invoice_id: str) -> dict[str, Any] | None:
-    result = await _crypto_pay("getInvoices", {"invoice_ids": str(invoice_id)})
-    items = _invoice_items(result)
-    return items[0] if items else None
-
-
 async def _notify_expired(bot, record: dict[str, Any]) -> None:
     user_id = int(record["user_id"])
     chat_id = int(record.get("chat_id") or user_id)
@@ -143,36 +137,46 @@ async def _payment_worker(bot) -> None:
     logging.info("Crypto Pay invoice monitor started (15-minute invoices)")
     while True:
         try:
-            now = int(time.time())
-            for invoice_id, record in list(payments.items()):
-                if record.get("status") != "active":
-                    continue
-                try:
-                    invoice = await _fetch_invoice(invoice_id)
-                    api_status = (invoice or {}).get("status")
-                    if api_status == "paid":
-                        await _activate_paid_invoice(bot, invoice_id, record)
-                        continue
+            active_items = [
+                (invoice_id, record)
+                for invoice_id, record in list(payments.items())
+                if record.get("status") == "active"
+            ]
+            if active_items:
+                # One API call checks all active invoices and keeps requests
+                # below Crypto Pay's per-minute API limits as concurrency grows.
+                ids = ",".join(invoice_id for invoice_id, _ in active_items)
+                result = await _crypto_pay("getInvoices", {"invoice_ids": ids})
+                invoices = _invoice_items(result)
+                by_id = {str(item.get("invoice_id")): item for item in invoices}
+                now = int(time.time())
 
-                    if now >= int(record.get("expires_at", 0)) or api_status == "expired":
-                        if api_status == "active":
-                            try:
-                                await _crypto_pay("deleteInvoice", {"invoice_id": int(invoice_id)})
-                            except Exception:
-                                logging.exception("Не удалось удалить истёкший Crypto Pay invoice %s", invoice_id)
-                                continue
-                        record["status"] = "expired"
-                        record["expired_at"] = now
-                        _save_payments()
-                        await _notify_expired(bot, record)
-                except asyncio.CancelledError:
-                    raise
-                except Exception:
-                    logging.exception("Ошибка проверки Crypto Pay invoice %s", invoice_id)
+                for invoice_id, record in active_items:
+                    try:
+                        api_status = (by_id.get(invoice_id) or {}).get("status")
+                        if api_status == "paid":
+                            await _activate_paid_invoice(bot, invoice_id, record)
+                            continue
+
+                        if now >= int(record.get("expires_at", 0)) or api_status == "expired":
+                            if api_status == "active":
+                                try:
+                                    await _crypto_pay("deleteInvoice", {"invoice_id": int(invoice_id)})
+                                except Exception:
+                                    logging.exception("Не удалось удалить истёкший Crypto Pay invoice %s", invoice_id)
+                                    continue
+                            record["status"] = "expired"
+                            record["expired_at"] = now
+                            _save_payments()
+                            await _notify_expired(bot, record)
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception:
+                        logging.exception("Ошибка проверки Crypto Pay invoice %s", invoice_id)
         except asyncio.CancelledError:
             raise
         except Exception:
-            logging.exception("Ошибка фонового мониторинга Crypto Pay")
+            logging.exception("Ошибка пакетной проверки Crypto Pay invoices")
         await asyncio.sleep(8)
 
 
