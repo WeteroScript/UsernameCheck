@@ -3261,18 +3261,6 @@ class AccessMiddleware(BaseMiddleware):
             return await handler(event, data)
 
         mandatory = get_mandatory_channels()
-        if mandatory and user_id not in _math_captcha_verified:
-            question, markup = _new_math_captcha(user_id)
-            try:
-                if isinstance(event, types.CallbackQuery):
-                    await event.answer()
-                    await event.message.answer(question, parse_mode=ParseMode.HTML, reply_markup=markup)
-                else:
-                    await event.answer(question, parse_mode=ParseMode.HTML, reply_markup=markup)
-            except Exception:
-                logging.exception("Не удалось отправить математическую капчу пользователю %s", user_id)
-            return
-
         if mandatory:
             not_subscribed = []
             for chat_id in mandatory:
@@ -3285,14 +3273,18 @@ class AccessMiddleware(BaseMiddleware):
 
             if not_subscribed:
                 try:
-                    text, markup = await _subscription_prompt(user_id)
+                    if user_id not in _math_captcha_verified:
+                        question, markup = _new_math_captcha(user_id)
+                        text = question
+                    else:
+                        text, markup = await _subscription_prompt(user_id)
                     if isinstance(event, types.CallbackQuery):
                         await event.answer()
                         await event.message.answer(text, parse_mode=ParseMode.HTML, reply_markup=markup)
                     else:
                         await event.answer(text, parse_mode=ParseMode.HTML, reply_markup=markup)
                 except Exception:
-                    logging.exception("AccessMiddleware: не удалось показать обязательную подписку")
+                    logging.exception("AccessMiddleware: не удалось показать капчу или обязательную подписку")
                 return
 
         return await handler(event, data)
@@ -3320,11 +3312,6 @@ async def fsm_back_callback(callback: types.CallbackQuery, state: FSMContext):
 async def check_subscription_callback(callback: types.CallbackQuery):
     user_id = callback.from_user.id
     mandatory = get_mandatory_channels()
-    if mandatory and user_id not in _math_captcha_verified:
-        question, markup = _new_math_captcha(user_id)
-        await callback.answer()
-        await callback.message.edit_text(question, parse_mode=ParseMode.HTML, reply_markup=markup)
-        return
     not_subscribed = []
     for chat_id in mandatory:
         try:
@@ -3335,6 +3322,11 @@ async def check_subscription_callback(callback: types.CallbackQuery):
             not_subscribed.append(chat_id)
 
     if not_subscribed:
+        if user_id not in _math_captcha_verified:
+            question, markup = _new_math_captcha(user_id)
+            await callback.answer()
+            await callback.message.edit_text(question, parse_mode=ParseMode.HTML, reply_markup=markup)
+            return
         await callback.answer("❌ Ты всё ещё не подписан на все каналы" if get_user_lang(user_id) == "ru" else "❌ You have not joined all required channels yet.", show_alert=True)
         prompt, markup = await _subscription_prompt(user_id)
         await callback.message.edit_text(prompt, parse_mode=ParseMode.HTML, reply_markup=markup)
