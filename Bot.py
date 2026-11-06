@@ -498,49 +498,48 @@ def get_session_settings_keyboard(user_id: int, phone: str, back_to: str = None)
 
 
 def get_main_keyboard(user_id: Optional[int] = None) -> InlineKeyboardMarkup:
-    """Главное меню-каталог: функции разнесены по тематическим разделам."""
+    """Главное меню-каталог с локализованными кнопками."""
     rows = [
         [
-            InlineKeyboardButton(text="🤖 Автоматизация", callback_data="home_automation", style=ButtonStyle.SUCCESS),
-            InlineKeyboardButton(text="🧰 Инструменты", callback_data="home_tools", style=ButtonStyle.PRIMARY),
+            InlineKeyboardButton(text=tr(user_id, "menu_automation"), callback_data="home_automation", style=ButtonStyle.SUCCESS),
+            InlineKeyboardButton(text=tr(user_id, "menu_tools"), callback_data="home_tools", style=ButtonStyle.PRIMARY),
         ],
         [
-            InlineKeyboardButton(text="🧠 ИИ и GitHub", callback_data="home_ai", style=ButtonStyle.SUCCESS),
-            InlineKeyboardButton(text="👤 Профиль и помощь", callback_data="home_profile", style=ButtonStyle.PRIMARY),
+            InlineKeyboardButton(text=tr(user_id, "menu_ai"), callback_data="home_ai", style=ButtonStyle.SUCCESS),
+            InlineKeyboardButton(text=tr(user_id, "menu_profile"), callback_data="home_profile", style=ButtonStyle.PRIMARY),
         ],
-        [InlineKeyboardButton(text="⚙️ Настройки", callback_data="bot_settings_menu", style=ButtonStyle.PRIMARY)],
+        [InlineKeyboardButton(text=tr(user_id, "menu_settings"), callback_data="bot_settings_menu", style=ButtonStyle.PRIMARY)],
     ]
     if user_id is not None and is_admin(user_id):
-        rows.append([InlineKeyboardButton(text="🛠 Адм. панель", callback_data="adm_help", style=ButtonStyle.DANGER)])
+        rows.append([InlineKeyboardButton(text=tr(user_id, "menu_admin"), callback_data="adm_help", style=ButtonStyle.DANGER)])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def get_home_category_keyboard(category: str) -> InlineKeyboardMarkup:
+def get_home_category_keyboard(category: str, user_id: Optional[int] = None) -> InlineKeyboardMarkup:
     categories = {
         "automation": [
-            [InlineKeyboardButton(text="🤖 Боты", callback_data="bots", style=ButtonStyle.SUCCESS),
-             InlineKeyboardButton(text="📣 Gram-бот", callback_data="bot_prgramm", style=ButtonStyle.SUCCESS)],
-            [InlineKeyboardButton(text="📱 Аккаунты", callback_data="accounts", style=ButtonStyle.PRIMARY),
-             InlineKeyboardButton(text="📢 Каналы", callback_data="channels_menu", style=ButtonStyle.PRIMARY)],
+            [InlineKeyboardButton(text=tr(user_id, "automation_bots"), callback_data="bots", style=ButtonStyle.SUCCESS)],
+            [InlineKeyboardButton(text=tr(user_id, "automation_accounts"), callback_data="accounts", style=ButtonStyle.PRIMARY),
+             InlineKeyboardButton(text=tr(user_id, "automation_channels"), callback_data="channels_menu", style=ButtonStyle.PRIMARY)],
         ],
         "tools": [
-            [InlineKeyboardButton(text="👤 Юзернеймы", callback_data="users", style=ButtonStyle.PRIMARY),
-             InlineKeyboardButton(text="📉 Шакализатор", callback_data="shakalizer_menu", style=ButtonStyle.SUCCESS)],
-            [InlineKeyboardButton(text="🎁 Подарки", callback_data="gifts_menu", style=ButtonStyle.DANGER),
-             InlineKeyboardButton(text="🎥 Скачать видео", callback_data="video_menu", style=ButtonStyle.PRIMARY)],
+            [InlineKeyboardButton(text=tr(user_id, "tools_usernames"), callback_data="users", style=ButtonStyle.PRIMARY),
+             InlineKeyboardButton(text=tr(user_id, "tools_shakalizer"), callback_data="shakalizer_menu", style=ButtonStyle.SUCCESS)],
+            [InlineKeyboardButton(text=tr(user_id, "tools_gifts"), callback_data="gifts_menu", style=ButtonStyle.DANGER),
+             InlineKeyboardButton(text=tr(user_id, "tools_video"), callback_data="video_menu", style=ButtonStyle.PRIMARY)],
         ],
         "ai": [
-            [InlineKeyboardButton(text="💬 Чат с ИИ", callback_data="ai_menu", style=ButtonStyle.SUCCESS),
-             InlineKeyboardButton(text="🐙 GitHub", callback_data="github_menu", style=ButtonStyle.PRIMARY)],
+            [InlineKeyboardButton(text=tr(user_id, "tools_ai_chat"), callback_data="ai_menu", style=ButtonStyle.SUCCESS),
+             InlineKeyboardButton(text=tr(user_id, "tools_github"), callback_data="github_menu", style=ButtonStyle.PRIMARY)],
         ],
         "profile": [
-            [InlineKeyboardButton(text="🆔 Получить ID", callback_data="getid_menu", style=ButtonStyle.PRIMARY),
-             InlineKeyboardButton(text="💎 Премиум", callback_data="premium_menu", style=ButtonStyle.DANGER)],
-            [InlineKeyboardButton(text="🐛 Сообщить о баге", callback_data="bugreport_menu", style=ButtonStyle.PRIMARY)],
+            [InlineKeyboardButton(text=tr(user_id, "profile_get_id"), callback_data="getid_menu", style=ButtonStyle.PRIMARY),
+             InlineKeyboardButton(text=tr(user_id, "profile_premium"), callback_data="premium_menu", style=ButtonStyle.DANGER)],
+            [InlineKeyboardButton(text=tr(user_id, "profile_bug"), callback_data="bugreport_menu", style=ButtonStyle.PRIMARY)],
         ],
     }
-    rows = categories.get(category, [])
-    rows.append([InlineKeyboardButton(text="⬅️ Главное меню", callback_data="main", style=ButtonStyle.DANGER)])
+    rows = list(categories.get(category, []))
+    rows.append([InlineKeyboardButton(text=tr(user_id, "back_home"), callback_data="main", style=ButtonStyle.DANGER)])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
