@@ -8,7 +8,7 @@ from typing import Any
 
 LANG_FILE = os.getenv("USER_LANG_FILE", "user_lang.json")
 _LANG_CACHE: dict[int, str] = {}
-_LANG_MTIME: float | None = None
+_LANG_SIGNATURE: tuple[int, int] | None = None
 
 TEXTS = {
     "ru": {
@@ -271,22 +271,22 @@ TEXTS = {
 
 
 def get_language(user_id: int | None) -> str:
-    global _LANG_MTIME, _LANG_CACHE
+    global _LANG_SIGNATURE, _LANG_CACHE
     try:
-        mtime = os.path.getmtime(LANG_FILE)
-        if _LANG_MTIME != mtime:
+        stat = os.stat(LANG_FILE)
+        signature = (stat.st_mtime_ns, stat.st_size)
+        if _LANG_SIGNATURE != signature:
             with open(LANG_FILE, "r", encoding="utf-8") as source:
                 raw = json.load(source)
             _LANG_CACHE = {
-                int(user_id): lang
-                for user_id, lang in raw.items()
+                int(uid): lang
+                for uid, lang in raw.items()
                 if str(lang) in ("ru", "en")
             }
-            _LANG_MTIME = mtime
+            _LANG_SIGNATURE = signature
     except (OSError, ValueError, TypeError):
         pass
     return _LANG_CACHE.get(int(user_id or 0), "ru")
-
 
 def tr(user_id: int | None, key: str, **kwargs: Any) -> str:
     lang = get_language(user_id)
