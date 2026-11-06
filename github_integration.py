@@ -562,7 +562,7 @@ async def fetch_repository_context(telegram_user_id: int, reference: str, branch
                     "/repos/{}/git/blobs/{}".format(full_name, item["sha"]),
                     token,
                 )
-                if blob.get("encoding") != "base64" or not blob.get("content"):
+                if blob.get("encoding") != "base64" or "content" not in blob:
                     failed_files.append(path)
                     logging.warning(
                         "GitHub не вернул содержимое blob %s из %s (encoding=%s)",
