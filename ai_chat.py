@@ -2184,7 +2184,9 @@ async def ai_menu(callback: types.CallbackQuery, state: FSMContext):
 
 @router.callback_query(lambda callback: callback.data == "ai_auto")
 async def ai_auto_menu(callback: types.CallbackQuery, state: FSMContext):
-    if not is_premium(callback.from_user.id):
+    task = _auto_tasks.get(callback.from_user.id)
+    running = bool(task and not task.done())
+    if not is_premium(callback.from_user.id) and not running:
         await callback.answer("Авто-запрос доступен только пользователям Premium.", show_alert=True)
         return
     await callback.answer()
@@ -2410,9 +2412,6 @@ async def _auto_request_loop(
 @router.callback_query(lambda callback: callback.data == "ai_auto_toggle")
 async def ai_auto_toggle(callback: types.CallbackQuery, state: FSMContext):
     user_id = callback.from_user.id
-    if not is_premium(user_id):
-        await callback.answer("Авто-запрос доступен только пользователям Premium.", show_alert=True)
-        return
     task = _auto_tasks.get(user_id)
     if task and not task.done():
         stop_event = _auto_stop_events.get(user_id)
@@ -2427,6 +2426,9 @@ async def ai_auto_toggle(callback: types.CallbackQuery, state: FSMContext):
             parse_mode="HTML",
             reply_markup=_auto_request_keyboard(user_id),
         )
+        return
+    if not is_premium(user_id):
+        await callback.answer("Авто-запрос доступен только пользователям Premium.", show_alert=True)
         return
 
     settings = _user_settings(user_id)
