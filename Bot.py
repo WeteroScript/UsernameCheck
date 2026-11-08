@@ -734,6 +734,9 @@ async def github_connect(callback: types.CallbackQuery):
 
 
 async def _github_finish_device_flow(message: types.Message, user_id: int, device: Dict[str, Any]):
+    if not is_premium(user_id):
+        await message.answer("Подключение GitHub доступно только с Premium.")
+        return
     try:
         install_url = await github_complete_device_flow(
             user_id,
@@ -741,6 +744,9 @@ async def _github_finish_device_flow(message: types.Message, user_id: int, devic
             device["interval"],
             device["expires_in"],
         )
+        if not is_premium(user_id):
+            await message.answer("Срок Premium истёк. Подключение GitHub отменено.")
+            return
         await message.answer(
             "Аккаунт GitHub подтверждён. Теперь установи приложение и выбери репозитории:",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
