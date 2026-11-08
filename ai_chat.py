@@ -822,31 +822,39 @@ def _is_paid_model(model: str) -> bool:
 
 
 def _supports_effort(model: str) -> bool:
-    """Models with a documented effort control on their native API protocols."""
-    return model.startswith("claude") or model.startswith(("gpt-5", "gpt-6", "deepseek-v4"))
+    """Check whether the model family/version exposes a documented effort parameter."""
+    normalized = model.lower().replace(".", "-")
+    if normalized.startswith("claude"):
+        unsupported = ("claude-3", "sonnet-4-5", "haiku-4-5")
+        return not any(version in normalized for version in unsupported)
+    return normalized.startswith(("gpt-5", "gpt-6"))
 
 
 def _effort_levels(model: str) -> List[Tuple[str, str]]:
-    if model.startswith("claude"):
+    normalized = model.lower().replace(".", "-")
+    if normalized.startswith("claude"):
+        levels = [
+            ("low", "Низкое"),
+            ("medium", "Среднее"),
+            ("high", "Высокое"),
+        ]
+        if any(version in normalized for version in (
+            "opus-4-7", "opus-4-8", "opus-5", "sonnet-5",
+            "haiku-5-5", "fable", "mythos",
+        )):
+            levels.append(("xhigh", "Очень высокое"))
+        if any(version in normalized for version in (
+            "opus-4-6", "opus-4-7", "opus-4-8", "opus-5",
+            "sonnet-4-6", "sonnet-5", "haiku-5", "fable", "mythos",
+        )):
+            levels.append(("max", "Максимальное"))
+        return levels
+    if normalized.startswith(("gpt-5", "gpt-6")):
         return [
             ("low", "Низкое"),
             ("medium", "Среднее"),
             ("high", "Высокое"),
             ("xhigh", "Очень высокое"),
-            ("max", "Максимальное"),
-        ]
-    if model.startswith(("gpt-5", "gpt-6")):
-        return [
-            ("low", "Низкое"),
-            ("medium", "Среднее"),
-            ("high", "Высокое"),
-            ("xhigh", "Очень высокое"),
-        ]
-    if model.startswith("deepseek-v4"):
-        return [
-            ("low", "Низкое"),
-            ("high", "Высокое"),
-            ("max", "Максимальное"),
         ]
     return []
 
@@ -2778,7 +2786,8 @@ async def ai_chat_set_model(callback: types.CallbackQuery, state: FSMContext):
     await callback.message.edit_text(
         "<b>⚙️ Настройки чата</b>\n\n"
         f"Имя: <b>{html.escape(str(chat.get('title') or 'Новый чат'))}</b>\n"
-        f"Модель: <code>{html.escape(model)}</code>",
+        f"Модель: <code>{html.escape(model)}</code>\n"
+        f"Усилие: <b>{html.escape(str(chat.get('reasoning_effort') or 'по умолчанию'))}</b>",
         parse_mode="HTML",
         reply_markup=_chat_settings_keyboard(chat_id, str(chat.get("model") or "unknown")),
     )
