@@ -2375,7 +2375,7 @@ async def _request_model_once(
                 )
                 if on_delta is not None:
                     await on_delta(result)
-                if finish_reason_value in {"length", "max_tokens"}:
+                if finish_reason_value in {"length", "max_tokens"} or _has_incomplete_structured_output(result):
                     return await _continue_limited_model_response(
                         model=model,
                         previous_messages=previous_messages,
