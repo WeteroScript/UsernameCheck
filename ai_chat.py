@@ -853,13 +853,23 @@ def _effort_levels(model: str) -> List[Tuple[str, str]]:
         )):
             levels.append(("max", "Максимальное"))
         return levels
-    if normalized.startswith(("gpt-5", "gpt-6")):
+    if normalized.startswith("gpt-6"):
         return [
             ("low", "Низкое"),
             ("medium", "Среднее"),
             ("high", "Высокое"),
             ("xhigh", "Очень высокое"),
+            ("max", "Максимальное"),
         ]
+    if normalized.startswith("gpt-5"):
+        levels = [
+            ("low", "Низкое"),
+            ("medium", "Среднее"),
+            ("high", "Высокое"),
+        ]
+        if any(version in normalized for version in ("gpt-5-2", "gpt-5-3", "gpt-5-4", "gpt-5-5", "gpt-5-6")):
+            levels.append(("xhigh", "Очень высокое"))
+        return levels
     return []
 
 
@@ -3504,7 +3514,7 @@ async def _process_ai_chat_message(
                 await _update_ai_progress(progress_message, "Повторно запрашивает недостающие файлы")
                 retry_reply = await _request_model(
                     model, retry_context, retry_instruction, user_id=user_id,
-                    on_usage=tracked_model_usage, effort=chat.get("reasoning_effort"),
+                    on_usage=tracked_model_usage, effort=effort_level,
                 )
                 retry_visible, retry_files, retry_empty_files = _extract_generated_files(retry_reply)
                 if retry_files:
