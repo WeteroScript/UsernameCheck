@@ -33,7 +33,7 @@ from aiogram.types import BufferedInputFile, InlineKeyboardButton, InlineKeyboar
 from dotenv import load_dotenv
 from cryptography.fernet import Fernet, InvalidToken
 from access_control import is_admin, is_premium
-from ai_usage import format_ai_quota, get_ai_quota, get_ai_usage_models, quota_block_reason, record_ai_usage, record_free_request, record_ai_request
+from ai_usage import format_ai_quota, get_ai_quota, get_ai_usage_models, quota_block_reason, record_ai_usage, record_free_request, record_ai_request, ensure_ai_request_total
 from github_integration import fetch_repository_context, create_repository_pull_request
 from storage import data_file, data_directory
 
@@ -578,6 +578,16 @@ def init_ai_chat(dispatcher) -> None:
     global chat_history, user_settings
     chat_history = _load_history()
     user_settings = _load_user_settings()
+    historical_requests = sum(
+        1
+        for user_chats in chat_history.values()
+        if isinstance(user_chats, list)
+        for chat in user_chats
+        if isinstance(chat, dict)
+        for item in chat.get("messages", [])
+        if isinstance(item, dict) and item.get("role") == "user"
+    )
+    ensure_ai_request_total(historical_requests)
     dispatcher.include_router(router)
     logging.info("Раздел «Чат с ИИ» подключён; сохранено пользователей: %s", len(chat_history))
 
@@ -1854,7 +1864,23 @@ def _has_incomplete_structured_output(text: str) -> bool:
             return True
 
     # An unclosed fenced block is another strong structural signal of truncation.
-    return str(text or "").count("```") % 2 == 1
+    value = str(text or "")
+    if value.count("```") % 2 == 1:
+        return True
+
+    # Also catch a code payload that stops directly after an unfinished operator.
+    has_code_payload = (
+        "[[file:" in lowered
+        or "[[github_file:" in lowered
+        or "```" in value
+    )
+    if has_code_payload:
+        last_line = next((line.strip() for line in reversed(value.splitlines()) if line.strip()), "")
+        if re.search(r"(?:\\+=|-=|\\*=|/=|//=|%=|(?<![=!<>])=(?!=)|[+*/%&|^])\\s*$", last_line):
+            return True
+        if re.search(r"\\b(?:and|or|not|return|raise|yield|await)\\s*$", last_line, re.IGNORECASE):
+            return True
+    return False
 
 
 
