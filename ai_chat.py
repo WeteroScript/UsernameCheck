@@ -1961,6 +1961,7 @@ async def _request_model(
     on_delta: Optional[Callable[[str], Awaitable[None]]] = None,
     on_usage: Optional[Callable[[Dict[str, Any]], Awaitable[None]]] = None,
     effort: Optional[str] = None,
+    _retry_attempt: int = 0,
 ) -> str:
     custom_api = _custom_api_pair(user_id) if user_id is not None else None
     if custom_api is not None:
@@ -2078,10 +2079,27 @@ async def _request_model(
                                 model, time.monotonic() - started_at,
                             )
                             return fallback_result
-                    if response.status == 502:
+                    if response.status in (500, 502, 503, 504) and _retry_attempt < 2:
+                        delay = (2, 5)[_retry_attempt]
+                        logging.warning(
+                            "TokenPlan temporary HTTP error: model=%s status=%s attempt=%s/3 retry_in=%ss request_id=%s",
+                            model, response.status, _retry_attempt + 1, delay, request_id or "-",
+                        )
+                        await asyncio.sleep(delay)
+                        return await _request_model(
+                            model,
+                            previous_messages,
+                            user_text,
+                            user_id=user_id,
+                            on_delta=on_delta,
+                            on_usage=on_usage,
+                            effort=effort,
+                            _retry_attempt=_retry_attempt + 1,
+                        )
+                    if response.status in (500, 502, 503, 504):
                         detail = (
-                            f"{detail}. HTTP 502 вернул API-шлюз или вышестоящий провайдер; "
-                            "общий timeout HTTP-клиента бота отключён."
+                            f"{detail}. Временная ошибка API-шлюза сохранялась после "
+                            "3 попыток (первичная + 2 повтора)."
                         )
                     raise RuntimeError(f"TokenPlan HTTP {response.status}: {detail}{request_suffix}")
 
