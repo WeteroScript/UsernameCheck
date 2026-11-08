@@ -558,10 +558,13 @@ def _cached_user_models(user_id: int) -> Optional[List[str]]:
 
 
 async def pause_ai_chat(user_id: int) -> None:
-    """Останавливает активный запрос пользователя при переходе в /start."""
+    """Останавливает активный запрос и цикл авто-запроса при переходе в /start."""
+    auto_task = _auto_tasks.get(user_id)
+    if auto_task and not auto_task.done():
+        auto_task.cancel()
     task = _active_tasks.get(user_id)
     waiting = _waiting_messages.get(user_id)
-    if task and not task.done():
+    if task and task is not auto_task and not task.done():
         task.cancel()
     if waiting:
         try:
@@ -897,7 +900,7 @@ def _models_keyboard(
     buttons = []
     for index, model in enumerate(models[start:start + page_size], start=start):
         label = model if len(model) <= 54 else model[:51] + "..."
-        if not custom_api and _is_paid_model(model):
+        if _is_paid_model(model):
             label = f"🔒 {label}"
         callback_data = (
             f"ai_chat_set_model_{chat_id}_{index}" if chat_id
@@ -2714,7 +2717,7 @@ async def ai_chat_set_model(callback: types.CallbackQuery, state: FSMContext):
         await callback.answer("Список моделей устарел. Открой выбор модели ещё раз.", show_alert=True)
         return
     model = models[index]
-    if not _has_custom_api(callback.from_user.id) and _is_paid_model(model) and not is_premium(callback.from_user.id):
+    if _is_paid_model(model) and not is_premium(callback.from_user.id):
         await callback.answer("Эта модель доступна только с премиум-доступом.", show_alert=True)
         return
     previous_model = chat.get("model")
@@ -2907,7 +2910,7 @@ async def ai_model_selected(callback: types.CallbackQuery, state: FSMContext):
         await callback.answer("Список моделей устарел. Открой выбор модели ещё раз.", show_alert=True)
         return
     model = models[index]
-    if not _has_custom_api(callback.from_user.id) and _is_paid_model(model) and not is_premium(callback.from_user.id):
+    if _is_paid_model(model) and not is_premium(callback.from_user.id):
         await callback.answer("Эта модель доступна только с премиум-доступом.", show_alert=True)
         return
 
@@ -2933,7 +2936,8 @@ async def ai_model_selected(callback: types.CallbackQuery, state: FSMContext):
     await callback.message.edit_text(
         f"✅ <b>Новый чат создан</b>\n\n"
         f"Модель: <code>{model}</code>\n\n"
-        "Диалог активен. Отправь сообщение, чтобы начать.",
+        + _ai_quota_text(user_id, model)
+        + "\n\nДиалог активен. Отправь сообщение, чтобы начать.",
         parse_mode="HTML",
     )
 
@@ -2953,8 +2957,9 @@ async def ai_open_chat(callback: types.CallbackQuery, state: FSMContext):
     await state.update_data(ai_chat_id=chat_id)
     await callback.answer()
     await callback.message.edit_text(
-        f"Диалог с моделью <code>{chat.get('model', 'неизвестна')}</code> выбран.\n"
-        "Отправь сообщение, чтобы продолжить диалог.",
+        f"Диалог с моделью <code>{chat.get('model', 'неизвестна')}</code> выбран.\n\n"
+        + _ai_quota_text(callback.from_user.id, str(chat.get("model") or "unknown"))
+        + "\n\nОтправь сообщение, чтобы продолжить диалог.",
         parse_mode="HTML",
         disable_web_page_preview=True,
     )
