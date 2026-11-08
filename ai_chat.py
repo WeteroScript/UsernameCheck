@@ -2624,7 +2624,7 @@ def _auto_turn_requires_checkpoint(chat: Optional[Dict[str, Any]]) -> bool:
     )
     if any(marker in last_answer for marker in checkpoint_markers):
         return True
-    return bool(re.search(r"(^|\\n)\\s*(готово|задача завершена|работа завершена)\\s*[:.!]", last_answer))
+    return bool(re.search(r"(^|\n)\s*(готово|задача завершена|работа завершена)\s*[:.!]", last_answer))
 
 
 async def _auto_request_loop(
