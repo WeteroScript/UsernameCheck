@@ -33,7 +33,7 @@ from aiogram.types import BufferedInputFile, InlineKeyboardButton, InlineKeyboar
 from dotenv import load_dotenv
 from cryptography.fernet import Fernet, InvalidToken
 from access_control import is_admin, is_premium
-from ai_usage import format_ai_quota, get_ai_quota, get_ai_usage_models, quota_block_reason, record_ai_usage, record_free_request
+from ai_usage import format_ai_quota, get_ai_quota, get_ai_usage_models, quota_block_reason, record_ai_usage, record_free_request, record_ai_request
 from github_integration import fetch_repository_context, create_repository_pull_request
 from storage import data_file, data_directory
 
@@ -3627,6 +3627,10 @@ async def _process_ai_chat_message(
     _last_request_at[user_id] = now
     _active_requests.add(user_id)
     _active_tasks[user_id] = asyncio.current_task()
+    try:
+        record_ai_request()
+    except Exception:
+        logging.exception("Не удалось обновить общий счётчик запросов ИИ")
     waiting = None
     progress_message = None
     waiting_timer = None
