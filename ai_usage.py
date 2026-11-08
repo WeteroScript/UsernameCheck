@@ -157,6 +157,27 @@ def get_ai_quota(user_id: int, model: str, premium: bool) -> Dict[str, Any]:
         }
 
 
+def get_ai_usage_models(user_id: int, limit: int = 10) -> list[str]:
+    """Return recently used model ids, newest usage first."""
+    now = time.time()
+    with _LOCK:
+        user = _user_data(user_id)
+        changed = _prune(user, now)
+        if changed:
+            _save()
+        model_events = [
+            (str(model), max(float(event["at"]) for event in events))
+            for model, events in user.get("models", {}).items()
+            if isinstance(events, list)
+            and any(
+                isinstance(event, dict) and isinstance(event.get("at"), (int, float))
+                for event in events
+            )
+        ]
+        model_events.sort(key=lambda item: item[1], reverse=True)
+        return [model for model, _ in model_events[:max(1, int(limit))]]
+
+
 def quota_block_reason(user_id: int, model: str, premium: bool) -> str | None:
     quota = get_ai_quota(user_id, model, premium)
     if not premium:
