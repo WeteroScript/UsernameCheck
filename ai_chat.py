@@ -2433,12 +2433,12 @@ async def ai_usage_overview(callback: types.CallbackQuery):
         )
         models = models[:10]
         if models:
-            quota_text = "\\n\\n".join(
+            quota_text = "\n\n".join(
                 format_ai_quota(user_id, model, True) for model in models
             )
         else:
             quota_text = (
-                "📊 <b>Лимиты Premium</b>\\n\\n"
+                "📊 <b>Лимиты Premium</b>\n\n"
                 "Расхода пока нет. После первого запроса здесь появятся счётчики "
                 "за 5 часов и 7 дней отдельно для каждой модели."
             )
