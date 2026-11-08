@@ -1881,6 +1881,16 @@ async def _request_claude_native(
             body_type = response.headers.get("Content-Type", "").lower()
             if response.status != 200:
                 body = await response.text()
+                if response.status == 502:
+                    request_id = (
+                        response.headers.get("x-request-id")
+                        or response.headers.get("cf-ray")
+                        or response.headers.get("x-correlation-id")
+                    )
+                    raise _TokenPlanHTTP502(
+                        body[:500] or "API-шлюз вернул HTTP 502",
+                        request_id,
+                    )
                 raise RuntimeError(
                     f"TokenPlan Claude API HTTP {response.status}: "
                     f"{body[:500] or 'Нет подробностей от сервера'}"
