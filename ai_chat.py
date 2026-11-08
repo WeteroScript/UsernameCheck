@@ -3407,7 +3407,7 @@ async def _process_ai_chat_message(
                 await _update_ai_progress(progress_message, "Повторно генерирует файлы для GitHub")
                 retry_reply = await _request_model(
                     model, retry_context, retry_instruction, user_id=user_id,
-                    on_usage=tracked_model_usage, effort=chat.get("reasoning_effort"),
+                    on_usage=tracked_model_usage, effort=effort_level,
                 )
                 retry_without_github_files, retry_github_files = _extract_github_files(retry_reply)
                 if retry_github_files:
