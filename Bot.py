@@ -676,6 +676,9 @@ async def home_category_menu(callback: types.CallbackQuery):
 
 @dp.callback_query(lambda c: c.data == "github_menu")
 async def github_menu(callback: types.CallbackQuery):
+    if not is_premium(callback.from_user.id):
+        await callback.answer("Подключение GitHub доступно только Premium.", show_alert=True)
+        return
     await callback.answer()
     user_id = callback.from_user.id
     installation = github_get_user_installation(user_id)
@@ -706,6 +709,9 @@ async def github_menu(callback: types.CallbackQuery):
 
 @dp.callback_query(lambda c: c.data == "github_connect")
 async def github_connect(callback: types.CallbackQuery):
+    if not is_premium(callback.from_user.id):
+        await callback.answer("Подключение GitHub доступно только Premium.", show_alert=True)
+        return
     await callback.answer()
     try:
         device = await github_request_device_code()
@@ -748,6 +754,9 @@ async def _github_finish_device_flow(message: types.Message, user_id: int, devic
 
 @dp.callback_query(lambda c: c.data == "github_repos")
 async def github_repositories(callback: types.CallbackQuery):
+    if not is_premium(callback.from_user.id):
+        await callback.answer("Просмотр репозиториев GitHub доступен только Premium.", show_alert=True)
+        return
     await callback.answer("Загружаю репозитории…")
     try:
         repositories = await github_list_user_repositories(callback.from_user.id)
@@ -778,6 +787,9 @@ async def github_repositories(callback: types.CallbackQuery):
 
 @dp.callback_query(lambda c: c.data == "github_disconnect")
 async def github_disconnect(callback: types.CallbackQuery):
+    if not is_premium(callback.from_user.id):
+        await callback.answer("Управление GitHub доступно только Premium.", show_alert=True)
+        return
     await callback.answer()
     github_remove_user_installation(callback.from_user.id)
     await callback.message.edit_text(
@@ -3011,13 +3023,13 @@ async def givepremium_command(message: types.Message):
         return
     args = message.text.split()
     if len(args) < 2:
-        await message.answer("Использование: /givepremium (юз/айди) (время премиума в днях, по умолчанию 1)")
+        await message.answer("Использование: /givepremium (юз/айди) (время премиума в днях, по умолчанию 30)")
         return
     target_id = await resolve_user_id(bot, args[1])
     if not target_id:
         await message.answer("❌ Не удалось найти пользователя.")
         return
-    days = 1.0
+    days = 30.0
     if len(args) >= 3:
         try:
             days = float(args[2])
