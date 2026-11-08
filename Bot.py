@@ -3352,10 +3352,6 @@ class AccessMiddleware(BaseMiddleware):
             return await handler(event, data)
 
         user_id = user.id
-        try:
-            register_known_user(user)
-        except Exception:
-            logging.exception("Не удалось обновить активность пользователя %s", user_id)
 
         if is_banned(user_id) and user_id != SUPER_ADMIN_ID:
             reason = get_ban_reason(user_id)
@@ -3368,6 +3364,11 @@ class AccessMiddleware(BaseMiddleware):
             except Exception:
                 pass
             return
+
+        try:
+            register_known_user(user)
+        except Exception:
+            logging.exception("Не удалось обновить активность пользователя %s", user_id)
 
         if is_admin(user_id):
             return await handler(event, data)
