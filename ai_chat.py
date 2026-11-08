@@ -69,6 +69,8 @@ _MAX_ZIP_MEMBER_BYTES = 16 * 1024 * 1024
 _MAX_ZIP_TOTAL_BYTES = 128 * 1024 * 1024
 _MAX_ZIP_TEXT_CHARS = 400_000
 _active_tasks: Dict[int, asyncio.Task] = {}
+_auto_tasks: Dict[int, asyncio.Task] = {}
+_auto_stop_events: Dict[int, asyncio.Event] = {}
 _waiting_messages: Dict[int, types.Message] = {}
 _MESSAGE_DEDUPE_TTL_SECONDS = 600
 _MAX_SEEN_AI_MESSAGES = 10000
@@ -2618,7 +2620,20 @@ async def ai_save_custom_api_url(message: types.Message, state: FSMContext):
 
 @router.message(AIChatStates.chatting)
 async def ai_chat_message(message: types.Message, state: FSMContext):
-    if _is_duplicate_ai_message(message):
+    auto_task = _auto_tasks.get(message.from_user.id)
+    if auto_task and auto_task is not asyncio.current_task() and not auto_task.done():
+        await message.answer("Сейчас работает авто-запрос. Останови его в меню «Авто-запрос», чтобы писать вручную.")
+        return
+    await _process_ai_chat_message(message, state)
+
+
+async def _process_ai_chat_message(
+    message: types.Message,
+    state: FSMContext,
+    user_text_override: Optional[str] = None,
+    skip_duplicate: bool = False,
+) -> bool:
+    if not skip_duplicate and _is_duplicate_ai_message(message):
         logging.warning(
             "Повторное Telegram-сообщение пропущено: chat_id=%s message_id=%s",
             message.chat.id,
@@ -2635,10 +2650,14 @@ async def ai_chat_message(message: types.Message, state: FSMContext):
         )
         return
 
-    user_text = (message.text or message.caption or "").strip()
+    user_text = (
+        user_text_override.strip()
+        if user_text_override is not None
+        else (message.text or message.caption or "").strip()
+    )
     uploaded_archive_text = None
     uploaded_archive_name = None
-    if message.document:
+    if user_text_override is None and message.document:
         try:
             document_text = await _document_to_text(message)
         except (ValueError, RuntimeError) as exc:
@@ -2684,7 +2703,11 @@ async def ai_chat_message(message: types.Message, state: FSMContext):
     if _is_paid_model(model) and not is_premium(user_id):
         await state.clear()
         await message.answer("Эта модель доступна только с премиум-доступом. Выбери другую модель.")
-        return
+        return False
+    if _ai_quota_error(user_id, model):
+        await message.answer(_ai_quota_error(user_id, model))
+        await message.answer(_ai_quota_text(user_id, model), parse_mode="HTML")
+        return False
     archive_followup = _is_archive_followup_request(
         user_text, chat.get("messages", [])
     )
@@ -2746,6 +2769,9 @@ async def ai_chat_message(message: types.Message, state: FSMContext):
         model_history = _history_without_old_files(stored_messages)
         repository_url = _extract_github_reference(user_text)
         repository_reference = repository_url or chat.get("github_repo")
+        if repository_reference and not is_premium(user_id):
+            await message.answer("Работа с GitHub доступна только с Premium.")
+            return False
         explicit_branch_name = _extract_github_branch_name(user_text)
         if explicit_branch_name:
             chat["github_target_branch"] = explicit_branch_name
@@ -2795,9 +2821,17 @@ async def ai_chat_message(message: types.Message, state: FSMContext):
                 await _update_ai_progress(progress_message, "Получает и формирует ответ модели")
             await on_model_delta(piece)
 
+        async def tracked_model_usage(usage: Dict[str, Any]) -> None:
+            record_ai_usage(user_id, model, usage)
+
         reply = await _request_model(
-            model, model_history, request_text, user_id=user_id, on_delta=tracked_model_delta
+            model, model_history, request_text, user_id=user_id,
+            on_delta=tracked_model_delta,
+            on_usage=tracked_model_usage,
+            effort=chat.get("reasoning_effort"),
         )
+        if not is_premium(user_id):
+            record_free_request(user_id)
         reply_without_github_files, github_files = _extract_github_files(reply)
         visible_reply, generated_files, empty_files = _extract_generated_files(reply_without_github_files)
 
