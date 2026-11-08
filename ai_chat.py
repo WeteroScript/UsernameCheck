@@ -2293,6 +2293,86 @@ async def ai_chat_settings(callback: types.CallbackQuery, state: FSMContext):
     )
 
 
+@router.callback_query(lambda callback: callback.data and callback.data.startswith("ai_chat_quota_"))
+async def ai_chat_quota(callback: types.CallbackQuery):
+    chat_id = callback.data[len("ai_chat_quota_"):]
+    chat = _find_chat(callback.from_user.id, chat_id)
+    if not chat:
+        await callback.answer("Чат не найден.", show_alert=True)
+        return
+    model = str(chat.get("model") or "unknown")
+    await callback.answer()
+    await callback.message.edit_text(
+        _ai_quota_text(callback.from_user.id, model),
+        parse_mode="HTML",
+        reply_markup=_chat_settings_keyboard(chat_id, model),
+    )
+
+
+@router.callback_query(lambda callback: callback.data and callback.data.startswith("ai_chat_effort_"))
+async def ai_chat_effort(callback: types.CallbackQuery):
+    chat_id = callback.data[len("ai_chat_effort_"):]
+    chat = _find_chat(callback.from_user.id, chat_id)
+    if not chat:
+        await callback.answer("Чат не найден.", show_alert=True)
+        return
+    model = str(chat.get("model") or "")
+    if not _supports_effort(model):
+        await callback.answer("Для этой модели настройка усилия не поддерживается.", show_alert=True)
+        return
+    current = chat.get("reasoning_effort")
+    current_label = next(
+        (label for value, label in _effort_levels(model) if value == current),
+        "По умолчанию",
+    )
+    await callback.answer()
+    await callback.message.edit_text(
+        "<b>🧠 Усиление модели</b>\n\n"
+        f"Модель: <code>{html.escape(model)}</code>\n"
+        f"Текущий режим: <b>{current_label}</b>\n\n"
+        "Более высокое усилие обычно увеличивает глубину анализа и расход токенов. "
+        "Доступность параметра зависит от поддержки со стороны TokenPlan и конкретной модели.",
+        parse_mode="HTML",
+        reply_markup=_effort_keyboard(chat_id, model, current),
+    )
+
+
+@router.callback_query(lambda callback: callback.data and callback.data.startswith("ai_effort_set_"))
+async def ai_effort_set(callback: types.CallbackQuery):
+    payload = callback.data[len("ai_effort_set_"):]
+    chat_id, separator, level = payload.rpartition("_")
+    chat = _find_chat(callback.from_user.id, chat_id)
+    if not separator or not chat:
+        await callback.answer("Чат не найден.", show_alert=True)
+        return
+    model = str(chat.get("model") or "")
+    allowed = {value for value, _ in _effort_levels(model)}
+    if level == "default":
+        chat.pop("reasoning_effort", None)
+    elif level in allowed:
+        chat["reasoning_effort"] = level
+    else:
+        await callback.answer("Недопустимый уровень усилия для этой модели.", show_alert=True)
+        return
+    chat["updated_at"] = _now()
+    if not _save_history():
+        await callback.answer("Не удалось сохранить настройку.", show_alert=True)
+        return
+    await callback.answer("Уровень усилия сохранён.")
+    current = chat.get("reasoning_effort")
+    current_label = next(
+        (label for value, label in _effort_levels(model) if value == current),
+        "По умолчанию",
+    )
+    await callback.message.edit_text(
+        "<b>🧠 Усиление модели</b>\n\n"
+        f"Модель: <code>{html.escape(model)}</code>\n"
+        f"Текущий режим: <b>{current_label}</b>",
+        parse_mode="HTML",
+        reply_markup=_effort_keyboard(chat_id, model, current),
+    )
+
+
 @router.callback_query(lambda callback: callback.data and callback.data.startswith("ai_chat_change_model_"))
 async def ai_chat_change_model(callback: types.CallbackQuery, state: FSMContext):
     chat_id = callback.data[len("ai_chat_change_model_"):]
