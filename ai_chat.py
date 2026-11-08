@@ -33,7 +33,7 @@ from aiogram.types import BufferedInputFile, InlineKeyboardButton, InlineKeyboar
 from dotenv import load_dotenv
 from cryptography.fernet import Fernet, InvalidToken
 from access_control import is_premium
-from ai_usage import format_ai_quota, get_ai_quota, quota_block_reason, record_ai_usage, record_free_request
+from ai_usage import format_ai_quota, get_ai_quota, get_ai_usage_models, quota_block_reason, record_ai_usage, record_free_request
 from github_integration import fetch_repository_context, create_repository_pull_request
 from storage import data_file, data_directory
 
@@ -764,7 +764,7 @@ def _auto_request_screen_text(user_id: int, status: Optional[str] = None) -> str
         f"Запрос: <i>{prompt_preview}</i>\n"
         f"Чат: {chat_label}\n"
         f"Состояние: <b>{state_label}</b>\n\n"
-        "Повторение выполняется с паузой 10 секунд после каждого ответа. "
+        "Повторение запускается после ответа, но не чаще одного раза в 5 секунд. "
         "На каждый цикл действуют общие лимиты ИИ."
     )
 
@@ -776,6 +776,7 @@ def _root_keyboard() -> InlineKeyboardMarkup:
             InlineKeyboardButton(text="📁 Мои чаты", callback_data="ai_my_chats", style=ButtonStyle.PRIMARY),
         ],
         [InlineKeyboardButton(text="🔁 Авто-запрос", callback_data="ai_auto", style=ButtonStyle.SUCCESS)],
+        [InlineKeyboardButton(text="📊 Лимиты и расход", callback_data="ai_usage_overview", style=ButtonStyle.PRIMARY)],
         [
             InlineKeyboardButton(text="⚙️", callback_data="ai_settings", style=ButtonStyle.PRIMARY),
             InlineKeyboardButton(text="🐙 GitHub", callback_data="github_menu", style=ButtonStyle.PRIMARY),
@@ -2269,8 +2270,8 @@ async def ai_auto_set_chat(callback: types.CallbackQuery):
 @router.callback_query(lambda callback: callback.data == "ai_auto_help")
 async def ai_auto_help(callback: types.CallbackQuery):
     await callback.answer(
-        "Старт: повторяет запрос после каждого ответа с паузой 10 с. Стоп: ждёт текущий ответ, "
-        "отправляет ещё один финальный запрос и останавливается. Ответы идут в выбранный чат; лимиты действуют.",
+        "Старт: повторяет запрос после каждого ответа (не чаще раза в 5 с). "
+        "Стоп: ждёт текущий ответ, отправляет ещё один финальный запрос и останавливается. Лимиты действуют.",
         show_alert=True,
     )
 
@@ -2286,7 +2287,6 @@ async def _auto_request_loop(
     stop_event: asyncio.Event,
 ) -> None:
     fake_message = _AutoRequestMessage(bot, user, target_chat)
-    completed = 0
     stopped_by_error = False
     try:
         while True:
@@ -2298,9 +2298,8 @@ async def _auto_request_loop(
             if not success:
                 stopped_by_error = True
                 break
-            completed += 1
             if stop_event.is_set():
-                # Не запускаем финальный запрос раньше общего cooldown в 5 секунд.
+                # Stop выполняет один дополнительный запрос после завершения текущего.
                 remaining = REQUEST_COOLDOWN_SECONDS - (
                     time.monotonic() - _last_request_at.get(user.id, 0.0)
                 )
@@ -2312,22 +2311,28 @@ async def _auto_request_loop(
                     fake_message, state, user_text_override=prompt, skip_duplicate=True
                 )
                 break
-            try:
-                await asyncio.wait_for(stop_event.wait(), timeout=10)
-            except asyncio.TimeoutError:
-                continue
-            if stop_event.is_set():
-                remaining = REQUEST_COOLDOWN_SECONDS - (
-                    time.monotonic() - _last_request_at.get(user.id, 0.0)
-                )
-                if remaining > 0:
-                    await asyncio.sleep(remaining + 0.1)
-                await state.set_state(AIChatStates.chatting)
-                await state.update_data(ai_chat_id=chat_id)
-                await _process_ai_chat_message(
-                    fake_message, state, user_text_override=prompt, skip_duplicate=True
-                )
-                break
+
+            # Следующий цикл начинается сразу после ответа, но не чаще одного раза в 5 секунд.
+            remaining = REQUEST_COOLDOWN_SECONDS - (
+                time.monotonic() - _last_request_at.get(user.id, 0.0)
+            )
+            if remaining > 0:
+                try:
+                    await asyncio.wait_for(stop_event.wait(), timeout=remaining)
+                except asyncio.TimeoutError:
+                    continue
+                if stop_event.is_set():
+                    remaining = REQUEST_COOLDOWN_SECONDS - (
+                        time.monotonic() - _last_request_at.get(user.id, 0.0)
+                    )
+                    if remaining > 0:
+                        await asyncio.sleep(remaining + 0.1)
+                    await state.set_state(AIChatStates.chatting)
+                    await state.update_data(ai_chat_id=chat_id)
+                    await _process_ai_chat_message(
+                        fake_message, state, user_text_override=prompt, skip_duplicate=True
+                    )
+                    break
     except asyncio.CancelledError:
         raise
     except Exception:
@@ -2410,6 +2415,40 @@ async def ai_auto_toggle(callback: types.CallbackQuery, state: FSMContext):
         _auto_request_screen_text(user_id, "работает"),
         parse_mode="HTML",
         reply_markup=_auto_request_keyboard(user_id),
+    )
+
+
+@router.callback_query(lambda callback: callback.data == "ai_usage_overview")
+async def ai_usage_overview(callback: types.CallbackQuery):
+    user_id = callback.from_user.id
+    await callback.answer()
+    if not is_premium(user_id):
+        quota_text = format_ai_quota(user_id, "", False)
+    else:
+        models = get_ai_usage_models(user_id, limit=10)
+        models.extend(
+            str(chat.get("model") or "")
+            for chat in _user_chats(user_id)
+            if chat.get("model") and str(chat.get("model")) not in models
+        )
+        models = models[:10]
+        if models:
+            quota_text = "\\n\\n".join(
+                format_ai_quota(user_id, model, True) for model in models
+            )
+        else:
+            quota_text = (
+                "📊 <b>Лимиты Premium</b>\\n\\n"
+                "Расхода пока нет. После первого запроса здесь появятся счётчики "
+                "за 5 часов и 7 дней отдельно для каждой модели."
+            )
+    await callback.message.edit_text(
+        quota_text,
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🔄 Обновить", callback_data="ai_usage_overview")],
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data="ai_menu")],
+        ]),
     )
 
 
