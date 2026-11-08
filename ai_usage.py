@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Dict
 
 from storage import data_file
+from access_control import is_admin, is_premium
 
 USAGE_PATH = Path(data_file(os.getenv("AI_USAGE_FILE", "ai_usage.json")))
 FREE_REQUESTS_PER_WEEK = 5
@@ -91,7 +92,7 @@ def _prune(user: Dict[str, Any], now: float) -> bool:
 
 
 def record_ai_usage(user_id: int, model: str, usage: Dict[str, Any]) -> None:
-    """Record provider token usage. Usage may be exact or explicitly estimated."""
+    """Record quota usage; Premium users consume twice the recorded token allowance."""
     total = max(0, int(usage.get("total_tokens") or 0))
     prompt = max(0, int(usage.get("prompt_tokens") or 0))
     completion = max(0, int(usage.get("completion_tokens") or 0))
@@ -99,6 +100,12 @@ def record_ai_usage(user_id: int, model: str, usage: Dict[str, Any]) -> None:
         total = prompt + completion
     if total <= 0:
         return
+
+    # Administrators have unlimited access and are not charged against a quota.
+    if is_premium(user_id) and not is_admin(user_id):
+        total *= 2
+        prompt *= 2
+        completion *= 2
     now = time.time()
     with _LOCK:
         user = _user_data(user_id)
@@ -112,6 +119,28 @@ def record_ai_usage(user_id: int, model: str, usage: Dict[str, Any]) -> None:
             "estimated": bool(usage.get("estimated")),
         })
         _save()
+
+
+def record_ai_request() -> None:
+    """Increment the lifetime counter once for each user-initiated AI request."""
+    with _LOCK:
+        meta = _DATA.setdefault("_meta", {})
+        if not isinstance(meta, dict):
+            meta = {}
+            _DATA["_meta"] = meta
+        meta["ai_requests_total"] = max(0, int(meta.get("ai_requests_total") or 0)) + 1
+        _save()
+
+
+def get_ai_request_total() -> int:
+    with _LOCK:
+        meta = _DATA.get("_meta", {})
+        if not isinstance(meta, dict):
+            return 0
+        try:
+            return max(0, int(meta.get("ai_requests_total") or 0))
+        except (TypeError, ValueError):
+            return 0
 
 
 def record_free_request(user_id: int) -> None:
