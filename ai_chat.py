@@ -32,7 +32,7 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import BufferedInputFile, InlineKeyboardButton, InlineKeyboardMarkup
 from dotenv import load_dotenv
 from cryptography.fernet import Fernet, InvalidToken
-from access_control import is_premium
+from access_control import is_admin, is_premium
 from ai_usage import format_ai_quota, get_ai_quota, get_ai_usage_models, quota_block_reason, record_ai_usage, record_free_request
 from github_integration import fetch_repository_context, create_repository_pull_request
 from storage import data_file, data_directory
@@ -895,10 +895,17 @@ def _effort_keyboard(chat_id: str, model: str, current: Optional[str]) -> Inline
 
 
 def _ai_quota_text(user_id: int, model: str) -> str:
+    if is_admin(user_id):
+        return (
+            "📊 <b>Администраторский доступ</b>\n"
+            "Лимиты ИИ: <b>без ограничений</b>."
+        )
     return format_ai_quota(user_id, model, is_premium(user_id))
 
 
 def _ai_quota_error(user_id: int, model: str) -> Optional[str]:
+    if is_admin(user_id):
+        return None
     return quota_block_reason(user_id, model, is_premium(user_id))
 
 
@@ -2166,7 +2173,9 @@ async def ai_menu(callback: types.CallbackQuery, state: FSMContext):
     user_id = callback.from_user.id
     chats = _user_chats(user_id)
     premium = is_premium(user_id)
-    if premium:
+    if is_admin(user_id):
+        quota_text = "\n\nАдминистраторский доступ: лимиты ИИ отключены."
+    elif premium:
         quota_text = (
             "\n\nТокены учитываются отдельно для каждой модели. "
             "Открой настройки нужного чата, чтобы увидеть расход за 5 часов и 7 дней."
@@ -2482,7 +2491,12 @@ async def ai_auto_toggle(callback: types.CallbackQuery, state: FSMContext):
 async def ai_usage_overview(callback: types.CallbackQuery):
     user_id = callback.from_user.id
     await callback.answer()
-    if not is_premium(user_id):
+    if is_admin(user_id):
+        quota_text = (
+            "📊 <b>Администраторский доступ</b>\n\n"
+            "Бесплатные запросы и токены: <b>без ограничений</b>."
+        )
+    elif not is_premium(user_id):
         quota_text = format_ai_quota(user_id, "", False)
     else:
         models = get_ai_usage_models(user_id, limit=10)
@@ -3402,6 +3416,8 @@ async def _process_ai_chat_message(
             effort_level = None
 
         async def tracked_model_usage(usage: Dict[str, Any]) -> None:
+            if is_admin(user_id):
+                return
             try:
                 record_ai_usage(user_id, model, usage)
             except Exception:
