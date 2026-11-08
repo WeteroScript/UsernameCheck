@@ -107,14 +107,25 @@ def is_premium(user_id: int) -> bool:
         return False
     expiry = info.get("expires_at")
     if expiry is None:
-        return True  # бессрочный премиум
+        # Миграция прежних бессрочных записей: Premium действует 30 дней
+        # с исходной даты выдачи, а не сохраняется навсегда.
+        try:
+            granted_at = datetime.fromisoformat(str(info.get("granted_at") or ""))
+        except (TypeError, ValueError):
+            granted_at = datetime.now()
+        expiry = (granted_at + timedelta(days=30)).isoformat()
+        info["expires_at"] = expiry
+        _save_premium()
     try:
-        if datetime.fromisoformat(expiry) <= datetime.now():
+        if datetime.fromisoformat(str(expiry)) <= datetime.now():
             del _premium[user_id]
             _save_premium()
             return False
-    except Exception:
-        pass
+    except (TypeError, ValueError):
+        # Повреждённая дата не должна превращаться в бессрочный Premium.
+        del _premium[user_id]
+        _save_premium()
+        return False
     return True
 
 
@@ -144,11 +155,13 @@ def get_all_admins() -> List[int]:
 
 # ============ УПРАВЛЕНИЕ ПРЕМИУМОМ ============
 
-def grant_premium(user_id: int, granted_by: Optional[int] = None, days: float = 1) -> bool:
+def grant_premium(user_id: int, granted_by: Optional[int] = None, days: float = 30) -> bool:
     is_new = user_id not in _premium
-    expiry = None
-    if days is not None and days > 0:
-        expiry = (datetime.now() + timedelta(days=days)).isoformat()
+    # Premium выдаётся на ограниченный срок; None также означает стандартные 30 дней.
+    duration_days = 30 if days is None else float(days)
+    if duration_days <= 0:
+        raise ValueError("Срок Premium должен быть больше нуля")
+    expiry = (datetime.now() + timedelta(days=duration_days)).isoformat()
     _premium[user_id] = {
         "granted_at": datetime.now().isoformat(),
         "granted_by": granted_by,
