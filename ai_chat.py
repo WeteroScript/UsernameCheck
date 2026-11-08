@@ -1876,9 +1876,9 @@ def _has_incomplete_structured_output(text: str) -> bool:
     )
     if has_code_payload:
         last_line = next((line.strip() for line in reversed(value.splitlines()) if line.strip()), "")
-        if re.search(r"(?:\\+=|-=|\\*=|/=|//=|%=|(?<![=!<>])=(?!=)|[+*/%&|^])\\s*$", last_line):
+        if re.search(r"(?:\+=|-=|\*=|/=|//=|%=|(?<![=!<>])=(?!=)|[+*/%&|^])\s*$", last_line):
             return True
-        if re.search(r"\\b(?:and|or|not|return|raise|yield|await)\\s*$", last_line, re.IGNORECASE):
+        if re.search(r"\b(?:and|or|not|return|raise|yield|await)\s*$", last_line, re.IGNORECASE):
             return True
     return False
 
