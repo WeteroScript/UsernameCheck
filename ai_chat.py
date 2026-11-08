@@ -2588,10 +2588,43 @@ async def ai_auto_help(callback: types.CallbackQuery):
         await callback.answer("Авто-запрос доступен только пользователям Premium.", show_alert=True)
         return
     await callback.answer(
-        "Старт: повторяет запрос после каждого ответа (не чаще раза в 5 с). "
-        "Стоп: ждёт текущий ответ, отправляет ещё один финальный запрос и останавливается. Лимиты действуют.",
+        "Старт: повторяет запрос после каждого ответа (не чаще раза в 5 с), пока модель не завершит этап "
+        "или не внесёт изменения в GitHub. На такой контрольной точке автоповтор останавливается. "
+        "Стоп: ждёт текущий ответ и не запускает следующий цикл. Лимиты действуют.",
         show_alert=True,
     )
+
+
+def _auto_turn_requires_checkpoint(chat: Optional[Dict[str, Any]]) -> bool:
+    """Останавливает автоповтор на завершённом этапе и после побочных действий в GitHub."""
+    if not chat:
+        return False
+    last_answer = next(
+        (
+            str(item.get("content") or "")
+            for item in reversed(chat.get("messages", []))
+            if isinstance(item, dict) and item.get("role") == "assistant"
+        ),
+        "",
+    ).strip().lower()
+    if not last_answer:
+        return False
+
+    checkpoint_markers = (
+        "следующий этап",
+        "продолжать ли",
+        "продолжать?",
+        "подтверди следующий этап",
+        "приступать к работе?",
+        "изменения записаны непосредственно в ветку",
+        "изменения отправлены в github",
+        "pull request:",
+        "задача полностью завершена",
+        "все этапы завершены",
+    )
+    if any(marker in last_answer for marker in checkpoint_markers):
+        return True
+    return bool(re.search(r"(^|\\n)\\s*(готово|задача завершена|работа завершена)\\s*[:.!]", last_answer))
 
 
 async def _auto_request_loop(
@@ -2607,6 +2640,7 @@ async def _auto_request_loop(
     fake_message = _AutoRequestMessage(bot, user, target_chat)
     stopped_by_error = False
     stop_reason = "Остановлен."
+
     async def run_turn() -> bool:
         await state.set_state(AIChatStates.chatting)
         await state.update_data(ai_chat_id=chat_id)
@@ -2617,14 +2651,11 @@ async def _auto_request_loop(
             skip_duplicate=True,
         )
 
-    async def wait_for_request_cooldown(interruptible: bool = True) -> None:
+    async def wait_for_request_cooldown() -> None:
         remaining = REQUEST_COOLDOWN_SECONDS - (
             time.monotonic() - _last_request_at.get(user.id, 0.0)
         )
         if remaining <= 0:
-            return
-        if not interruptible or stop_event.is_set():
-            await asyncio.sleep(remaining + 0.15)
             return
         try:
             await asyncio.wait_for(stop_event.wait(), timeout=remaining + 0.15)
@@ -2638,19 +2669,10 @@ async def _auto_request_loop(
                 stop_reason = "Premium истёк. Авто-запрос остановлен."
                 break
 
+            # Остановка теперь означает «не запускать следующий цикл».
+            # Никакого дополнительного финального запроса после нажатия «Стоп».
             if stop_event.is_set():
-                # Стоп: дождаться допустимого интервала, отправить ровно один последний запрос.
-                await wait_for_request_cooldown(interruptible=False)
-                if not is_premium(user.id):
-                    stopped_by_error = True
-                    stop_reason = "Premium истёк. Финальный запрос не отправлен."
-                    break
-                final_success = await run_turn()
-                if not final_success:
-                    stopped_by_error = True
-                    stop_reason = "Остановлен: финальный запрос не выполнен из-за ошибки или лимита."
-                else:
-                    stop_reason = "Остановлен после финального запроса."
+                stop_reason = "Остановлен после текущего ответа."
                 break
 
             success = await run_turn()
@@ -2659,7 +2681,19 @@ async def _auto_request_loop(
                 stop_reason = "Остановлен из-за ошибки или исчерпания лимита."
                 break
 
-            # Следующий запрос начинается сразу после ответа, но не чаще одного раза в 5 секунд.
+            chat = _find_chat(user.id, chat_id)
+            if _auto_turn_requires_checkpoint(chat):
+                stop_reason = (
+                    "Пауза на контрольной точке: этап завершён или внесены изменения в GitHub. "
+                    "Проверь результат и подтверди дальнейшую работу вручную."
+                )
+                break
+
+            if stop_event.is_set():
+                stop_reason = "Остановлен после текущего ответа."
+                break
+
+            # Повторяем только пока модель не выдала контрольную точку.
             await wait_for_request_cooldown()
     except asyncio.CancelledError:
         raise
@@ -2671,18 +2705,11 @@ async def _auto_request_loop(
         _auto_tasks.pop(user.id, None)
         _auto_stop_events.pop(user.id, None)
         try:
-            if stopped_by_error:
-                await status_message.edit_text(
-                    _auto_request_screen_text(user.id, stop_reason),
-                    parse_mode="HTML",
-                    reply_markup=_auto_request_keyboard(user.id),
-                )
-            else:
-                await status_message.edit_text(
-                    _auto_request_screen_text(user.id, stop_reason),
-                    parse_mode="HTML",
-                    reply_markup=_auto_request_keyboard(user.id),
-                )
+            await status_message.edit_text(
+                _auto_request_screen_text(user.id, stop_reason),
+                parse_mode="HTML",
+                reply_markup=_auto_request_keyboard(user.id),
+            )
         except Exception:
             logging.debug("Не удалось обновить меню авто-запроса", exc_info=True)
 
@@ -2696,11 +2723,11 @@ async def ai_auto_toggle(callback: types.CallbackQuery, state: FSMContext):
         if stop_event:
             stop_event.set()
         await callback.answer(
-            "Текущий ответ завершится, затем бот отправит ещё один финальный запрос и остановится.",
+            "Текущий ответ завершится. Следующий запрос запускаться не будет.",
             show_alert=True,
         )
         await callback.message.edit_text(
-            _auto_request_screen_text(user_id, "остановка после финального запроса"),
+            _auto_request_screen_text(user_id, "остановка после текущего ответа"),
             parse_mode="HTML",
             reply_markup=_auto_request_keyboard(user_id),
         )
