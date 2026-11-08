@@ -3519,7 +3519,15 @@ async def _process_ai_chat_message(
                     on_usage=tracked_model_usage,
                     effort=None,
                 )
-                verdict_word = verdict.strip().splitlines()[0].strip().strip("*_.,:;! ").upper()
+                verdict_text = verdict.strip().upper()
+                # DeepSeek иногда добавляет пояснение или Markdown вокруг вердикта.
+                # Ищем самостоятельный токен во всём ответе, а не только первую строку.
+                if re.search(r"\\bINCOMPLETE\\b", verdict_text):
+                    verdict_word = "INCOMPLETE"
+                elif re.search(r"\\bCOMPLETE\\b", verdict_text):
+                    verdict_word = "COMPLETE"
+                else:
+                    verdict_word = verdict_text.splitlines()[0].strip().strip("*_`.,:;! ") if verdict_text else ""
                 logging.info(
                     "DeepSeek auto completion check: model=%s user_id=%s attempt=%s verdict=%s chars=%s",
                     model, user_id, completion_attempt + 1, verdict_word[:40], len(reply),
