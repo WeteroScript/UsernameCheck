@@ -2144,7 +2144,6 @@ async def ai_menu(callback: types.CallbackQuery, state: FSMContext):
     chats = _user_chats(user_id)
     premium = is_premium(user_id)
     if premium:
-        models = list(dict.fromkeys(str(item.get("model") or "") for item in chats if item.get("model")))
         quota_text = (
             "\n\nТокены учитываются отдельно для каждой модели. "
             "Открой настройки нужного чата, чтобы увидеть расход за 5 часов и 7 дней."
@@ -2270,9 +2269,8 @@ async def ai_auto_set_chat(callback: types.CallbackQuery):
 @router.callback_query(lambda callback: callback.data == "ai_auto_help")
 async def ai_auto_help(callback: types.CallbackQuery):
     await callback.answer(
-        "Старт: отправляет запрос выбранной модели и повторяет его после каждого ответа "
-        "(пауза 10 секунд). Стоп: дожидается текущего ответа, отправляет ещё один финальный "
-        "запрос и останавливается. Все ответы приходят в выбранный чат. Лимиты и расход токенов учитываются.",
+        "Старт: повторяет запрос после каждого ответа с паузой 10 с. Стоп: ждёт текущий ответ, "
+        "отправляет ещё один финальный запрос и останавливается. Ответы идут в выбранный чат; лимиты действуют.",
         show_alert=True,
     )
 
@@ -2302,7 +2300,12 @@ async def _auto_request_loop(
                 break
             completed += 1
             if stop_event.is_set():
-                # Стоп означает один дополнительный завершающий запрос после текущего ответа.
+                # Не запускаем финальный запрос раньше общего cooldown в 5 секунд.
+                remaining = REQUEST_COOLDOWN_SECONDS - (
+                    time.monotonic() - _last_request_at.get(user.id, 0.0)
+                )
+                if remaining > 0:
+                    await asyncio.sleep(remaining + 0.1)
                 await state.set_state(AIChatStates.chatting)
                 await state.update_data(ai_chat_id=chat_id)
                 await _process_ai_chat_message(
@@ -2314,6 +2317,11 @@ async def _auto_request_loop(
             except asyncio.TimeoutError:
                 continue
             if stop_event.is_set():
+                remaining = REQUEST_COOLDOWN_SECONDS - (
+                    time.monotonic() - _last_request_at.get(user.id, 0.0)
+                )
+                if remaining > 0:
+                    await asyncio.sleep(remaining + 0.1)
                 await state.set_state(AIChatStates.chatting)
                 await state.update_data(ai_chat_id=chat_id)
                 await _process_ai_chat_message(
@@ -3285,7 +3293,10 @@ async def _process_ai_chat_message(
             await on_model_delta(piece)
 
         async def tracked_model_usage(usage: Dict[str, Any]) -> None:
-            record_ai_usage(user_id, model, usage)
+            try:
+                record_ai_usage(user_id, model, usage)
+            except Exception:
+                logging.exception("Не удалось сохранить расход токенов для пользователя %s", user_id)
 
         reply = await _request_model(
             model, model_history, request_text, user_id=user_id,
@@ -3294,7 +3305,10 @@ async def _process_ai_chat_message(
             effort=chat.get("reasoning_effort"),
         )
         if not is_premium(user_id):
-            record_free_request(user_id)
+            try:
+                record_free_request(user_id)
+            except Exception:
+                logging.exception("Не удалось сохранить бесплатный запрос пользователя %s", user_id)
         reply_without_github_files, github_files = _extract_github_files(reply)
         visible_reply, generated_files, empty_files = _extract_generated_files(reply_without_github_files)
 
