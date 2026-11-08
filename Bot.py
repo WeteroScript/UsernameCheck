@@ -5,7 +5,7 @@ import json
 import html
 import re
 import random
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Dict, Optional, List, Any
 from aiogram import Bot, Dispatcher, types, BaseMiddleware
 from aiogram.client.session.aiohttp import AiohttpSession
@@ -21,6 +21,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from storage import data_file, data_directory
+from ai_usage import get_ai_request_total
 
 from i18n import tr
 from premium_payments import init_premium_payments
@@ -331,13 +332,60 @@ def save_known_users():
 
 def register_known_user(user: types.User):
     previous = known_users.get(user.id, {})
+    now = datetime.now()
+    last_active = previous.get("last_active_at")
+    touch_activity = not last_active
+    if last_active:
+        try:
+            last_active_dt = datetime.fromisoformat(str(last_active).replace("Z", "+00:00"))
+            if last_active_dt.tzinfo is not None:
+                last_active_dt = last_active_dt.astimezone().replace(tzinfo=None)
+            touch_activity = (now - last_active_dt).total_seconds() >= 300
+        except (TypeError, ValueError):
+            touch_activity = True
+
     current = {
         "username": user.username,
-        "registered_at": previous.get("registered_at") or datetime.now().isoformat(),
+        "registered_at": previous.get("registered_at") or now.isoformat(),
+        "last_active_at": now.isoformat() if touch_activity else last_active,
     }
     if previous != current:
         known_users[user.id] = current
         save_known_users()
+
+
+def _parse_user_stat_datetime(value: Any) -> Optional[datetime]:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        if parsed.tzinfo is not None:
+            parsed = parsed.astimezone().replace(tzinfo=None)
+        return parsed
+    except (TypeError, ValueError):
+        return None
+
+
+def get_admin_statistics() -> Dict[str, int]:
+    """Return user and AI counters; activity/new registrations use a rolling 24h window."""
+    cutoff = datetime.now() - timedelta(hours=24)
+    new_users = 0
+    active_users = 0
+    for record in known_users.values():
+        if not isinstance(record, dict):
+            continue
+        registered_at = _parse_user_stat_datetime(record.get("registered_at"))
+        last_active_at = _parse_user_stat_datetime(record.get("last_active_at"))
+        if registered_at and registered_at >= cutoff:
+            new_users += 1
+        if last_active_at and last_active_at >= cutoff:
+            active_users += 1
+    return {
+        "new_users_24h": new_users,
+        "total_users": len(known_users),
+        "ai_requests": get_ai_request_total(),
+        "active_users_24h": active_users,
+    }
 
 def set_session_config(user_id: int, phone: str, key: str, value: Any):
     config = get_session_config(user_id, phone)
@@ -2575,6 +2623,7 @@ def get_admin_panel_keyboard() -> InlineKeyboardMarkup:
     rows = []
     for group, (title, _) in ADMIN_COMMAND_GROUPS.items():
         rows.append([InlineKeyboardButton(text=title, callback_data=f"adm_group_{group}")])
+    rows.append([InlineKeyboardButton(text="📊 Статистика", callback_data="adm_stats")])
     rows.append([InlineKeyboardButton(text="🎛 Управление кнопками", callback_data="adm_buttons")])
     rows.append([InlineKeyboardButton(text="⬅️ Главное меню", callback_data="main")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
@@ -2626,6 +2675,32 @@ async def adm_help_callback(callback: types.CallbackQuery, state: FSMContext):
         "Все команды собраны по разделам. Выбери, чем нужно заняться:",
         parse_mode=ParseMode.HTML,
         reply_markup=get_admin_panel_keyboard(),
+    )
+
+
+@dp.callback_query(lambda c: c.data == "adm_stats")
+async def adm_stats_callback(callback: types.CallbackQuery, state: FSMContext):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Недостаточно прав.", show_alert=True)
+        return
+    await state.clear()
+    stats = get_admin_statistics()
+    await callback.answer()
+    text = (
+        "📊 <b>Статистика бота</b>\n\n"
+        f"1. Новые пользователи за сутки: <b>{stats['new_users_24h']}</b>\n"
+        f"2. Всего пользователей: <b>{stats['total_users']}</b>\n"
+        f"3. Запросов для ИИ: <b>{stats['ai_requests']}</b>\n"
+        f"4. Активных пользователей за сутки: <b>{stats['active_users_24h']}</b>\n\n"
+        "<i>Активность и новые регистрации считаются за последние 24 часа.</i>"
+    )
+    await safe_edit_message(
+        callback.message,
+        text,
+        parse_mode=ParseMode.HTML,
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data="adm_help")]
+        ]),
     )
 
 
@@ -3277,6 +3352,10 @@ class AccessMiddleware(BaseMiddleware):
             return await handler(event, data)
 
         user_id = user.id
+        try:
+            register_known_user(user)
+        except Exception:
+            logging.exception("Не удалось обновить активность пользователя %s", user_id)
 
         if is_banned(user_id) and user_id != SUPER_ADMIN_ID:
             reason = get_ban_reason(user_id)
