@@ -2868,7 +2868,8 @@ async def _process_ai_chat_message(
             try:
                 await _update_ai_progress(progress_message, "Повторно генерирует файлы для GitHub")
                 retry_reply = await _request_model(
-                    model, retry_context, retry_instruction, user_id=user_id
+                    model, retry_context, retry_instruction, user_id=user_id,
+                    on_usage=tracked_model_usage, effort=chat.get("reasoning_effort"),
                 )
                 retry_without_github_files, retry_github_files = _extract_github_files(retry_reply)
                 if retry_github_files:
@@ -2963,7 +2964,10 @@ async def _process_ai_chat_message(
             )
             try:
                 await _update_ai_progress(progress_message, "Повторно запрашивает недостающие файлы")
-                retry_reply = await _request_model(model, retry_context, retry_instruction, user_id=user_id)
+                retry_reply = await _request_model(
+                    model, retry_context, retry_instruction, user_id=user_id,
+                    on_usage=tracked_model_usage, effort=chat.get("reasoning_effort"),
+                )
                 retry_visible, retry_files, retry_empty_files = _extract_generated_files(retry_reply)
                 if retry_files:
                     reply = retry_reply
@@ -3057,6 +3061,8 @@ async def _process_ai_chat_message(
                 await waiting.edit_text("✅ ИИ закончил отвечать.")
             except Exception:
                 logging.debug("Не удалось обновить финальный статус ИИ", exc_info=True)
+        await message.answer(_ai_quota_text(user_id, model), parse_mode="HTML")
+        return True
     except RuntimeError as exc:
         await _update_ai_progress(progress_message, "Завершено с ошибкой")
         await _stop_waiting_timer(waiting_timer)
@@ -3071,6 +3077,7 @@ async def _process_ai_chat_message(
             await message.answer(error_text)
         elif waiting:
             await waiting.edit_text(error_text)
+        return False
     except asyncio.CancelledError:
         await _update_ai_progress(progress_message, "Запрос прерван")
         if stream_display is not None and stream_display.has_visible_text:
@@ -3088,7 +3095,7 @@ async def _process_ai_chat_message(
                 await waiting.edit_text("Ответ прерван.")
             except Exception:
                 logging.debug("Не удалось обновить сообщение прерванного запроса", exc_info=True)
-        return
+        return False
     except Exception:
         await _update_ai_progress(progress_message, "Внутренняя ошибка")
         logging.exception("Непредвиденная ошибка при запросе к TokenPlan")
@@ -3102,6 +3109,7 @@ async def _process_ai_chat_message(
             await message.answer(error_text)
         elif waiting:
             await waiting.edit_text(error_text)
+        return False
     finally:
         try:
             await _stop_waiting_timer(waiting_timer)
