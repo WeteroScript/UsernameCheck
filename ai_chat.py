@@ -222,6 +222,27 @@ class AIChatStates(StatesGroup):
     waiting_api_url = State()
 
 
+class _AutoRequestMessage:
+    """Minimal Telegram message adapter so auto requests use the regular chat pipeline."""
+
+    def __init__(self, bot, user: types.User, chat: types.Chat) -> None:
+        self.bot = bot
+        self.from_user = user
+        self.chat = chat
+        self.message_id = int(time.time_ns() % 2_000_000_000)
+        self.text = ""
+        self.caption = None
+        self.document = None
+
+    async def answer(self, text: str, **kwargs):
+        return await self.bot.send_message(self.chat.id, text, **kwargs)
+
+    async def answer_document(self, document, caption: Optional[str] = None, **kwargs):
+        return await self.bot.send_document(
+            self.chat.id, document, caption=caption, **kwargs
+        )
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
@@ -752,6 +773,52 @@ def _is_paid_model(model: str) -> bool:
 def _supports_effort(model: str) -> bool:
     """Models with a documented effort control on their native API protocols."""
     return model.startswith("claude") or model.startswith(("gpt-5", "gpt-6", "deepseek-v4"))
+
+
+def _effort_levels(model: str) -> List[Tuple[str, str]]:
+    if model.startswith("claude"):
+        return [
+            ("low", "Низкое"),
+            ("medium", "Среднее"),
+            ("high", "Высокое"),
+            ("xhigh", "Очень высокое"),
+            ("max", "Максимальное"),
+        ]
+    if model.startswith(("gpt-5", "gpt-6")):
+        return [
+            ("low", "Низкое"),
+            ("medium", "Среднее"),
+            ("high", "Высокое"),
+            ("xhigh", "Очень высокое"),
+        ]
+    if model.startswith("deepseek-v4"):
+        return [
+            ("low", "Низкое"),
+            ("high", "Высокое"),
+            ("max", "Максимальное"),
+        ]
+    return []
+
+
+def _effort_keyboard(chat_id: str, model: str, current: Optional[str]) -> InlineKeyboardMarkup:
+    rows = []
+    for value, label in _effort_levels(model):
+        prefix = "✅ " if value == current else ""
+        rows.append([InlineKeyboardButton(
+            text=prefix + label,
+            callback_data=f"ai_effort_set_{chat_id}_{value}",
+            style=ButtonStyle.SUCCESS if value == current else ButtonStyle.PRIMARY,
+        )])
+    rows.append([InlineKeyboardButton(
+        text=("✅ " if current is None else "") + "По умолчанию",
+        callback_data=f"ai_effort_set_{chat_id}_default",
+        style=ButtonStyle.SUCCESS if current is None else ButtonStyle.PRIMARY,
+    )])
+    rows.append([InlineKeyboardButton(
+        text="⬅️ Назад к настройкам",
+        callback_data=f"ai_chat_settings_{chat_id}",
+    )])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def _ai_quota_text(user_id: int, model: str) -> str:
