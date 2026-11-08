@@ -108,8 +108,8 @@ async def _activate_paid_invoice(bot, invoice_id: str, record: dict[str, Any]) -
     if record.get("status") == "paid":
         return
     user_id = int(record["user_id"])
-    # days=None записывает expires_at=null, то есть Premium без ограничения по времени.
-    grant_premium(user_id, granted_by=None, days=None)
+    # Paid Premium expires after 30 days.
+    grant_premium(user_id, granted_by=None, days=30)
     record["status"] = "paid"
     record["paid_at"] = int(time.time())
     _save_payments()
