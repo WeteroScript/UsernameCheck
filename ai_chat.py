@@ -1900,6 +1900,7 @@ async def _request_claude_native(
     on_delta: Optional[Callable[[str], Awaitable[None]]],
     on_usage: Optional[Callable[[Dict[str, Any]], Awaitable[None]]],
     effort: Optional[str],
+    user_id: Optional[int] = None,
     _continuation_depth: int = 0,
 ) -> str:
     """Use TokenPlan's Anthropic-compatible Messages endpoint for Claude effort control."""
@@ -2027,7 +2028,7 @@ async def _request_claude_native(
                     partial_result=result,
                     raw_usage=raw_usage,
                     request_messages=request_messages,
-                    user_id=None,
+                    user_id=user_id,
                     on_delta=on_delta,
                     on_usage=on_usage,
                     effort=effort,
@@ -2082,6 +2083,7 @@ async def _request_model_once(
             api_key, api_url, model,
             [{"role": "system", "content": _effective_system_prompt(user_id)}, *previous_messages[-MAX_CONTEXT_MESSAGES:]],
             user_text, on_delta, on_usage, effort,
+            user_id=user_id,
             _continuation_depth=_continuation_depth,
         )
 
