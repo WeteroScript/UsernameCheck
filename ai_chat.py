@@ -33,6 +33,7 @@ from aiogram.types import BufferedInputFile, InlineKeyboardButton, InlineKeyboar
 from dotenv import load_dotenv
 from cryptography.fernet import Fernet, InvalidToken
 from access_control import is_premium
+from ai_usage import format_ai_quota, get_ai_quota, quota_block_reason, record_ai_usage, record_free_request
 from github_integration import fetch_repository_context, create_repository_pull_request
 from storage import data_file, data_directory
 
@@ -214,6 +215,7 @@ available_models: Dict[str, List[str]] = {}
 class AIChatStates(StatesGroup):
     chatting = State()
     waiting_prompt = State()
+    waiting_auto_prompt = State()
     waiting_api_key = State()
     waiting_api_url = State()
 
@@ -735,7 +737,26 @@ def _new_chat_keyboard() -> InlineKeyboardMarkup:
 
 
 def _is_paid_model(model: str) -> bool:
-    return model.startswith("claude") or model in {"gpt-6-astra", "gpt-6-sol"}
+    return (
+        model.startswith("claude")
+        or model in {
+            "gpt-6-astra", "gpt-6-sol",
+            "gemini-4-argon", "kimi-k3", "deepseek-v4.1-flash",
+        }
+    )
+
+
+def _supports_effort(model: str) -> bool:
+    """Models with a documented effort control on their native API protocols."""
+    return model.startswith("claude") or model.startswith(("gpt-5", "gpt-6", "deepseek-v4"))
+
+
+def _ai_quota_text(user_id: int, model: str) -> str:
+    return format_ai_quota(user_id, model, is_premium(user_id))
+
+
+def _ai_quota_error(user_id: int, model: str) -> Optional[str]:
+    return quota_block_reason(user_id, model, is_premium(user_id))
 
 
 def _model_style(model: str) -> ButtonStyle:
