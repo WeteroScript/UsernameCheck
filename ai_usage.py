@@ -199,19 +199,15 @@ def format_ai_quota(user_id: int, model: str, premium: bool) -> str:
     quota = get_ai_quota(user_id, model, premium)
     if not premium:
         return (
-            "📊 <b>Бесплатный лимит</b>
-"
-            f"Запросы за 7 дней: <b>{quota['used']}/{quota['limit']}</b>
-"
+            "📊 <b>Бесплатный лимит</b>\\n"
+            f"Запросы за 7 дней: <b>{quota['used']}/{quota['limit']}</b>\\n"
             f"Сброс ближайшего запроса: <b>{format_reset(quota['reset_at'])}</b>"
         )
     marker = " (оценка, API не вернул usage)" if quota["estimated"] else ""
     return (
-        f"📊 <b>Лимиты модели {model}</b>{marker}
-"
+        f"📊 <b>Лимиты модели {model}</b>{marker}\\n"
         f"За 5 часов: <b>{quota['used_5h']:,}/{quota['limit_5h']:,}</b> токенов"
-        f" · сброс через <b>{format_reset(quota['reset_5h'])}</b>
-"
+        f" · сброс через <b>{format_reset(quota['reset_5h'])}</b>\\n"
         f"За 7 дней: <b>{quota['used_week']:,}/{quota['limit_week']:,}</b> токенов"
         f" · сброс через <b>{format_reset(quota['reset_week'])}</b>"
     )
