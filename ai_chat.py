@@ -719,6 +719,53 @@ def _find_chat(user_id: int, chat_id: str) -> Optional[Dict[str, Any]]:
     return None
 
 
+def _auto_request_keyboard(user_id: int) -> InlineKeyboardMarkup:
+    settings = _user_settings(user_id)
+    task = _auto_tasks.get(user_id)
+    running = bool(task and not task.done())
+    prompt = str(settings.get("auto_prompt") or "").strip()
+    chat = _find_chat(user_id, str(settings.get("auto_chat_id") or ""))
+    prompt_label = "✅ Запрос задан" if prompt else "⚠️ Запрос не задан"
+    chat_label = (
+        "✅ Чат: " + _short_title(str(chat.get("title") or chat.get("model") or "Чат"), 22)
+        if chat else "⚠️ Чат не выбран"
+    )
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✍️ Ввести запрос", callback_data="ai_auto_prompt", style=ButtonStyle.PRIMARY)],
+        [InlineKeyboardButton(text="💬 Выбрать чат", callback_data="ai_auto_choose_chat", style=ButtonStyle.PRIMARY)],
+        [InlineKeyboardButton(
+            text="⏹ Стоп" if running else "▶️ Старт",
+            callback_data="ai_auto_toggle",
+            style=ButtonStyle.DANGER if running else ButtonStyle.SUCCESS,
+        )],
+        [InlineKeyboardButton(text="❔ Как работает?", callback_data="ai_auto_help", style=ButtonStyle.PRIMARY)],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="ai_menu", style=ButtonStyle.DANGER)],
+    ])
+
+
+def _auto_request_screen_text(user_id: int, status: Optional[str] = None) -> str:
+    settings = _user_settings(user_id)
+    prompt = str(settings.get("auto_prompt") or "").strip()
+    chat = _find_chat(user_id, str(settings.get("auto_chat_id") or ""))
+    prompt_preview = html.escape(_short_title(prompt, 180)) if prompt else "не задан"
+    chat_label = (
+        f"{html.escape(str(chat.get('title') or 'Без названия'))} "
+        f"(<code>{html.escape(str(chat.get('model') or 'unknown'))}</code>)"
+        if chat else "не выбран"
+    )
+    task = _auto_tasks.get(user_id)
+    running = bool(task and not task.done())
+    state_label = status or ("работает" if running else "остановлен")
+    return (
+        "<b>🔁 Авто-запрос</b>\n\n"
+        f"Запрос: <i>{prompt_preview}</i>\n"
+        f"Чат: {chat_label}\n"
+        f"Состояние: <b>{state_label}</b>\n\n"
+        "Повторение выполняется с паузой 10 секунд после каждого ответа. "
+        "На каждый цикл действуют общие лимиты ИИ."
+    )
+
+
 def _root_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [
@@ -2108,6 +2155,251 @@ async def ai_menu(callback: types.CallbackQuery, state: FSMContext):
         reply_markup=_root_keyboard(),
     )
 
+
+
+@router.callback_query(lambda callback: callback.data == "ai_auto")
+async def ai_auto_menu(callback: types.CallbackQuery, state: FSMContext):
+    await callback.answer()
+    await state.clear()
+    await callback.message.edit_text(
+        _auto_request_screen_text(callback.from_user.id),
+        parse_mode="HTML",
+        reply_markup=_auto_request_keyboard(callback.from_user.id),
+    )
+
+
+@router.callback_query(lambda callback: callback.data == "ai_auto_prompt")
+async def ai_auto_prompt(callback: types.CallbackQuery, state: FSMContext):
+    await callback.answer()
+    await state.set_state(AIChatStates.waiting_auto_prompt)
+    await callback.message.edit_text(
+        "✍️ Отправь текст запроса, который бот будет повторять. "
+        "Максимальная длина — 20 000 символов. Для отмены отправь /cancel."
+    )
+
+
+@router.message(AIChatStates.waiting_auto_prompt)
+async def ai_auto_save_prompt(message: types.Message, state: FSMContext):
+    value = (message.text or "").strip()
+    if value.lower() in {"/cancel", "отмена"}:
+        await state.clear()
+        await message.answer(
+            _auto_request_screen_text(message.from_user.id),
+            parse_mode="HTML",
+            reply_markup=_auto_request_keyboard(message.from_user.id),
+        )
+        return
+    if not value:
+        await message.answer("Запрос не должен быть пустым.")
+        return
+    if len(value) > 20000:
+        await message.answer("Запрос слишком длинный. Максимум — 20 000 символов.")
+        return
+    settings = _user_settings(message.from_user.id)
+    previous = settings.get("auto_prompt")
+    settings["auto_prompt"] = value
+    if not _save_user_settings():
+        if previous is None:
+            settings.pop("auto_prompt", None)
+        else:
+            settings["auto_prompt"] = previous
+        await message.answer("Не удалось сохранить запрос. Проверь постоянное хранилище.")
+        return
+    await state.clear()
+    await message.answer(
+        _auto_request_screen_text(message.from_user.id),
+        parse_mode="HTML",
+        reply_markup=_auto_request_keyboard(message.from_user.id),
+    )
+
+
+@router.callback_query(lambda callback: callback.data == "ai_auto_choose_chat")
+async def ai_auto_choose_chat(callback: types.CallbackQuery, state: FSMContext):
+    chats = _user_chats(callback.from_user.id)
+    if not chats:
+        await callback.answer("Сначала создай хотя бы один ИИ-чат.", show_alert=True)
+        return
+    rows = []
+    for chat in sorted(chats, key=lambda item: str(item.get("updated_at") or ""), reverse=True)[:50]:
+        label = _short_title(
+            f"{chat.get('title') or 'Без названия'} · {chat.get('model') or 'unknown'}", 48
+        )
+        selected = str(_user_settings(callback.from_user.id).get("auto_chat_id") or "") == str(chat["id"])
+        rows.append([InlineKeyboardButton(
+            text=("✅ " if selected else "") + label,
+            callback_data=f"ai_auto_chat_{chat['id']}",
+            style=ButtonStyle.SUCCESS if selected else ButtonStyle.PRIMARY,
+        )])
+    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="ai_auto")])
+    await callback.answer()
+    await state.clear()
+    await callback.message.edit_text(
+        "💬 Выбери ИИ-чат, в который авто-запрос будет отправлять сообщения:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
+    )
+
+
+@router.callback_query(lambda callback: callback.data and callback.data.startswith("ai_auto_chat_"))
+async def ai_auto_set_chat(callback: types.CallbackQuery):
+    chat_id = callback.data[len("ai_auto_chat_"):]
+    chat = _find_chat(callback.from_user.id, chat_id)
+    if not chat:
+        await callback.answer("Чат не найден.", show_alert=True)
+        return
+    settings = _user_settings(callback.from_user.id)
+    previous = settings.get("auto_chat_id")
+    settings["auto_chat_id"] = chat_id
+    if not _save_user_settings():
+        if previous is None:
+            settings.pop("auto_chat_id", None)
+        else:
+            settings["auto_chat_id"] = previous
+        await callback.answer("Не удалось сохранить выбранный чат.", show_alert=True)
+        return
+    await callback.answer("Чат выбран.")
+    await callback.message.edit_text(
+        _auto_request_screen_text(callback.from_user.id),
+        parse_mode="HTML",
+        reply_markup=_auto_request_keyboard(callback.from_user.id),
+    )
+
+
+@router.callback_query(lambda callback: callback.data == "ai_auto_help")
+async def ai_auto_help(callback: types.CallbackQuery):
+    await callback.answer(
+        "Старт: отправляет запрос выбранной модели и повторяет его после каждого ответа "
+        "(пауза 10 секунд). Стоп: дожидается текущего ответа, отправляет ещё один финальный "
+        "запрос и останавливается. Все ответы приходят в выбранный чат. Лимиты и расход токенов учитываются.",
+        show_alert=True,
+    )
+
+
+async def _auto_request_loop(
+    bot,
+    user: types.User,
+    target_chat: types.Chat,
+    status_message: types.Message,
+    state: FSMContext,
+    chat_id: str,
+    prompt: str,
+    stop_event: asyncio.Event,
+) -> None:
+    fake_message = _AutoRequestMessage(bot, user, target_chat)
+    completed = 0
+    stopped_by_error = False
+    try:
+        while True:
+            await state.set_state(AIChatStates.chatting)
+            await state.update_data(ai_chat_id=chat_id)
+            success = await _process_ai_chat_message(
+                fake_message, state, user_text_override=prompt, skip_duplicate=True
+            )
+            if not success:
+                stopped_by_error = True
+                break
+            completed += 1
+            if stop_event.is_set():
+                # Стоп означает один дополнительный завершающий запрос после текущего ответа.
+                await state.set_state(AIChatStates.chatting)
+                await state.update_data(ai_chat_id=chat_id)
+                await _process_ai_chat_message(
+                    fake_message, state, user_text_override=prompt, skip_duplicate=True
+                )
+                break
+            try:
+                await asyncio.wait_for(stop_event.wait(), timeout=10)
+            except asyncio.TimeoutError:
+                continue
+            if stop_event.is_set():
+                await state.set_state(AIChatStates.chatting)
+                await state.update_data(ai_chat_id=chat_id)
+                await _process_ai_chat_message(
+                    fake_message, state, user_text_override=prompt, skip_duplicate=True
+                )
+                break
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        stopped_by_error = True
+        logging.exception("Ошибка авто-запроса пользователя %s", user.id)
+    finally:
+        _auto_tasks.pop(user.id, None)
+        _auto_stop_events.pop(user.id, None)
+        try:
+            suffix = "Остановлен из-за ошибки или исчерпания лимита." if stopped_by_error else "Остановлен."
+            await status_message.edit_text(
+                _auto_request_screen_text(user.id, suffix),
+                parse_mode="HTML",
+                reply_markup=_auto_request_keyboard(user.id),
+            )
+        except Exception:
+            logging.debug("Не удалось обновить меню авто-запроса", exc_info=True)
+
+
+@router.callback_query(lambda callback: callback.data == "ai_auto_toggle")
+async def ai_auto_toggle(callback: types.CallbackQuery, state: FSMContext):
+    user_id = callback.from_user.id
+    task = _auto_tasks.get(user_id)
+    if task and not task.done():
+        stop_event = _auto_stop_events.get(user_id)
+        if stop_event:
+            stop_event.set()
+        await callback.answer(
+            "Текущий ответ завершится, затем бот отправит ещё один финальный запрос и остановится.",
+            show_alert=True,
+        )
+        await callback.message.edit_text(
+            _auto_request_screen_text(user_id, "остановка после финального запроса"),
+            parse_mode="HTML",
+            reply_markup=_auto_request_keyboard(user_id),
+        )
+        return
+
+    settings = _user_settings(user_id)
+    prompt = str(settings.get("auto_prompt") or "").strip()
+    chat_id = str(settings.get("auto_chat_id") or "")
+    chat = _find_chat(user_id, chat_id)
+    if not prompt:
+        await callback.answer("Сначала введи текст запроса.", show_alert=True)
+        return
+    if not chat:
+        await callback.answer("Сначала выбери существующий ИИ-чат.", show_alert=True)
+        return
+    model = str(chat.get("model") or "")
+    if _is_paid_model(model) and not is_premium(user_id):
+        await callback.answer("Для выбранной модели нужен Premium.", show_alert=True)
+        return
+    quota_error = _ai_quota_error(user_id, model)
+    if quota_error:
+        await callback.answer(quota_error[:190], show_alert=True)
+        return
+    if user_id in _active_requests:
+        await callback.answer("Сначала дождись завершения текущего запроса.", show_alert=True)
+        return
+
+    await state.set_state(AIChatStates.chatting)
+    await state.update_data(ai_chat_id=chat_id)
+    stop_event = asyncio.Event()
+    _auto_stop_events[user_id] = stop_event
+    task = asyncio.create_task(
+        _auto_request_loop(
+            callback.bot,
+            callback.from_user,
+            callback.message.chat,
+            callback.message,
+            state,
+            chat_id,
+            prompt,
+            stop_event,
+        )
+    )
+    _auto_tasks[user_id] = task
+    await callback.answer("Авто-запрос запущен.")
+    await callback.message.edit_text(
+        _auto_request_screen_text(user_id, "работает"),
+        parse_mode="HTML",
+        reply_markup=_auto_request_keyboard(user_id),
+    )
 
 
 @router.callback_query(lambda callback: callback.data == "ai_settings")
