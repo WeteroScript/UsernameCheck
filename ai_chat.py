@@ -2382,7 +2382,11 @@ async def _auto_request_loop(
         await state.set_state(AIChatStates.chatting)
         await state.update_data(ai_chat_id=chat_id)
         return await _process_ai_chat_message(
-            fake_message, state, user_text_override=prompt, skip_duplicate=True
+            fake_message,
+            state,
+            user_text_override=prompt,
+            skip_duplicate=True,
+            auto_completion_check=True,
         )
 
     async def wait_for_request_cooldown(interruptible: bool = True) -> None:
@@ -3259,6 +3263,7 @@ async def _process_ai_chat_message(
     state: FSMContext,
     user_text_override: Optional[str] = None,
     skip_duplicate: bool = False,
+    auto_completion_check: bool = False,
 ) -> bool:
     if not skip_duplicate and _is_duplicate_ai_message(message):
         logging.warning(
@@ -3466,6 +3471,86 @@ async def _process_ai_chat_message(
             on_usage=tracked_model_usage,
             effort=effort_level,
         )
+
+        # DeepSeek can finish an SSE stream normally while its answer is still
+        # semantically incomplete. Verify it before the auto loop starts again.
+        if auto_completion_check and "deepseek" in model.lower():
+            verification_context = [
+                {"role": "user", "content": user_text},
+                {"role": "assistant", "content": reply},
+            ]
+            verification_instruction = (
+                "Ты проверяешь завершённость ответа ИИ. Не отвечай на исходный запрос "
+                "и не исправляй текст. Определи только, закончен ли ответ целиком. "
+                "Верни INCOMPLETE, если ответ обрывается посреди мысли или предложения, "
+                "заканчивается незавершённым перечислением, обещанием продолжить, "
+                "двоеточием, запятой, тире, открытой скобкой либо незакрытым блоком кода "
+                "или GITHUB_FILE/FILE. Верни COMPLETE, если ответ представляет собой "
+                "законченный результат, даже если в нём есть код, списки или заголовки. "
+                "Короткий ответ из одного законченного предложения тоже может быть полным. "
+                "Ответь строго одним словом: COMPLETE или INCOMPLETE."
+            )
+            completion_confirmed = False
+            for completion_attempt in range(2):
+                await _update_ai_progress(progress_message, "Проверяет завершённость ответа DeepSeek")
+                verdict = await _request_model(
+                    model,
+                    verification_context,
+                    verification_instruction,
+                    user_id=user_id,
+                    on_usage=tracked_model_usage,
+                    effort=None,
+                )
+                verdict_word = verdict.strip().splitlines()[0].strip().strip("*_.,:;! ").upper()
+                logging.info(
+                    "DeepSeek auto completion check: model=%s user_id=%s attempt=%s verdict=%s chars=%s",
+                    model, user_id, completion_attempt + 1, verdict_word[:40], len(reply),
+                )
+                if verdict_word == "COMPLETE":
+                    completion_confirmed = True
+                    break
+
+                if completion_attempt == 1:
+                    break
+
+                await _update_ai_progress(progress_message, "Дополняет незавершённый ответ DeepSeek")
+                continuation_context = [
+                    *model_history[-MAX_CONTEXT_MESSAGES:],
+                    {"role": "user", "content": request_text},
+                    {"role": "assistant", "content": reply},
+                ]
+                continuation_instruction = (
+                    "Продолжи свой предыдущий ответ с места остановки. Ответ предыдущей "
+                    "генерации оборвался до завершения задачи. Не пересказывай и не повторяй "
+                    "уже выданный текст. Сохрани исходный формат, требования и структуру; "
+                    "заверши незаконченные предложения, списки, кодовые блоки и блоки файлов. "
+                    "Верни только недостающую часть ответа."
+                )
+                continuation = await _request_model(
+                    model,
+                    continuation_context,
+                    continuation_instruction,
+                    user_id=user_id,
+                    on_delta=tracked_model_delta,
+                    on_usage=tracked_model_usage,
+                    effort=effort_level,
+                )
+                if not continuation.strip():
+                    break
+                separator = (
+                    " "
+                    if reply and continuation and reply[-1].isalnum() and continuation[0].isalnum()
+                    else ""
+                )
+                reply += separator + continuation
+                verification_context[-1]["content"] = reply
+
+            if not completion_confirmed:
+                raise RuntimeError(
+                    "DeepSeek дважды не подтвердил завершённость ответа. "
+                    "Авто-запрос остановлен, чтобы не начинать следующий цикл на обрезанном тексте."
+                )
+
         if not is_premium(user_id):
             try:
                 record_free_request(user_id)
