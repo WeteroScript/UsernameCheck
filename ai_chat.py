@@ -1834,6 +1834,63 @@ async def _report_model_usage(
     await callback(usage)
 
 
+_CONTINUATION_PROMPT = (
+    "Продолжи предыдущий ответ строго с места остановки. "
+    "Не повторяй уже выданный текст и не начинай ответ заново. "
+    "Сохрани исходную задачу, форматирование и структуру. "
+    "Заверши текущую мысль и полностью выполни исходный запрос. "
+    "Верни только продолжение."
+)
+
+
+async def _continue_limited_model_response(
+    model: str,
+    previous_messages: List[Dict[str, str]],
+    user_text: str,
+    partial_result: str,
+    raw_usage: Any,
+    request_messages: List[Dict[str, str]],
+    user_id: Optional[int],
+    on_delta: Optional[Callable[[str], Awaitable[None]]],
+    on_usage: Optional[Callable[[Dict[str, Any]], Awaitable[None]]],
+    effort: Optional[str],
+    continuation_depth: int,
+) -> str:
+    """Count a capped fragment and continue the same answer without replaying it."""
+    await _report_model_usage(on_usage, raw_usage, request_messages, partial_result)
+    if continuation_depth >= 8:
+        raise RuntimeError(
+            "Модель достигла лимита длины ответа 8 раз подряд. "
+            "Частичный результат показан, но продолжение снова упёрлось в лимит."
+        )
+
+    logging.warning(
+        "Model output limit reached; continuing: model=%s depth=%s chars=%s",
+        model, continuation_depth + 1, len(partial_result),
+    )
+    continuation_context = [
+        *previous_messages[-MAX_CONTEXT_MESSAGES:],
+        {"role": "user", "content": user_text},
+        {"role": "assistant", "content": partial_result},
+    ]
+    continuation = await _request_model(
+        model,
+        continuation_context,
+        _CONTINUATION_PROMPT,
+        user_id=user_id,
+        on_delta=on_delta,
+        on_usage=on_usage,
+        effort=effort,
+        _continuation_depth=continuation_depth + 1,
+    )
+    separator = (
+        " " if partial_result and continuation
+        and partial_result[-1].isalnum() and continuation[0].isalnum()
+        else ""
+    )
+    return partial_result + separator + continuation
+
+
 async def _request_claude_native(
     api_key: str,
     api_url: str,
@@ -1843,6 +1900,7 @@ async def _request_claude_native(
     on_delta: Optional[Callable[[str], Awaitable[None]]],
     on_usage: Optional[Callable[[Dict[str, Any]], Awaitable[None]]],
     effort: Optional[str],
+    _continuation_depth: int = 0,
 ) -> str:
     """Use TokenPlan's Anthropic-compatible Messages endpoint for Claude effort control."""
     base_url = api_url.rstrip("/")
@@ -1940,10 +1998,6 @@ async def _request_claude_native(
                         "Поток Claude завершился без события message_stop. "
                         "Ответ считается незавершённым; следующий авто-запрос не будет запущен."
                     )
-                if stop_reason == "max_tokens":
-                    raise RuntimeError(
-                        "Claude достиг лимита длины ответа. Ответ неполный; следующий авто-запрос не будет запущен."
-                    )
             else:
                 data = await response.json(content_type=None)
                 if not isinstance(data, dict):
@@ -1955,11 +2009,36 @@ async def _request_claude_native(
                     if isinstance(item, dict) and item.get("type") == "text"
                 ).strip()
                 raw_usage = data.get("usage") or {}
-                if on_delta is not None and result:
-                    await on_delta(result)
+                stop_reason = str(data.get("stop_reason") or "") or None
+
             if not result:
                 raise RuntimeError("TokenPlan Claude API вернул пустой ответ.")
+            if "text/event-stream" not in body_type and on_delta is not None:
+                await on_delta(result)
+
+            if stop_reason == "max_tokens":
+                history_without_system = [
+                    item for item in messages if item.get("role") in {"user", "assistant"}
+                ]
+                return await _continue_limited_model_response(
+                    model=model,
+                    previous_messages=history_without_system,
+                    user_text=user_text,
+                    partial_result=result,
+                    raw_usage=raw_usage,
+                    request_messages=request_messages,
+                    user_id=None,
+                    on_delta=on_delta,
+                    on_usage=on_usage,
+                    effort=effort,
+                    continuation_depth=_continuation_depth,
+                )
+
             await _report_model_usage(on_usage, raw_usage, request_messages, result)
+            logging.info(
+                "Claude stream completed: model=%s stop_reason=%s chars=%s usage=%s",
+                model, stop_reason or "unknown", len(result), _normalise_provider_usage(raw_usage),
+            )
             return result
 
 
@@ -2003,6 +2082,7 @@ async def _request_model_once(
             api_key, api_url, model,
             [{"role": "system", "content": _effective_system_prompt(user_id)}, *previous_messages[-MAX_CONTEXT_MESSAGES:]],
             user_text, on_delta, on_usage, effort,
+            _continuation_depth=_continuation_depth,
         )
 
     payload = {
@@ -2098,14 +2178,39 @@ async def _request_model_once(
                             if not isinstance(fallback_data, dict):
                                 raise RuntimeError("TokenPlan вернул ответ в неизвестном формате")
                             fallback_result = _extract_reply(fallback_data)
-                            await _report_model_usage(
-                                on_usage, fallback_data.get("usage"), payload["messages"], fallback_result
+                            fallback_choices = fallback_data.get("choices") or []
+                            fallback_finish_reason = (
+                                str(fallback_choices[0].get("finish_reason") or "")
+                                if fallback_choices and isinstance(fallback_choices[0], dict)
+                                else ""
                             )
                             if on_delta is not None:
                                 await on_delta(fallback_result)
+                            if fallback_finish_reason in {"length", "max_tokens"}:
+                                return await _continue_limited_model_response(
+                                    model=model,
+                                    previous_messages=previous_messages,
+                                    user_text=user_text,
+                                    partial_result=fallback_result,
+                                    raw_usage=fallback_data.get("usage"),
+                                    request_messages=payload["messages"],
+                                    user_id=user_id,
+                                    on_delta=on_delta,
+                                    on_usage=on_usage,
+                                    effort=effort,
+                                    continuation_depth=_continuation_depth,
+                                )
+                            if fallback_finish_reason == "content_filter":
+                                raise RuntimeError(
+                                    "Провайдер остановил генерацию фильтром содержимого. Ответ не будет применён к GitHub."
+                                )
+                            await _report_model_usage(
+                                on_usage, fallback_data.get("usage"), payload["messages"], fallback_result
+                            )
                             logging.info(
-                                "TokenPlan non-stream fallback completed: model=%s elapsed=%.1fs",
-                                model, time.monotonic() - started_at,
+                                "TokenPlan non-stream fallback completed: model=%s finish_reason=%s chars=%s elapsed=%.1fs",
+                                model, fallback_finish_reason or "unknown", len(fallback_result),
+                                time.monotonic() - started_at,
                             )
                             return fallback_result
                     if response.status == 502:
@@ -2202,39 +2307,20 @@ async def _request_model_once(
                             "Поток ответа TokenPlan оборвался без признака завершения генерации. "
                             "Неполный ответ не сохранён и не будет применён к GitHub."
                         )
-                    if finish_reason_value == "length":
-                        if _continuation_depth >= 8:
-                            raise RuntimeError(
-                                "Модель достигла лимита длины ответа 8 раз подряд. "
-                                "Частичный результат сохранён в сообщении, но задача требует дальнейшего продолжения."
-                            )
-                        logging.warning(
-                            "Model output token limit reached; continuing: model=%s depth=%s chars=%s",
-                            model, _continuation_depth + 1, len(result),
+                    if finish_reason_value in {"length", "max_tokens"}:
+                        return await _continue_limited_model_response(
+                            model=model,
+                            previous_messages=previous_messages,
+                            user_text=user_text,
+                            partial_result=result,
+                            raw_usage=reported_usage,
+                            request_messages=payload["messages"],
+                            user_id=user_id,
+                            on_delta=on_delta,
+                            on_usage=on_usage,
+                            effort=effort,
+                            continuation_depth=_continuation_depth,
                         )
-                        continuation_context = [
-                            *previous_messages[-MAX_CONTEXT_MESSAGES:],
-                            {"role": "user", "content": user_text},
-                            {"role": "assistant", "content": result},
-                        ]
-                        continuation_prompt = (
-                            "Продолжи предыдущий ответ строго с места остановки. "
-                            "Не повторяй уже выданный текст и не начинай ответ заново. "
-                            "Сохрани исходную задачу, форматирование и структуру. "
-                            "Заверши текущую мысль и полностью выполни исходный запрос. "
-                            "Верни только продолжение."
-                        )
-                        continuation = await _request_model(
-                            model, continuation_context, continuation_prompt,
-                            user_id=user_id, on_delta=on_delta, on_usage=on_usage,
-                            effort=effort, _continuation_depth=_continuation_depth + 1,
-                        )
-                        separator = (
-                            " " if result and continuation
-                            and result[-1].isalnum() and continuation[0].isalnum()
-                            else ""
-                        )
-                        return result + separator + continuation
                     if finish_reason_value == "content_filter":
                         raise RuntimeError(
                             "Провайдер остановил генерацию фильтром содержимого. Ответ не будет применён к GitHub."
@@ -2248,8 +2334,10 @@ async def _request_model_once(
                         on_usage, reported_usage, payload["messages"], result
                     )
                     logging.info(
-                        "TokenPlan stream completed: model=%s chars=%s elapsed=%.1fs",
-                        model, len(result), time.monotonic() - started_at,
+                        "TokenPlan stream completed: model=%s finish_reason=%s usage=%s chars=%s elapsed=%.1fs",
+                        model, finish_reason_value or "unknown",
+                        _normalise_provider_usage(reported_usage), len(result),
+                        time.monotonic() - started_at,
                     )
                     return result
 
@@ -2262,14 +2350,40 @@ async def _request_model_once(
                 if not isinstance(data, dict):
                     raise RuntimeError("TokenPlan вернул ответ в неизвестном формате")
                 result = _extract_reply(data)
-                await _report_model_usage(
-                    on_usage, data.get("usage"), payload["messages"], result
+                response_choices = data.get("choices") or []
+                finish_reason_value = (
+                    str(response_choices[0].get("finish_reason") or "")
+                    if response_choices and isinstance(response_choices[0], dict)
+                    else ""
                 )
                 if on_delta is not None:
                     await on_delta(result)
+                if finish_reason_value in {"length", "max_tokens"}:
+                    return await _continue_limited_model_response(
+                        model=model,
+                        previous_messages=previous_messages,
+                        user_text=user_text,
+                        partial_result=result,
+                        raw_usage=data.get("usage"),
+                        request_messages=payload["messages"],
+                        user_id=user_id,
+                        on_delta=on_delta,
+                        on_usage=on_usage,
+                        effort=effort,
+                        continuation_depth=_continuation_depth,
+                    )
+                if finish_reason_value == "content_filter":
+                    raise RuntimeError(
+                        "Провайдер остановил генерацию фильтром содержимого. Ответ не будет применён к GitHub."
+                    )
+                await _report_model_usage(
+                    on_usage, data.get("usage"), payload["messages"], result
+                )
                 logging.info(
-                    "TokenPlan non-stream response completed: model=%s chars=%s elapsed=%.1fs",
-                    model, len(result), time.monotonic() - started_at,
+                    "TokenPlan non-stream response completed: model=%s finish_reason=%s usage=%s chars=%s elapsed=%.1fs",
+                    model, finish_reason_value or "unknown",
+                    _normalise_provider_usage(data.get("usage")), len(result),
+                    time.monotonic() - started_at,
                 )
                 return result
     except asyncio.TimeoutError as exc:
