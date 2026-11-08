@@ -1953,7 +1953,14 @@ async def _request_claude_native(
             return result
 
 
-async def _request_model(
+class _TokenPlanHTTP502(RuntimeError):
+    def __init__(self, detail: str, request_id: Optional[str] = None) -> None:
+        super().__init__(detail)
+        self.detail = detail
+        self.request_id = request_id
+
+
+async def _request_model_once(
     model: str,
     previous_messages: List[Dict[str, str]],
     user_text: str,
@@ -2062,6 +2069,16 @@ async def _request_model(
                             except json.JSONDecodeError:
                                 fallback_data = {}
                             if fallback.status != 200:
+                                if fallback.status == 502:
+                                    fallback_request_id = (
+                                        fallback.headers.get("x-request-id")
+                                        or fallback.headers.get("cf-ray")
+                                        or fallback.headers.get("x-correlation-id")
+                                    )
+                                    raise _TokenPlanHTTP502(
+                                        fallback_body[:500] or "API-шлюз вернул HTTP 502",
+                                        fallback_request_id,
+                                    )
                                 raise RuntimeError(
                                     f"TokenPlan HTTP {fallback.status}: "
                                     f"{fallback_body[:500] or 'Нет подробностей от сервера'}"
@@ -2079,7 +2096,9 @@ async def _request_model(
                                 model, time.monotonic() - started_at,
                             )
                             return fallback_result
-                    if response.status in (500, 502, 503, 504) and _retry_attempt < 2:
+                    if response.status == 502:
+                        raise _TokenPlanHTTP502(detail, request_id)
+                    if response.status in (500, 503, 504) and _retry_attempt < 2:
                         delay = (2, 5)[_retry_attempt]
                         logging.warning(
                             "TokenPlan temporary HTTP error: model=%s status=%s attempt=%s/3 retry_in=%ss request_id=%s",
@@ -2096,7 +2115,7 @@ async def _request_model(
                             effort=effort,
                             _retry_attempt=_retry_attempt + 1,
                         )
-                    if response.status in (500, 502, 503, 504):
+                    if response.status in (500, 503, 504):
                         detail = (
                             f"{detail}. Временная ошибка API-шлюза сохранялась после "
                             "3 попыток (первичная + 2 повтора)."
@@ -2219,6 +2238,39 @@ async def _request_model(
         raise RuntimeError("Не удалось подключиться к TokenPlan. Проверь адрес API и соединение.") from exc
     except ValueError as exc:
         raise RuntimeError(f"Некорректный ответ TokenPlan: {exc}") from exc
+
+
+async def _request_model(
+    model: str,
+    previous_messages: List[Dict[str, str]],
+    user_text: str,
+    user_id: Optional[int] = None,
+    on_delta: Optional[Callable[[str], Awaitable[None]]] = None,
+    on_usage: Optional[Callable[[Dict[str, Any]], Awaitable[None]]] = None,
+    effort: Optional[str] = None,
+    _retry_attempt: int = 0,
+) -> str:
+    """Retry HTTP 502 every five minutes until the provider accepts the request."""
+    retry_count = 0
+    while True:
+        try:
+            return await _request_model_once(
+                model,
+                previous_messages,
+                user_text,
+                user_id=user_id,
+                on_delta=on_delta,
+                on_usage=on_usage,
+                effort=effort,
+                _retry_attempt=_retry_attempt,
+            )
+        except _TokenPlanHTTP502 as exc:
+            retry_count += 1
+            logging.warning(
+                "TokenPlan HTTP 502: model=%s retry=%s retry_in=300s request_id=%s detail=%s",
+                model, retry_count, exc.request_id or "-", exc.detail[:300],
+            )
+            await asyncio.sleep(300)
 
 
 @router.callback_query(lambda callback: callback.data == "ai_menu")
@@ -3350,6 +3402,7 @@ async def _process_ai_chat_message(
             return
 
     model = str(chat.get("model", "неизвестная модель"))
+    buffer_deepseek_auto_response = auto_completion_check and "deepseek" in model.lower()
     if _is_paid_model(model) and not is_premium(user_id):
         await state.clear()
         await message.answer("Эта модель доступна только с премиум-доступом. Выбери другую модель.")
@@ -3466,6 +3519,15 @@ async def _process_ai_chat_message(
 
         async def tracked_model_delta(piece: str) -> None:
             nonlocal model_generation_started
+            if buffer_deepseek_auto_response:
+                if not model_generation_started:
+                    model_generation_started = True
+                    await _update_ai_progress(
+                        progress_message,
+                        "Получает ответ DeepSeek и проверяет его завершённость",
+                    )
+                # Hold DeepSeek auto-mode chunks until any needed continuation is merged.
+                return
             if not model_generation_started:
                 model_generation_started = True
                 await _update_ai_progress(progress_message, "Получает и формирует ответ модели")
@@ -3572,10 +3634,16 @@ async def _process_ai_chat_message(
                 verification_context[-1]["content"] = reply
 
             if not completion_confirmed:
+                # Show the available text together with the error instead of silently discarding it.
+                if buffer_deepseek_auto_response and reply:
+                    await on_model_delta(reply)
                 raise RuntimeError(
-                    "DeepSeek дважды не подтвердил завершённость ответа. "
+                    "DeepSeek не подтвердил завершённость ответа после попытки продолжения. "
                     "Авто-запрос остановлен, чтобы не начинать следующий цикл на обрезанном тексте."
                 )
+            if buffer_deepseek_auto_response and reply:
+                # Render once, after the original answer and continuation have been combined.
+                await on_model_delta(reply)
 
         if not is_premium(user_id):
             try:
