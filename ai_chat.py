@@ -775,7 +775,7 @@ def _root_keyboard() -> InlineKeyboardMarkup:
             InlineKeyboardButton(text="➕ Новый чат", callback_data="ai_new", style=ButtonStyle.SUCCESS),
             InlineKeyboardButton(text="📁 Мои чаты", callback_data="ai_my_chats", style=ButtonStyle.PRIMARY),
         ],
-        [InlineKeyboardButton(text="🔁 Авто-запрос", callback_data="ai_auto", style=ButtonStyle.SUCCESS)],
+        [InlineKeyboardButton(text="🔒 Авто-запрос · Premium", callback_data="ai_auto", style=ButtonStyle.SUCCESS)],
         [InlineKeyboardButton(text="📊 Лимиты и расход", callback_data="ai_usage_overview", style=ButtonStyle.PRIMARY)],
         [
             InlineKeyboardButton(text="⚙️", callback_data="ai_settings", style=ButtonStyle.PRIMARY),
@@ -2184,6 +2184,9 @@ async def ai_menu(callback: types.CallbackQuery, state: FSMContext):
 
 @router.callback_query(lambda callback: callback.data == "ai_auto")
 async def ai_auto_menu(callback: types.CallbackQuery, state: FSMContext):
+    if not is_premium(callback.from_user.id):
+        await callback.answer("Авто-запрос доступен только пользователям Premium.", show_alert=True)
+        return
     await callback.answer()
     await state.clear()
     await callback.message.edit_text(
@@ -2195,6 +2198,9 @@ async def ai_auto_menu(callback: types.CallbackQuery, state: FSMContext):
 
 @router.callback_query(lambda callback: callback.data == "ai_auto_prompt")
 async def ai_auto_prompt(callback: types.CallbackQuery, state: FSMContext):
+    if not is_premium(callback.from_user.id):
+        await callback.answer("Авто-запрос доступен только пользователям Premium.", show_alert=True)
+        return
     await callback.answer()
     await state.set_state(AIChatStates.waiting_auto_prompt)
     await callback.message.edit_text(
@@ -2205,6 +2211,10 @@ async def ai_auto_prompt(callback: types.CallbackQuery, state: FSMContext):
 
 @router.message(AIChatStates.waiting_auto_prompt)
 async def ai_auto_save_prompt(message: types.Message, state: FSMContext):
+    if not is_premium(message.from_user.id):
+        await state.clear()
+        await message.answer("Авто-запрос доступен только пользователям Premium.")
+        return
     value = (message.text or "").strip()
     if value.lower() in {"/cancel", "отмена"}:
         await state.clear()
@@ -2240,6 +2250,9 @@ async def ai_auto_save_prompt(message: types.Message, state: FSMContext):
 
 @router.callback_query(lambda callback: callback.data == "ai_auto_choose_chat")
 async def ai_auto_choose_chat(callback: types.CallbackQuery, state: FSMContext):
+    if not is_premium(callback.from_user.id):
+        await callback.answer("Авто-запрос доступен только пользователям Premium.", show_alert=True)
+        return
     chats = _user_chats(callback.from_user.id)
     if not chats:
         await callback.answer("Сначала создай хотя бы один ИИ-чат.", show_alert=True)
@@ -2266,6 +2279,9 @@ async def ai_auto_choose_chat(callback: types.CallbackQuery, state: FSMContext):
 
 @router.callback_query(lambda callback: callback.data and callback.data.startswith("ai_auto_chat_"))
 async def ai_auto_set_chat(callback: types.CallbackQuery):
+    if not is_premium(callback.from_user.id):
+        await callback.answer("Авто-запрос доступен только пользователям Premium.", show_alert=True)
+        return
     chat_id = callback.data[len("ai_auto_chat_"):]
     chat = _find_chat(callback.from_user.id, chat_id)
     if not chat:
@@ -2291,6 +2307,9 @@ async def ai_auto_set_chat(callback: types.CallbackQuery):
 
 @router.callback_query(lambda callback: callback.data == "ai_auto_help")
 async def ai_auto_help(callback: types.CallbackQuery):
+    if not is_premium(callback.from_user.id):
+        await callback.answer("Авто-запрос доступен только пользователям Premium.", show_alert=True)
+        return
     await callback.answer(
         "Старт: повторяет запрос после каждого ответа (не чаще раза в 5 с). "
         "Стоп: ждёт текущий ответ, отправляет ещё один финальный запрос и останавливается. Лимиты действуют.",
@@ -2310,66 +2329,76 @@ async def _auto_request_loop(
 ) -> None:
     fake_message = _AutoRequestMessage(bot, user, target_chat)
     stopped_by_error = False
+    stop_reason = "Остановлен."
+    async def run_turn() -> bool:
+        await state.set_state(AIChatStates.chatting)
+        await state.update_data(ai_chat_id=chat_id)
+        return await _process_ai_chat_message(
+            fake_message, state, user_text_override=prompt, skip_duplicate=True
+        )
+
+    async def wait_for_request_cooldown() -> None:
+        remaining = REQUEST_COOLDOWN_SECONDS - (
+            time.monotonic() - _last_request_at.get(user.id, 0.0)
+        )
+        if remaining > 0:
+            try:
+                await asyncio.wait_for(stop_event.wait(), timeout=remaining + 0.15)
+            except asyncio.TimeoutError:
+                pass
+
     try:
         while True:
-            await state.set_state(AIChatStates.chatting)
-            await state.update_data(ai_chat_id=chat_id)
-            success = await _process_ai_chat_message(
-                fake_message, state, user_text_override=prompt, skip_duplicate=True
-            )
-            if not success:
+            if not is_premium(user.id):
                 stopped_by_error = True
-                break
-            if stop_event.is_set():
-                # Stop выполняет один дополнительный запрос после завершения текущего.
-                remaining = REQUEST_COOLDOWN_SECONDS - (
-                    time.monotonic() - _last_request_at.get(user.id, 0.0)
-                )
-                if remaining > 0:
-                    await asyncio.sleep(remaining + 0.1)
-                await state.set_state(AIChatStates.chatting)
-                await state.update_data(ai_chat_id=chat_id)
-                await _process_ai_chat_message(
-                    fake_message, state, user_text_override=prompt, skip_duplicate=True
-                )
+                stop_reason = "Premium истёк. Авто-запрос остановлен."
                 break
 
-            # Следующий цикл начинается сразу после ответа, но не чаще одного раза в 5 секунд.
-            remaining = REQUEST_COOLDOWN_SECONDS - (
-                time.monotonic() - _last_request_at.get(user.id, 0.0)
-            )
-            if remaining > 0:
-                try:
-                    await asyncio.wait_for(stop_event.wait(), timeout=remaining)
-                except asyncio.TimeoutError:
-                    continue
-                if stop_event.is_set():
-                    remaining = REQUEST_COOLDOWN_SECONDS - (
-                        time.monotonic() - _last_request_at.get(user.id, 0.0)
-                    )
-                    if remaining > 0:
-                        await asyncio.sleep(remaining + 0.1)
-                    await state.set_state(AIChatStates.chatting)
-                    await state.update_data(ai_chat_id=chat_id)
-                    await _process_ai_chat_message(
-                        fake_message, state, user_text_override=prompt, skip_duplicate=True
-                    )
+            if stop_event.is_set():
+                # Стоп: дождаться допустимого интервала, отправить ровно один последний запрос.
+                await wait_for_request_cooldown()
+                if not is_premium(user.id):
+                    stopped_by_error = True
+                    stop_reason = "Premium истёк. Финальный запрос не отправлен."
                     break
+                final_success = await run_turn()
+                if not final_success:
+                    stopped_by_error = True
+                    stop_reason = "Остановлен: финальный запрос не выполнен из-за ошибки или лимита."
+                else:
+                    stop_reason = "Остановлен после финального запроса."
+                break
+
+            success = await run_turn()
+            if not success:
+                stopped_by_error = True
+                stop_reason = "Остановлен из-за ошибки или исчерпания лимита."
+                break
+
+            # Следующий запрос начинается сразу после ответа, но не чаще одного раза в 5 секунд.
+            await wait_for_request_cooldown()
     except asyncio.CancelledError:
         raise
     except Exception:
         stopped_by_error = True
+        stop_reason = "Остановлен из-за внутренней ошибки."
         logging.exception("Ошибка авто-запроса пользователя %s", user.id)
     finally:
         _auto_tasks.pop(user.id, None)
         _auto_stop_events.pop(user.id, None)
         try:
-            suffix = "Остановлен из-за ошибки или исчерпания лимита." if stopped_by_error else "Остановлен."
-            await status_message.edit_text(
-                _auto_request_screen_text(user.id, suffix),
-                parse_mode="HTML",
-                reply_markup=_auto_request_keyboard(user.id),
-            )
+            if stopped_by_error:
+                await status_message.edit_text(
+                    _auto_request_screen_text(user.id, stop_reason),
+                    parse_mode="HTML",
+                    reply_markup=_auto_request_keyboard(user.id),
+                )
+            else:
+                await status_message.edit_text(
+                    _auto_request_screen_text(user.id, stop_reason),
+                    parse_mode="HTML",
+                    reply_markup=_auto_request_keyboard(user.id),
+                )
         except Exception:
             logging.debug("Не удалось обновить меню авто-запроса", exc_info=True)
 
@@ -2377,6 +2406,9 @@ async def _auto_request_loop(
 @router.callback_query(lambda callback: callback.data == "ai_auto_toggle")
 async def ai_auto_toggle(callback: types.CallbackQuery, state: FSMContext):
     user_id = callback.from_user.id
+    if not is_premium(user_id):
+        await callback.answer("Авто-запрос доступен только пользователям Premium.", show_alert=True)
+        return
     task = _auto_tasks.get(user_id)
     if task and not task.done():
         stop_event = _auto_stop_events.get(user_id)
