@@ -1632,6 +1632,155 @@ def _extract_reply(data: Dict[str, Any]) -> str:
     return content.strip()
 
 
+def _normalise_provider_usage(raw: Any) -> Optional[Dict[str, Any]]:
+    if not isinstance(raw, dict):
+        return None
+    prompt = raw.get("prompt_tokens", raw.get("input_tokens", 0))
+    completion = raw.get("completion_tokens", raw.get("output_tokens", 0))
+    try:
+        prompt = max(0, int(prompt or 0))
+        completion = max(0, int(completion or 0))
+        total = max(0, int(raw.get("total_tokens") or (prompt + completion)))
+    except (TypeError, ValueError):
+        return None
+    if total <= 0:
+        return None
+    return {
+        "prompt_tokens": prompt,
+        "completion_tokens": completion,
+        "total_tokens": total,
+        "estimated": False,
+    }
+
+
+async def _report_model_usage(
+    callback: Optional[Callable[[Dict[str, Any]], Awaitable[None]]],
+    raw_usage: Any,
+    messages: List[Dict[str, str]],
+    result: str,
+) -> None:
+    if callback is None:
+        return
+    usage = _normalise_provider_usage(raw_usage)
+    if usage is None:
+        prompt_chars = sum(
+            len(str(item.get("content") or ""))
+            for item in messages if isinstance(item, dict)
+        )
+        prompt_tokens = max(1, (prompt_chars + 2) // 3)
+        completion_tokens = max(1, (len(result) + 2) // 3)
+        usage = {
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "total_tokens": prompt_tokens + completion_tokens,
+            "estimated": True,
+        }
+    await callback(usage)
+
+
+async def _request_claude_native(
+    api_key: str,
+    api_url: str,
+    model: str,
+    messages: List[Dict[str, str]],
+    user_text: str,
+    on_delta: Optional[Callable[[str], Awaitable[None]]],
+    on_usage: Optional[Callable[[Dict[str, Any]], Awaitable[None]]],
+    effort: Optional[str],
+) -> str:
+    """Use TokenPlan's Anthropic-compatible Messages endpoint for Claude effort control."""
+    base_url = api_url.rstrip("/")
+    if base_url.endswith("/chat/completions"):
+        base_url = base_url[:-len("/chat/completions")]
+    endpoint = base_url + "/messages"
+    system_prompt = next(
+        (str(item.get("content") or "") for item in messages if item.get("role") == "system"),
+        "",
+    )
+    conversation = [
+        {"role": item["role"], "content": item.get("content", "")}
+        for item in messages
+        if item.get("role") in {"user", "assistant"}
+    ]
+    conversation.append({"role": "user", "content": user_text})
+    payload: Dict[str, Any] = {
+        "model": model,
+        "max_tokens": 16384,
+        "stream": True,
+        "system": system_prompt,
+        "messages": conversation,
+    }
+    if effort:
+        payload["output_config"] = {"effort": effort}
+    headers = {
+        "x-api-key": api_key,
+        "anthropic-version": "2023-06-01",
+        "Content-Type": "application/json",
+        "Accept": "text/event-stream, application/json",
+    }
+    timeout = aiohttp.ClientTimeout(total=None, connect=30, sock_read=None)
+    request_messages = [{"role": "system", "content": system_prompt}, *conversation]
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        async with session.post(endpoint, headers=headers, json=payload) as response:
+            body_type = response.headers.get("Content-Type", "").lower()
+            if response.status != 200:
+                body = await response.text()
+                raise RuntimeError(
+                    f"TokenPlan Claude API HTTP {response.status}: "
+                    f"{body[:500] or 'Нет подробностей от сервера'}"
+                )
+            if "text/event-stream" in body_type:
+                chunks: List[str] = []
+                raw_usage: Dict[str, Any] = {}
+                async for raw_line in response.content:
+                    line = raw_line.decode("utf-8", errors="replace").strip()
+                    if not line.startswith("data:"):
+                        continue
+                    data_text = line[5:].strip()
+                    if not data_text or data_text == "[DONE]":
+                        continue
+                    try:
+                        event = json.loads(data_text)
+                    except json.JSONDecodeError:
+                        continue
+                    event_type = event.get("type")
+                    if event_type == "message_start":
+                        usage = (event.get("message") or {}).get("usage")
+                        if isinstance(usage, dict):
+                            raw_usage.update(usage)
+                    elif event_type == "message_delta":
+                        usage = event.get("usage")
+                        if isinstance(usage, dict):
+                            raw_usage.update(usage)
+                    elif event_type == "content_block_delta":
+                        delta = event.get("delta") or {}
+                        piece = delta.get("text")
+                        if isinstance(piece, str) and piece:
+                            chunks.append(piece)
+                            if on_delta is not None:
+                                await on_delta(piece)
+                    elif event_type == "error":
+                        raise RuntimeError("TokenPlan Claude stream error: " + str(event.get("error", {}))[:400])
+                result = "".join(chunks).strip()
+            else:
+                data = await response.json(content_type=None)
+                if not isinstance(data, dict):
+                    raise RuntimeError("TokenPlan Claude API вернул ответ неизвестного формата")
+                content = data.get("content") or []
+                result = "".join(
+                    str(item.get("text") or "")
+                    for item in content
+                    if isinstance(item, dict) and item.get("type") == "text"
+                ).strip()
+                raw_usage = data.get("usage") or {}
+                if on_delta is not None and result:
+                    await on_delta(result)
+            if not result:
+                raise RuntimeError("TokenPlan Claude API вернул пустой ответ.")
+            await _report_model_usage(on_usage, raw_usage, request_messages, result)
+            return result
+
+
 async def _request_model(
     model: str,
     previous_messages: List[Dict[str, str]],
