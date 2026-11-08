@@ -812,12 +812,16 @@ def _new_chat_keyboard() -> InlineKeyboardMarkup:
 
 
 def _is_paid_model(model: str) -> bool:
+    normalized = str(model or "").lower()
     return (
-        model.startswith("claude")
-        or model in {
-            "gpt-6-astra", "gpt-6-sol",
-            "gemini-4-argon", "kimi-k3", "deepseek-v4.1-flash",
-        }
+        normalized.startswith("claude")
+        or normalized in {"gpt-6-astra", "gpt-6-sol"}
+        or normalized == "gemini-4-argon"
+        or normalized.startswith("gemini-4-argon-")
+        or normalized == "kimi-k3"
+        or normalized.startswith("kimi-k3-")
+        or normalized == "deepseek-v4.1-flash"
+        or normalized.startswith("deepseek-v4.1-flash-")
     )
 
 
@@ -2776,10 +2780,15 @@ async def ai_chat_set_model(callback: types.CallbackQuery, state: FSMContext):
         await callback.answer("Эта модель доступна только с премиум-доступом.", show_alert=True)
         return
     previous_model = chat.get("model")
+    previous_effort = chat.get("reasoning_effort")
     chat["model"] = model
+    if previous_effort not in {value for value, _ in _effort_levels(model)}:
+        chat.pop("reasoning_effort", None)
     chat["updated_at"] = _now()
     if not _save_history():
         chat["model"] = previous_model
+        if previous_effort is not None:
+            chat["reasoning_effort"] = previous_effort
         await callback.answer("Не удалось сохранить модель.", show_alert=True)
         return
     await callback.answer("Модель изменена.")
@@ -3340,6 +3349,10 @@ async def _process_ai_chat_message(
                 await _update_ai_progress(progress_message, "Получает и формирует ответ модели")
             await on_model_delta(piece)
 
+        effort_level = chat.get("reasoning_effort")
+        if effort_level not in {value for value, _ in _effort_levels(model)}:
+            effort_level = None
+
         async def tracked_model_usage(usage: Dict[str, Any]) -> None:
             try:
                 record_ai_usage(user_id, model, usage)
@@ -3350,7 +3363,7 @@ async def _process_ai_chat_message(
             model, model_history, request_text, user_id=user_id,
             on_delta=tracked_model_delta,
             on_usage=tracked_model_usage,
-            effort=chat.get("reasoning_effort"),
+            effort=effort_level,
         )
         if not is_premium(user_id):
             try:
