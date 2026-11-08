@@ -1787,6 +1787,8 @@ async def _request_model(
     user_text: str,
     user_id: Optional[int] = None,
     on_delta: Optional[Callable[[str], Awaitable[None]]] = None,
+    on_usage: Optional[Callable[[Dict[str, Any]], Awaitable[None]]] = None,
+    effort: Optional[str] = None,
 ) -> str:
     custom_api = _custom_api_pair(user_id) if user_id is not None else None
     if custom_api is not None:
@@ -1805,15 +1807,25 @@ async def _request_model(
     if not api_url:
         raise RuntimeError("Не задан TOKENPLAN_BASE_URL.")
 
+    if model.startswith("claude") and custom_api is None:
+        return await _request_claude_native(
+            api_key, api_url, model,
+            [{"role": "system", "content": _effective_system_prompt(user_id)}, *previous_messages[-MAX_CONTEXT_MESSAGES:]],
+            user_text, on_delta, on_usage, effort,
+        )
+
     payload = {
         "model": model,
         "stream": True,
+        "stream_options": {"include_usage": True},
         "messages": [
             {"role": "system", "content": _effective_system_prompt(user_id)},
             *previous_messages[-MAX_CONTEXT_MESSAGES:],
             {"role": "user", "content": user_text},
         ],
     }
+    if effort:
+        payload["reasoning_effort"] = effort
     # Общий timeout и sock_read отключены: долгий поток не должен обрываться клиентом.
     timeout = aiohttp.ClientTimeout(total=None, connect=30, sock_read=None)
     headers = {
@@ -1851,15 +1863,25 @@ async def _request_model(
                         detail = str(error) if error else ""
                     detail = detail or raw_body[:500] or "Нет подробностей от сервера"
                     request_suffix = f"; request_id={request_id}" if request_id else ""
+                    response_error_text = (detail + " " + raw_body).lower()
+                    unsupported_parameter = any(
+                        term in response_error_text
+                        for term in ("unsupported", "not support", "unknown", "invalid", "unexpected", "extra inputs")
+                    )
                     stream_rejected = (
                         response.status in (400, 422)
-                        and "stream" in (detail + " " + raw_body).lower()
-                        and any(term in (detail + " " + raw_body).lower()
-                                for term in ("unsupported", "not support", "unknown", "invalid", "unexpected"))
+                        and ("stream" in response_error_text or "stream_options" in response_error_text)
+                        and unsupported_parameter
                     )
-                    if stream_rejected:
-                        logging.warning("TokenPlan rejected stream=true; retrying once without streaming")
+                    usage_option_rejected = (
+                        response.status in (400, 422)
+                        and ("stream_options" in response_error_text or "include_usage" in response_error_text)
+                        and unsupported_parameter
+                    )
+                    if stream_rejected or usage_option_rejected:
+                        logging.warning("TokenPlan rejected streaming usage options; retrying once without streaming")
                         payload.pop("stream", None)
+                        payload.pop("stream_options", None)
                         async with session.post(api_url, headers=headers, json=payload) as fallback:
                             fallback_body = await fallback.text()
                             try:
@@ -1874,6 +1896,9 @@ async def _request_model(
                             if not isinstance(fallback_data, dict):
                                 raise RuntimeError("TokenPlan вернул ответ в неизвестном формате")
                             fallback_result = _extract_reply(fallback_data)
+                            await _report_model_usage(
+                                on_usage, fallback_data.get("usage"), payload["messages"], fallback_result
+                            )
                             if on_delta is not None:
                                 await on_delta(fallback_result)
                             logging.info(
@@ -1891,6 +1916,7 @@ async def _request_model(
                 if "text/event-stream" in content_type:
                     chunks: List[str] = []
                     stream_finished = False
+                    reported_usage: Any = None
                     async for raw_line in response.content:
                         line = raw_line.decode("utf-8", errors="replace").strip()
                         if not line.startswith("data:"):
@@ -1908,6 +1934,8 @@ async def _request_model(
                             continue
                         if isinstance(event, dict) and event.get("error"):
                             raise RuntimeError("TokenPlan stream error: " + str(event["error"])[:500])
+                        if isinstance(event, dict) and isinstance(event.get("usage"), dict):
+                            reported_usage = event["usage"]
                         choices = event.get("choices", []) if isinstance(event, dict) else []
                         if not isinstance(choices, list):
                             continue
@@ -1945,6 +1973,9 @@ async def _request_model(
                             "TokenPlan SSE stream closed without [DONE]: model=%s elapsed=%.1fs",
                             model, time.monotonic() - started_at,
                         )
+                    await _report_model_usage(
+                        on_usage, reported_usage, payload["messages"], result
+                    )
                     logging.info(
                         "TokenPlan stream completed: model=%s chars=%s elapsed=%.1fs",
                         model, len(result), time.monotonic() - started_at,
@@ -1960,6 +1991,9 @@ async def _request_model(
                 if not isinstance(data, dict):
                     raise RuntimeError("TokenPlan вернул ответ в неизвестном формате")
                 result = _extract_reply(data)
+                await _report_model_usage(
+                    on_usage, data.get("usage"), payload["messages"], result
+                )
                 if on_delta is not None:
                     await on_delta(result)
                 logging.info(
