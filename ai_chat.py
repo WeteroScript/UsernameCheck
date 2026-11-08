@@ -819,7 +819,7 @@ def _is_paid_model(model: str) -> bool:
         or normalized == "gemini-4-argon"
         or normalized.startswith("gemini-4-argon-")
         or normalized == "kimi-k3"
-        or normalized.startswith("kimi-k3-")
+        or normalized.startswith(("kimi-k3-", "kimi-k3."))
         or normalized == "deepseek-v4.1-flash"
         or normalized.startswith("deepseek-v4.1-flash-")
     )
