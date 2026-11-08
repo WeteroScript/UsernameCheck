@@ -157,17 +157,49 @@ user_session_config: Dict[int, Dict[str, Dict[str, Any]]] = {}
 user_lang: Dict[int, str] = {}  # user_id -> "ru" | "en"
 
 LANG_FILE = data_file(os.getenv("USER_LANG_FILE", "user_lang.json"))
+MENU_LAYOUT_FILE = data_file("user_menu_layout.json")
+user_menu_layout: Dict[int, str] = {}
+
+
+def load_menu_layout() -> Dict[int, str]:
+    if not os.path.exists(MENU_LAYOUT_FILE):
+        return {}
+    try:
+        with open(MENU_LAYOUT_FILE, "r", encoding="utf-8") as file:
+            data = json.load(file)
+        return {
+            int(user_id): layout
+            for user_id, layout in data.items()
+            if layout in {"sections", "flat"}
+        }
+    except Exception:
+        logging.exception("Не удалось загрузить настройки интерфейса")
+        return {}
+
+
+def save_menu_layout() -> bool:
+    try:
+        with open(MENU_LAYOUT_FILE, "w", encoding="utf-8") as file:
+            json.dump(user_menu_layout, file, indent=2, ensure_ascii=False)
+        return True
+    except Exception:
+        logging.exception("Не удалось сохранить настройки интерфейса")
+        return False
+
+
+user_menu_layout.update(load_menu_layout())
+
 
 LANG_STRINGS = {
     "ru": {
-        "settings_title": "⚙️ <b>Настройки</b>\n\nВыберите язык / Choose language:",
+        "settings_title": "⚙️ <b>Настройки</b>\n\nВыберите язык и тип главного меню:",
         "lang_set": "✅ Язык установлен: Русский 🇷🇺",
         "back": "⬅️ Назад",
         "lang_ru": "🇷🇺 Русский",
         "lang_en": "🇬🇧 English",
     },
     "en": {
-        "settings_title": "⚙️ <b>Settings</b>\n\nSelect language / Выберите язык:",
+        "settings_title": "⚙️ <b>Settings</b>\n\nChoose language and main menu layout:",
         "lang_set": "✅ Language set: English 🇬🇧",
         "back": "⬅️ Back",
         "lang_ru": "🇷🇺 Russian",
@@ -500,21 +532,68 @@ def get_session_settings_keyboard(user_id: int, phone: str, back_to: str = None)
 
 
 def get_main_keyboard(user_id: Optional[int] = None) -> InlineKeyboardMarkup:
-    """Главное меню-каталог с локализованными кнопками."""
-    rows = [
-        [
-            InlineKeyboardButton(text=tr(user_id, "menu_automation"), callback_data="home_automation", style=ButtonStyle.SUCCESS),
-            InlineKeyboardButton(text=tr(user_id, "menu_tools"), callback_data="home_tools", style=ButtonStyle.PRIMARY),
-        ],
-        [
-            InlineKeyboardButton(text=tr(user_id, "menu_ai"), callback_data="home_ai", style=ButtonStyle.SUCCESS),
-            InlineKeyboardButton(text=tr(user_id, "menu_profile"), callback_data="home_profile", style=ButtonStyle.PRIMARY),
-        ],
-        [InlineKeyboardButton(text=tr(user_id, "menu_settings"), callback_data="bot_settings_menu", style=ButtonStyle.PRIMARY)],
-    ]
+    """Главное меню в выбранном пользователем формате."""
+    layout = user_menu_layout.get(user_id, "sections") if user_id is not None else "sections"
+    if layout == "flat":
+        rows = [
+            [InlineKeyboardButton(text=tr(user_id, "automation_bots"), callback_data="bots", style=ButtonStyle.SUCCESS),
+             InlineKeyboardButton(text=tr(user_id, "automation_accounts"), callback_data="accounts", style=ButtonStyle.PRIMARY)],
+            [InlineKeyboardButton(text=tr(user_id, "automation_channels"), callback_data="channels_menu", style=ButtonStyle.PRIMARY),
+             InlineKeyboardButton(text=tr(user_id, "tools_usernames"), callback_data="users", style=ButtonStyle.PRIMARY)],
+            [InlineKeyboardButton(text=tr(user_id, "tools_shakalizer"), callback_data="shakalizer_menu", style=ButtonStyle.SUCCESS),
+             InlineKeyboardButton(text=tr(user_id, "tools_gifts"), callback_data="gifts_menu", style=ButtonStyle.DANGER)],
+            [InlineKeyboardButton(text=tr(user_id, "tools_video"), callback_data="video_menu", style=ButtonStyle.PRIMARY),
+             InlineKeyboardButton(text=tr(user_id, "tools_ai_chat"), callback_data="ai_menu", style=ButtonStyle.SUCCESS)],
+            [InlineKeyboardButton(text=tr(user_id, "tools_github"), callback_data="github_menu", style=ButtonStyle.PRIMARY),
+             InlineKeyboardButton(text=tr(user_id, "profile_get_id"), callback_data="getid_menu", style=ButtonStyle.PRIMARY)],
+            [InlineKeyboardButton(text=tr(user_id, "profile_premium"), callback_data="premium_menu", style=ButtonStyle.DANGER),
+             InlineKeyboardButton(text=tr(user_id, "profile_bug"), callback_data="bugreport_menu", style=ButtonStyle.PRIMARY)],
+            [InlineKeyboardButton(text=tr(user_id, "menu_settings"), callback_data="bot_settings_menu", style=ButtonStyle.PRIMARY)],
+        ]
+    else:
+        rows = [
+            [
+                InlineKeyboardButton(text=tr(user_id, "menu_automation"), callback_data="home_automation", style=ButtonStyle.SUCCESS),
+                InlineKeyboardButton(text=tr(user_id, "menu_tools"), callback_data="home_tools", style=ButtonStyle.PRIMARY),
+            ],
+            [
+                InlineKeyboardButton(text=tr(user_id, "menu_ai"), callback_data="home_ai", style=ButtonStyle.SUCCESS),
+                InlineKeyboardButton(text=tr(user_id, "menu_profile"), callback_data="home_profile", style=ButtonStyle.PRIMARY),
+            ],
+            [InlineKeyboardButton(text=tr(user_id, "menu_settings"), callback_data="bot_settings_menu", style=ButtonStyle.PRIMARY)],
+        ]
     if user_id is not None and is_admin(user_id):
         rows.append([InlineKeyboardButton(text=tr(user_id, "menu_admin"), callback_data="adm_help", style=ButtonStyle.DANGER)])
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def get_bot_settings_keyboard(user_id: int) -> InlineKeyboardMarkup:
+    lang = get_user_lang(user_id)
+    ls = LANG_STRINGS[lang]
+    current_layout = user_menu_layout.get(user_id, "sections")
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(
+                text=("✅ " if lang == "ru" else "") + ls["lang_ru"],
+                callback_data="set_lang_ru"
+            ),
+            InlineKeyboardButton(
+                text=("✅ " if lang == "en" else "") + ls["lang_en"],
+                callback_data="set_lang_en"
+            ),
+        ],
+        [InlineKeyboardButton(
+            text=("✅ " if current_layout == "sections" else "")
+                 + ("🗂 По разделам" if lang == "ru" else "🗂 By sections"),
+            callback_data="set_menu_layout_sections"
+        )],
+        [InlineKeyboardButton(
+            text=("✅ " if current_layout == "flat" else "")
+                 + ("📋 Всё в главном меню" if lang == "ru" else "📋 Everything in main menu"),
+            callback_data="set_menu_layout_flat"
+        )],
+        [InlineKeyboardButton(text=ls["back"], callback_data="main")],
+    ])
 
 
 def get_home_category_keyboard(category: str, user_id: Optional[int] = None) -> InlineKeyboardMarkup:
@@ -808,29 +887,45 @@ async def github_disconnect(callback: types.CallbackQuery):
 
 @dp.callback_query(lambda c: c.data == "bot_settings_menu")
 async def bot_settings_menu(callback: types.CallbackQuery):
-    """Раздел настроек бота: смена языка."""
+    """Настройки языка и компоновки главного меню."""
     await callback.answer()
     user_id = callback.from_user.id
     lang = get_user_lang(user_id)
-    ls = LANG_STRINGS[lang]
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(
-                text=("✅ " if lang == "ru" else "") + ls["lang_ru"],
-                callback_data="set_lang_ru"
-            ),
-            InlineKeyboardButton(
-                text=("✅ " if lang == "en" else "") + ls["lang_en"],
-                callback_data="set_lang_en"
-            ),
-        ],
-        [InlineKeyboardButton(text=ls["back"], callback_data="main")],
-    ])
     await safe_edit_message(
         callback.message,
-        ls["settings_title"],
+        LANG_STRINGS[lang]["settings_title"],
         parse_mode=ParseMode.HTML,
-        reply_markup=kb
+        reply_markup=get_bot_settings_keyboard(user_id)
+    )
+
+
+@dp.callback_query(lambda c: c.data in {"set_menu_layout_sections", "set_menu_layout_flat"})
+async def set_menu_layout_callback(callback: types.CallbackQuery):
+    user_id = callback.from_user.id
+    new_layout = "sections" if callback.data == "set_menu_layout_sections" else "flat"
+    previous_layout = user_menu_layout.get(user_id)
+    user_menu_layout[user_id] = new_layout
+    if not save_menu_layout():
+        if previous_layout is None:
+            user_menu_layout.pop(user_id, None)
+        else:
+            user_menu_layout[user_id] = previous_layout
+        await callback.answer("Не удалось сохранить настройку.", show_alert=True)
+        return
+    lang = get_user_lang(user_id)
+    confirmation = (
+        "Интерфейс: меню по разделам." if new_layout == "sections"
+        else "Интерфейс: всё в главном меню."
+    ) if lang == "ru" else (
+        "Layout set to sections." if new_layout == "sections"
+        else "All items are now in the main menu."
+    )
+    await callback.answer(confirmation)
+    await safe_edit_message(
+        callback.message,
+        LANG_STRINGS[lang]["settings_title"],
+        parse_mode=ParseMode.HTML,
+        reply_markup=get_bot_settings_keyboard(user_id)
     )
 
 
@@ -842,25 +937,11 @@ async def set_lang_callback(callback: types.CallbackQuery):
     save_lang()
     ls = LANG_STRINGS[new_lang]
     await callback.answer(ls["lang_set"])
-    # Возвращаем обновлённое меню настроек
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(
-                text=("✅ " if new_lang == "ru" else "") + ls["lang_ru"],
-                callback_data="set_lang_ru"
-            ),
-            InlineKeyboardButton(
-                text=("✅ " if new_lang == "en" else "") + ls["lang_en"],
-                callback_data="set_lang_en"
-            ),
-        ],
-        [InlineKeyboardButton(text=ls["back"], callback_data="main")],
-    ])
     await safe_edit_message(
         callback.message,
         ls["settings_title"],
         parse_mode=ParseMode.HTML,
-        reply_markup=kb
+        reply_markup=get_bot_settings_keyboard(user_id)
     )
 
 
