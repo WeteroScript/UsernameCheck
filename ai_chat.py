@@ -2337,15 +2337,19 @@ async def _auto_request_loop(
             fake_message, state, user_text_override=prompt, skip_duplicate=True
         )
 
-    async def wait_for_request_cooldown() -> None:
+    async def wait_for_request_cooldown(interruptible: bool = True) -> None:
         remaining = REQUEST_COOLDOWN_SECONDS - (
             time.monotonic() - _last_request_at.get(user.id, 0.0)
         )
-        if remaining > 0:
-            try:
-                await asyncio.wait_for(stop_event.wait(), timeout=remaining + 0.15)
-            except asyncio.TimeoutError:
-                pass
+        if remaining <= 0:
+            return
+        if not interruptible or stop_event.is_set():
+            await asyncio.sleep(remaining + 0.15)
+            return
+        try:
+            await asyncio.wait_for(stop_event.wait(), timeout=remaining + 0.15)
+        except asyncio.TimeoutError:
+            pass
 
     try:
         while True:
@@ -2356,7 +2360,7 @@ async def _auto_request_loop(
 
             if stop_event.is_set():
                 # Стоп: дождаться допустимого интервала, отправить ровно один последний запрос.
-                await wait_for_request_cooldown()
+                await wait_for_request_cooldown(interruptible=False)
                 if not is_premium(user.id):
                     stopped_by_error = True
                     stop_reason = "Premium истёк. Финальный запрос не отправлен."
