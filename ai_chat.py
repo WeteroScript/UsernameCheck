@@ -1888,6 +1888,8 @@ async def _request_claude_native(
             if "text/event-stream" in body_type:
                 chunks: List[str] = []
                 raw_usage: Dict[str, Any] = {}
+                message_stopped = False
+                stop_reason: Optional[str] = None
                 async for raw_line in response.content:
                     line = raw_line.decode("utf-8", errors="replace").strip()
                     if not line.startswith("data:"):
@@ -1908,6 +1910,9 @@ async def _request_claude_native(
                         usage = event.get("usage")
                         if isinstance(usage, dict):
                             raw_usage.update(usage)
+                        delta = event.get("delta") or {}
+                        if isinstance(delta, dict) and delta.get("stop_reason") is not None:
+                            stop_reason = str(delta["stop_reason"])
                     elif event_type == "content_block_delta":
                         delta = event.get("delta") or {}
                         piece = delta.get("text")
@@ -1915,9 +1920,20 @@ async def _request_claude_native(
                             chunks.append(piece)
                             if on_delta is not None:
                                 await on_delta(piece)
+                    elif event_type == "message_stop":
+                        message_stopped = True
                     elif event_type == "error":
                         raise RuntimeError("TokenPlan Claude stream error: " + str(event.get("error", {}))[:400])
                 result = "".join(chunks).strip()
+                if not message_stopped:
+                    raise RuntimeError(
+                        "Поток Claude завершился без события message_stop. "
+                        "Ответ считается незавершённым; следующий авто-запрос не будет запущен."
+                    )
+                if stop_reason == "max_tokens":
+                    raise RuntimeError(
+                        "Claude достиг лимита длины ответа. Ответ неполный; следующий авто-запрос не будет запущен."
+                    )
             else:
                 data = await response.json(content_type=None)
                 if not isinstance(data, dict):
