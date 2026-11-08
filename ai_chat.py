@@ -1843,6 +1843,21 @@ _CONTINUATION_PROMPT = (
 )
 
 
+def _has_incomplete_structured_output(text: str) -> bool:
+    """Detect truncated file payloads even when a provider reports finish_reason=stop."""
+    lowered = str(text or "").lower()
+    for opening, closing in (
+        ("[[file:", "[[/file]]"),
+        ("[[github_file:", "[[/github_file]]"),
+    ):
+        if lowered.count(opening) > lowered.count(closing):
+            return True
+
+    # An unclosed fenced block is another strong structural signal of truncation.
+    return str(text or "").count("```") % 2 == 1
+
+
+
 async def _continue_limited_model_response(
     model: str,
     previous_messages: List[Dict[str, str]],
@@ -2017,7 +2032,7 @@ async def _request_claude_native(
             if "text/event-stream" not in body_type and on_delta is not None:
                 await on_delta(result)
 
-            if stop_reason == "max_tokens":
+            if stop_reason == "max_tokens" or _has_incomplete_structured_output(result):
                 history_without_system = [
                     item for item in messages if item.get("role") in {"user", "assistant"}
                 ]
@@ -2188,7 +2203,7 @@ async def _request_model_once(
                             )
                             if on_delta is not None:
                                 await on_delta(fallback_result)
-                            if fallback_finish_reason in {"length", "max_tokens"}:
+                            if fallback_finish_reason in {"length", "max_tokens"} or _has_incomplete_structured_output(fallback_result):
                                 return await _continue_limited_model_response(
                                     model=model,
                                     previous_messages=previous_messages,
@@ -2309,7 +2324,7 @@ async def _request_model_once(
                             "Поток ответа TokenPlan оборвался без признака завершения генерации. "
                             "Неполный ответ не сохранён и не будет применён к GitHub."
                         )
-                    if finish_reason_value in {"length", "max_tokens"}:
+                    if finish_reason_value in {"length", "max_tokens"} or _has_incomplete_structured_output(result):
                         return await _continue_limited_model_response(
                             model=model,
                             previous_messages=previous_messages,
