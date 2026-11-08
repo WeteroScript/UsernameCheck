@@ -1,4 +1,4 @@
-"""Crypto Pay integration for lifetime Premium.
+"""Crypto Pay integration for 30-day Premium.
 
 Invoices are denominated in RUB and can be paid with USDT or TON.
 Every invoice expires after 15 minutes and is then deleted through Crypto Pay.
@@ -214,14 +214,14 @@ async def premium_buy_crypto(callback: types.CallbackQuery):
                     )
                     return
 
-        payload_id = f"premium_lifetime:{user_id}:{uuid.uuid4().hex}"
+        payload_id = f"premium_30days:{user_id}:{uuid.uuid4().hex}"
         try:
             invoice = await _crypto_pay("createInvoice", {
                 "currency_type": "fiat",
                 "fiat": "RUB",
                 "amount": "300",
                 "accepted_assets": "USDT,TON",
-                "description": "Premium — пожизненный доступ",
+                "description": "Premium — доступ на 30 дней",
                 "payload": payload_id,
                 "allow_comments": False,
                 "allow_anonymous": False,
