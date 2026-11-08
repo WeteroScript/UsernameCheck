@@ -1979,6 +1979,7 @@ async def _request_model_once(
     on_usage: Optional[Callable[[Dict[str, Any]], Awaitable[None]]] = None,
     effort: Optional[str] = None,
     _retry_attempt: int = 0,
+    _continuation_depth: int = 0,
 ) -> str:
     custom_api = _custom_api_pair(user_id) if user_id is not None else None
     if custom_api is not None:
@@ -2008,6 +2009,7 @@ async def _request_model_once(
         "model": model,
         "stream": True,
         "stream_options": {"include_usage": True},
+        "max_tokens": 16384,
         "messages": [
             {"role": "system", "content": _effective_system_prompt(user_id)},
             *previous_messages[-MAX_CONTEXT_MESSAGES:],
@@ -2201,9 +2203,38 @@ async def _request_model_once(
                             "Неполный ответ не сохранён и не будет применён к GitHub."
                         )
                     if finish_reason_value == "length":
-                        raise RuntimeError(
-                            "Модель достигла лимита длины ответа. Результат неполный и не будет применён к GitHub."
+                        if _continuation_depth >= 8:
+                            raise RuntimeError(
+                                "Модель достигла лимита длины ответа 8 раз подряд. "
+                                "Частичный результат сохранён в сообщении, но задача требует дальнейшего продолжения."
+                            )
+                        logging.warning(
+                            "Model output token limit reached; continuing: model=%s depth=%s chars=%s",
+                            model, _continuation_depth + 1, len(result),
                         )
+                        continuation_context = [
+                            *previous_messages[-MAX_CONTEXT_MESSAGES:],
+                            {"role": "user", "content": user_text},
+                            {"role": "assistant", "content": result},
+                        ]
+                        continuation_prompt = (
+                            "Продолжи предыдущий ответ строго с места остановки. "
+                            "Не повторяй уже выданный текст и не начинай ответ заново. "
+                            "Сохрани исходную задачу, форматирование и структуру. "
+                            "Заверши текущую мысль и полностью выполни исходный запрос. "
+                            "Верни только продолжение."
+                        )
+                        continuation = await _request_model(
+                            model, continuation_context, continuation_prompt,
+                            user_id=user_id, on_delta=on_delta, on_usage=on_usage,
+                            effort=effort, _continuation_depth=_continuation_depth + 1,
+                        )
+                        separator = (
+                            " " if result and continuation
+                            and result[-1].isalnum() and continuation[0].isalnum()
+                            else ""
+                        )
+                        return result + separator + continuation
                     if finish_reason_value == "content_filter":
                         raise RuntimeError(
                             "Провайдер остановил генерацию фильтром содержимого. Ответ не будет применён к GitHub."
@@ -2259,6 +2290,7 @@ async def _request_model(
     on_usage: Optional[Callable[[Dict[str, Any]], Awaitable[None]]] = None,
     effort: Optional[str] = None,
     _retry_attempt: int = 0,
+    _continuation_depth: int = 0,
 ) -> str:
     """Retry HTTP 502 every five minutes until the provider accepts the request."""
     retry_count = 0
@@ -2273,6 +2305,7 @@ async def _request_model(
                 on_usage=on_usage,
                 effort=effort,
                 _retry_attempt=_retry_attempt,
+                _continuation_depth=_continuation_depth,
             )
         except _TokenPlanHTTP502 as exc:
             retry_count += 1
@@ -2466,7 +2499,6 @@ async def _auto_request_loop(
             state,
             user_text_override=prompt,
             skip_duplicate=True,
-            auto_completion_check=True,
         )
 
     async def wait_for_request_cooldown(interruptible: bool = True) -> None:
@@ -3343,7 +3375,6 @@ async def _process_ai_chat_message(
     state: FSMContext,
     user_text_override: Optional[str] = None,
     skip_duplicate: bool = False,
-    auto_completion_check: bool = False,
 ) -> bool:
     if not skip_duplicate and _is_duplicate_ai_message(message):
         logging.warning(
@@ -3412,7 +3443,6 @@ async def _process_ai_chat_message(
             return
 
     model = str(chat.get("model", "неизвестная модель"))
-    buffer_deepseek_auto_response = auto_completion_check and "deepseek" in model.lower()
     if _is_paid_model(model) and not is_premium(user_id):
         await state.clear()
         await message.answer("Эта модель доступна только с премиум-доступом. Выбери другую модель.")
@@ -3529,15 +3559,6 @@ async def _process_ai_chat_message(
 
         async def tracked_model_delta(piece: str) -> None:
             nonlocal model_generation_started
-            if buffer_deepseek_auto_response:
-                if not model_generation_started:
-                    model_generation_started = True
-                    await _update_ai_progress(
-                        progress_message,
-                        "Получает ответ DeepSeek и проверяет его завершённость",
-                    )
-                # Hold DeepSeek auto-mode chunks until any needed continuation is merged.
-                return
             if not model_generation_started:
                 model_generation_started = True
                 await _update_ai_progress(progress_message, "Получает и формирует ответ модели")
@@ -3561,99 +3582,6 @@ async def _process_ai_chat_message(
             on_usage=tracked_model_usage,
             effort=effort_level,
         )
-
-        # DeepSeek can finish an SSE stream normally while its answer is still
-        # semantically incomplete. Verify it before the auto loop starts again.
-        if auto_completion_check and "deepseek" in model.lower():
-            verification_context = [
-                {"role": "user", "content": user_text},
-                {"role": "assistant", "content": reply},
-            ]
-            verification_instruction = (
-                "Ты проверяешь завершённость ответа ИИ. Не отвечай на исходный запрос "
-                "и не исправляй текст. Определи только, закончен ли ответ целиком. "
-                "Верни INCOMPLETE, если ответ обрывается посреди мысли или предложения, "
-                "заканчивается незавершённым перечислением, обещанием продолжить, "
-                "двоеточием, запятой, тире, открытой скобкой либо незакрытым блоком кода "
-                "или GITHUB_FILE/FILE. Верни COMPLETE, если ответ представляет собой "
-                "законченный результат, даже если в нём есть код, списки или заголовки. "
-                "Короткий ответ из одного законченного предложения тоже может быть полным. "
-                "Ответь строго одним словом: COMPLETE или INCOMPLETE."
-            )
-            completion_confirmed = False
-            for completion_attempt in range(2):
-                await _update_ai_progress(progress_message, "Проверяет завершённость ответа DeepSeek")
-                verdict = await _request_model(
-                    model,
-                    verification_context,
-                    verification_instruction,
-                    user_id=user_id,
-                    on_usage=tracked_model_usage,
-                    effort=None,
-                )
-                verdict_text = verdict.strip().upper()
-                # DeepSeek иногда добавляет пояснение или Markdown вокруг вердикта.
-                # Ищем самостоятельный токен во всём ответе, а не только первую строку.
-                if re.search(r"\bINCOMPLETE\b", verdict_text):
-                    verdict_word = "INCOMPLETE"
-                elif re.search(r"\bCOMPLETE\b", verdict_text):
-                    verdict_word = "COMPLETE"
-                else:
-                    verdict_word = verdict_text.splitlines()[0].strip().strip("*_`.,:;! ") if verdict_text else ""
-                logging.info(
-                    "DeepSeek auto completion check: model=%s user_id=%s attempt=%s verdict=%s chars=%s",
-                    model, user_id, completion_attempt + 1, verdict_word[:40], len(reply),
-                )
-                if verdict_word == "COMPLETE":
-                    completion_confirmed = True
-                    break
-
-                if completion_attempt == 1:
-                    break
-
-                await _update_ai_progress(progress_message, "Дополняет незавершённый ответ DeepSeek")
-                continuation_context = [
-                    *model_history[-MAX_CONTEXT_MESSAGES:],
-                    {"role": "user", "content": request_text},
-                    {"role": "assistant", "content": reply},
-                ]
-                continuation_instruction = (
-                    "Продолжи свой предыдущий ответ с места остановки. Ответ предыдущей "
-                    "генерации оборвался до завершения задачи. Не пересказывай и не повторяй "
-                    "уже выданный текст. Сохрани исходный формат, требования и структуру; "
-                    "заверши незаконченные предложения, списки, кодовые блоки и блоки файлов. "
-                    "Верни только недостающую часть ответа."
-                )
-                continuation = await _request_model(
-                    model,
-                    continuation_context,
-                    continuation_instruction,
-                    user_id=user_id,
-                    on_delta=tracked_model_delta,
-                    on_usage=tracked_model_usage,
-                    effort=effort_level,
-                )
-                if not continuation.strip():
-                    break
-                separator = (
-                    " "
-                    if reply and continuation and reply[-1].isalnum() and continuation[0].isalnum()
-                    else ""
-                )
-                reply += separator + continuation
-                verification_context[-1]["content"] = reply
-
-            if not completion_confirmed:
-                # Show the available text together with the error instead of silently discarding it.
-                if buffer_deepseek_auto_response and reply:
-                    await on_model_delta(reply)
-                raise RuntimeError(
-                    "DeepSeek не подтвердил завершённость ответа после попытки продолжения. "
-                    "Авто-запрос остановлен, чтобы не начинать следующий цикл на обрезанном тексте."
-                )
-            if buffer_deepseek_auto_response and reply:
-                # Render once, after the original answer and continuation have been combined.
-                await on_model_delta(reply)
 
         if not is_premium(user_id):
             try:
