@@ -3522,9 +3522,9 @@ async def _process_ai_chat_message(
                 verdict_text = verdict.strip().upper()
                 # DeepSeek иногда добавляет пояснение или Markdown вокруг вердикта.
                 # Ищем самостоятельный токен во всём ответе, а не только первую строку.
-                if re.search(r"\\bINCOMPLETE\\b", verdict_text):
+                if re.search(r"\bINCOMPLETE\b", verdict_text):
                     verdict_word = "INCOMPLETE"
-                elif re.search(r"\\bCOMPLETE\\b", verdict_text):
+                elif re.search(r"\bCOMPLETE\b", verdict_text):
                     verdict_word = "COMPLETE"
                 else:
                     verdict_word = verdict_text.splitlines()[0].strip().strip("*_`.,:;! ") if verdict_text else ""
