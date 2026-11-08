@@ -2072,6 +2072,8 @@ async def _request_model(
                 if "text/event-stream" in content_type:
                     chunks: List[str] = []
                     stream_finished = False
+                    stream_done_marker = False
+                    finish_reason_value: Optional[str] = None
                     reported_usage: Any = None
                     async for raw_line in response.content:
                         line = raw_line.decode("utf-8", errors="replace").strip()
@@ -2080,6 +2082,7 @@ async def _request_model(
                         event_data = line[5:].strip()
                         if event_data == "[DONE]":
                             stream_finished = True
+                            stream_done_marker = True
                             break
                         if not event_data:
                             continue
@@ -2118,16 +2121,34 @@ async def _request_model(
                                     await on_delta(piece)
                             if choice.get("finish_reason") is not None:
                                 stream_finished = True
+                                finish_reason_value = str(choice.get("finish_reason"))
                     result = "".join(chunks).strip()
                     if not result:
                         raise RuntimeError(
                             "TokenPlan включил потоковый режим, но не передал текст ответа. "
                             "Проверь поддержку streaming у API."
                         )
-                    if not stream_finished:
-                        logging.warning(
-                            "TokenPlan SSE stream closed without [DONE]: model=%s elapsed=%.1fs",
-                            model, time.monotonic() - started_at,
+                    if not stream_done_marker and finish_reason_value is None:
+                        logging.error(
+                            "TokenPlan SSE stream ended without a completion marker: model=%s chars=%s elapsed=%.1fs",
+                            model, len(result), time.monotonic() - started_at,
+                        )
+                        raise RuntimeError(
+                            "Поток ответа TokenPlan оборвался без признака завершения генерации. "
+                            "Неполный ответ не сохранён и не будет применён к GitHub."
+                        )
+                    if finish_reason_value == "length":
+                        raise RuntimeError(
+                            "Модель достигла лимита длины ответа. Результат неполный и не будет применён к GitHub."
+                        )
+                    if finish_reason_value == "content_filter":
+                        raise RuntimeError(
+                            "Провайдер остановил генерацию фильтром содержимого. Ответ не будет применён к GitHub."
+                        )
+                    if not stream_done_marker:
+                        logging.info(
+                            "TokenPlan SSE stream completed by finish_reason=%s without [DONE]: model=%s elapsed=%.1fs",
+                            finish_reason_value, model, time.monotonic() - started_at,
                         )
                     await _report_model_usage(
                         on_usage, reported_usage, payload["messages"], result
