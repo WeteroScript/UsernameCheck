@@ -1896,17 +1896,19 @@ async def _continue_limited_model_response(
     on_usage: Optional[Callable[[Dict[str, Any]], Awaitable[None]]],
     effort: Optional[str],
     continuation_depth: int,
+    report_partial_usage: bool = True,
 ) -> str:
-    """Count a capped fragment and continue the same answer without replaying it."""
-    await _report_model_usage(on_usage, raw_usage, request_messages, partial_result)
+    """Continue a truncated response, validating the fully combined structure."""
+    if report_partial_usage:
+        await _report_model_usage(on_usage, raw_usage, request_messages, partial_result)
     if continuation_depth >= 8:
         raise RuntimeError(
-            "Модель достигла лимита длины ответа 8 раз подряд. "
-            "Частичный результат показан, но продолжение снова упёрлось в лимит."
+            "Модель не завершила структуру ответа после 8 продолжений. "
+            "Неполный результат не будет сохранён как готовый файл."
         )
 
     logging.warning(
-        "Model output limit reached; continuing: model=%s depth=%s chars=%s",
+        "Incomplete model response; continuing: model=%s depth=%s chars=%s",
         model, continuation_depth + 1, len(partial_result),
     )
     continuation_context = [
@@ -1929,7 +1931,23 @@ async def _continue_limited_model_response(
         and partial_result[-1].isalnum() and continuation[0].isalnum()
         else ""
     )
-    return partial_result + separator + continuation
+    combined_result = partial_result + separator + continuation
+    if _has_incomplete_structured_output(combined_result):
+        return await _continue_limited_model_response(
+            model=model,
+            previous_messages=previous_messages,
+            user_text=user_text,
+            partial_result=combined_result,
+            raw_usage=None,
+            request_messages=[],
+            user_id=user_id,
+            on_delta=on_delta,
+            on_usage=on_usage,
+            effort=effort,
+            continuation_depth=continuation_depth + 1,
+            report_partial_usage=False,
+        )
+    return combined_result
 
 
 async def _request_claude_native(
