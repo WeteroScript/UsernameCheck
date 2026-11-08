@@ -704,6 +704,7 @@ def _root_keyboard() -> InlineKeyboardMarkup:
             InlineKeyboardButton(text="➕ Новый чат", callback_data="ai_new", style=ButtonStyle.SUCCESS),
             InlineKeyboardButton(text="📁 Мои чаты", callback_data="ai_my_chats", style=ButtonStyle.PRIMARY),
         ],
+        [InlineKeyboardButton(text="🔁 Авто-запрос", callback_data="ai_auto", style=ButtonStyle.SUCCESS)],
         [
             InlineKeyboardButton(text="⚙️", callback_data="ai_settings", style=ButtonStyle.PRIMARY),
             InlineKeyboardButton(text="🐙 GitHub", callback_data="github_menu", style=ButtonStyle.PRIMARY),
@@ -926,11 +927,17 @@ def _my_chats_keyboard(
 
 def _chat_settings_keyboard(chat_id: str, model: Optional[str] = None) -> InlineKeyboardMarkup:
     back_callback = f"ai_folder_{_model_folder_key(model)}" if model else "ai_my_chats"
-    return InlineKeyboardMarkup(inline_keyboard=[
+    rows = [
+        [InlineKeyboardButton(text="📊 Лимиты и расход", callback_data=f"ai_chat_quota_{chat_id}", style=ButtonStyle.PRIMARY)],
+    ]
+    if model and _supports_effort(model):
+        rows.append([InlineKeyboardButton(text="🧠 Усиление модели", callback_data=f"ai_chat_effort_{chat_id}", style=ButtonStyle.SUCCESS)])
+    rows.extend([
         [InlineKeyboardButton(text="🗑 Удалить чат", callback_data=f"ai_chat_delete_{chat_id}", style=ButtonStyle.DANGER)],
         [InlineKeyboardButton(text="🎛 Поменять модель", callback_data=f"ai_chat_change_model_{chat_id}", style=ButtonStyle.SUCCESS)],
         [InlineKeyboardButton(text="⬅️ Назад к папке", callback_data=back_callback, style=ButtonStyle.PRIMARY)],
     ])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 def _chat_model_keyboard(chat_id: str) -> InlineKeyboardMarkup:
     buttons = [
@@ -2016,8 +2023,20 @@ async def _request_model(
 async def ai_menu(callback: types.CallbackQuery, state: FSMContext):
     await callback.answer()
     await state.clear()
+    user_id = callback.from_user.id
+    chats = _user_chats(user_id)
+    premium = is_premium(user_id)
+    if premium:
+        models = list(dict.fromkeys(str(item.get("model") or "") for item in chats if item.get("model")))
+        quota_text = (
+            "\n\nТокены учитываются отдельно для каждой модели. "
+            "Открой настройки нужного чата, чтобы увидеть расход за 5 часов и 7 дней."
+        )
+    else:
+        quota_text = "\n\n" + format_ai_quota(user_id, "", False)
     await callback.message.edit_text(
-        "💬 <b>Чат с ИИ</b>\n\nСоздавай отдельные диалоги. Контекст диалогов сохраняется.",
+        "💬 <b>Чат с ИИ</b>\n\nСоздавай отдельные диалоги. Контекст диалогов сохраняется."
+        + quota_text,
         parse_mode="HTML",
         reply_markup=_root_keyboard(),
     )
