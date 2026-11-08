@@ -143,6 +143,23 @@ def get_ai_request_total() -> int:
             return 0
 
 
+def ensure_ai_request_total(minimum_total: int) -> None:
+    """Backfill the counter from saved chat turns without lowering its value."""
+    try:
+        minimum = max(0, int(minimum_total))
+    except (TypeError, ValueError):
+        return
+    with _LOCK:
+        meta = _DATA.setdefault("_meta", {})
+        if not isinstance(meta, dict):
+            meta = {}
+            _DATA["_meta"] = meta
+        current = max(0, int(meta.get("ai_requests_total") or 0))
+        if minimum > current:
+            meta["ai_requests_total"] = minimum
+            _save()
+
+
 def record_free_request(user_id: int) -> None:
     now = time.time()
     with _LOCK:
