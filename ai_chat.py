@@ -3425,7 +3425,7 @@ async def ai_model_folder(callback: types.CallbackQuery, state: FSMContext):
     )
 
 
-@router.callback_query(lambda callback: callback.data and callback.data.startswith("ai_folder_delete_"))
+@router.callback_query(lambda callback: callback.data and callback.data.startswith("ai_folder_delete_") and not callback.data.startswith("ai_folder_delete_confirm_"))
 async def ai_folder_delete_prompt(callback: types.CallbackQuery, state: FSMContext):
     folder_key = callback.data[len("ai_folder_delete_"):]
     chats = _user_chats(callback.from_user.id)
