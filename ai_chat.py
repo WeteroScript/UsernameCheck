@@ -54,7 +54,7 @@ CHAT_ARCHIVE_DIR = Path(data_directory("ai_chat_archives"))
 MAX_CHAT_ARCHIVES = 8
 MAX_CHAT_ARCHIVE_CONTEXT_CHARS = 400_000
 
-MAX_CONTEXT_MESSAGES = 40
+MAX_CONTEXT_MESSAGES = 8
 TELEGRAM_TEXT_LIMIT = 4000
 TEXT_EXTENSIONS = {
     ".txt", ".md", ".csv", ".tsv", ".json", ".xml", ".html", ".htm",
@@ -2265,10 +2265,18 @@ async def _request_model_once(
     if not api_url:
         raise RuntimeError("Не задан TOKENPLAN_BASE_URL.")
 
+    system_prompt = _effective_system_prompt(user_id)
+    if not previous_messages:
+        system_prompt += (
+            "\\n\\nПОДТВЕРЖДЕНИЕ ПРАВИЛ: в самом первом ответе нового диалога "
+            "начни текст отдельной строкой «Правила приняты.», затем сразу ответь "
+            "на запрос пользователя. Не повторяй эту фразу в последующих ответах."
+        )
+
     if model.startswith("claude") and custom_api is None:
         return await _request_claude_native(
             api_key, api_url, model,
-            [{"role": "system", "content": _effective_system_prompt(user_id)}, *previous_messages[-MAX_CONTEXT_MESSAGES:]],
+            [{"role": "system", "content": system_prompt}, *previous_messages[-MAX_CONTEXT_MESSAGES:]],
             user_text, on_delta, on_usage, effort,
             user_id=user_id,
             _continuation_depth=_continuation_depth,
@@ -2280,7 +2288,7 @@ async def _request_model_once(
         "stream_options": {"include_usage": True},
         "max_tokens": 16384,
         "messages": [
-            {"role": "system", "content": _effective_system_prompt(user_id)},
+            {"role": "system", "content": system_prompt},
             *previous_messages[-MAX_CONTEXT_MESSAGES:],
             {"role": "user", "content": user_text},
         ],
