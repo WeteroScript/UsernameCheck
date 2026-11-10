@@ -13,8 +13,9 @@ Telegram-бот на Python 3.10+ и aiogram 3.x.
 | `BOT_TOKEN` | Да | Токен Telegram-бота |
 | `API_ID` | Да | Telegram API ID, только число |
 | `API_HASH` | Да | Telegram API Hash |
-| `TOKENPLAN_API_KEY` | Для чата с ИИ | Ключ TokenPlan |
-| `TOKENPLAN_BASE_URL` | Нет | URL Chat Completions API; по умолчанию используется TokenPlan |
+| `TOKENPLAN_API_KEY` | Для чата с ИИ | Основной ключ TokenPlan; используется первым |
+| `TOKENPLAN_API_KEY_BACKUP` | Нет | Запасной ключ; автоматически используется при исчерпании лимита основного |
+| `TOKENPLAN_BASE_URL` | Нет | Base URL TokenPlan; по умолчанию `https://tokenplan.lat/v1` |
 | `AI_CHAT_HISTORY_FILE` | Нет | Путь к файлу истории; по умолчанию `data/ai_chats.json` |
 | `USE_LOCAL_BOT_API` | Нет | Использовать локальный Bot API; в Docker включён по умолчанию |
 | `TELEGRAM_BOT_API_URL` | Нет | Адрес локального Bot API; по умолчанию `http://127.0.0.1:8081` |
@@ -47,8 +48,13 @@ Telegram-бот на Python 3.10+ и aiogram 3.x.
 в JSON-файле, привязанном к Telegram user_id. Путь задаётся переменной
 `AI_CHAT_HISTORY_FILE` (по умолчанию `data/ai_chats.json`).
 
-API-ключ читается из переменной окружения `TOKENPLAN_API_KEY` и не должен попадать
-в исходный код или Git. Не загружай локальный `.env` в репозиторий.
+Основной API-ключ читается из `TOKENPLAN_API_KEY`, запасной — из
+`TOKENPLAN_API_KEY_BACKUP`. При исчерпании лимита ключ временно исключается из
+использования на 5 часов; бот переключается на другой доступный ключ. Если лимиты
+исчерпаны у обоих ключей, запрос ожидает окончания ближайшего периода ограничения,
+после чего повторяется с первым доступным ключом. История чатов хранится независимо
+от используемого API-ключа. Секреты не должны попадать в исходный код или Git.
+Не загружай локальный `.env` в репозиторий.
 
 ## Local Telegram Bot API и большие файлы
 
