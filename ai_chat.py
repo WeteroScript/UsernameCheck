@@ -41,7 +41,7 @@ load_dotenv()
 
 router = Router(name="ai_chat")
 
-DEFAULT_API_URL = "https://tokenplan.lat/v1"
+DEFAULT_API_URL = "https://tokenplan.one/v1"
 API_KEY_ENV = "TOKENPLAN_API_KEY"
 BACKUP_API_KEY_ENV = "TOKENPLAN_API_KEY_BACKUP"
 API_KEY_COOLDOWN_SECONDS = 5 * 60 * 60
@@ -517,7 +517,7 @@ def _normalize_api_url(value: str) -> str:
     ):
         raise ValueError(
             "Нужен HTTPS URL без логина, пароля, query-параметров и фрагмента. "
-            "Например: https://tokenplan.lat/v1"
+            "Например: https://tokenplan.one/v1"
         )
     path = parsed.path.rstrip("/")
     if not path.endswith("/chat/completions"):
@@ -3134,7 +3134,7 @@ async def ai_api_settings(callback: types.CallbackQuery, state: FSMContext):
         f"{html.escape(api_status)}\n\n"
         "Ключ не показывается в меню и не записывается в историю переписки; на диске он хранится зашифрованно. "
         "Модели загружаются с endpoint /models твоего API. Для TokenPlan обычно подходит "
-        "<code>https://tokenplan.lat/v1</code>.",
+        "<code>https://tokenplan.one/v1</code>.",
         parse_mode="HTML",
         reply_markup=_api_settings_keyboard(),
     )
@@ -3155,7 +3155,7 @@ async def ai_api_set_url(callback: types.CallbackQuery, state: FSMContext):
     await callback.answer()
     await state.set_state(AIChatStates.waiting_api_url)
     await callback.message.edit_text(
-        "Отправь HTTPS Base URL, например https://tokenplan.lat/v1. "
+        "Отправь HTTPS Base URL, например https://tokenplan.one/v1. "
         "Путь /chat/completions бот добавит автоматически. Для отмены отправь /cancel."
     )
 
