@@ -2147,7 +2147,9 @@ def _quota_error_response(status: int, body: str) -> bool:
     markers = (
         "insufficient_quota", "quota exceeded", "quota_exceeded",
         "billing hard limit", "usage limit", "token limit",
-        "credits exhausted", "out of credits", "лимит исчерпан",
+        "credits exhausted", "out of credits", "rate_limit_exceeded",
+        "rate limit exceeded", "limit exceeded", "exceeded limit",
+        "лимит исчерпан", "превышен лимит",
     )
     return status in (402, 403, 429) and any(marker in lowered for marker in markers)
 
