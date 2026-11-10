@@ -2057,7 +2057,10 @@ async def _request_claude_native(
                     elif event_type == "message_stop":
                         message_stopped = True
                     elif event_type == "error":
-                        raise RuntimeError("TokenPlan Claude stream error: " + str(event.get("error", {}))[:400])
+                        error_text = str(event.get("error", {}))[:500]
+                        if user_id is None and _quota_error_response(429, error_text):
+                            raise _TokenPlanQuotaExceeded(api_key, error_text)
+                        raise RuntimeError("TokenPlan Claude stream error: " + error_text)
                 result = "".join(chunks).strip()
                 if not message_stopped:
                     raise RuntimeError(
@@ -2136,8 +2139,7 @@ def _select_system_api_key() -> str:
     for key in _system_api_keys():
         if _api_key_cooldowns.get(key, 0.0) <= now:
             return key
-    keys = _system_api_keys()
-    return keys[0] if keys else ""
+    return ""
 
 
 def _quota_error_response(status: int, body: str) -> bool:
@@ -2147,14 +2149,15 @@ def _quota_error_response(status: int, body: str) -> bool:
         "billing hard limit", "usage limit", "token limit",
         "credits exhausted", "out of credits", "лимит исчерпан",
     )
-    return status == 429 or (status in (402, 403) and any(x in lowered for x in markers))
+    return status in (402, 403, 429) and any(marker in lowered for marker in markers)
 
 
-async def _wait_for_available_system_key(exhausted_key: str) -> str:
+async def _wait_for_available_system_key(exhausted_key: Optional[str] = None) -> str:
     keys = _system_api_keys()
     if not keys:
         raise RuntimeError("Не заданы TOKENPLAN_API_KEY и TOKENPLAN_API_KEY_BACKUP.")
-    _api_key_cooldowns[exhausted_key] = time.monotonic() + API_KEY_COOLDOWN_SECONDS
+    if exhausted_key:
+        _api_key_cooldowns[exhausted_key] = time.monotonic() + API_KEY_COOLDOWN_SECONDS
     while True:
         now = time.monotonic()
         for key in keys:
@@ -2382,7 +2385,10 @@ async def _request_model_once(
                             logging.debug("Пропущено не-JSON SSE-событие TokenPlan")
                             continue
                         if isinstance(event, dict) and event.get("error"):
-                            raise RuntimeError("TokenPlan stream error: " + str(event["error"])[:500])
+                            error_text = str(event["error"])[:500]
+                            if custom_api is None and _quota_error_response(429, error_text):
+                                raise _TokenPlanQuotaExceeded(api_key, error_text)
+                            raise RuntimeError("TokenPlan stream error: " + error_text)
                         if isinstance(event, dict) and isinstance(event.get("usage"), dict):
                             reported_usage = event["usage"]
                         choices = event.get("choices", []) if isinstance(event, dict) else []
@@ -2530,6 +2536,10 @@ async def _request_model(
     retry_count = 0
     while True:
         try:
+            if user_id is None or _custom_api_pair(user_id) is None:
+                keys = _system_api_keys()
+                if keys and not any(_api_key_cooldowns.get(key, 0.0) <= time.monotonic() for key in keys):
+                    await _wait_for_available_system_key()
             return await _request_model_once(
                 model,
                 previous_messages,
