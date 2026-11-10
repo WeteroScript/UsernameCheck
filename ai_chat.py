@@ -189,28 +189,77 @@ SYSTEM_PROMPT += (
     "пока бот не подтвердил её результат."
 )
 
+MODEL_SECTIONS = [
+    ("Anthropic (Claude)", [
+        "claude-haiku-5-5",
+        "claude-opus-4-7",
+        "claude-opus-5-5",
+        "claude-sonnet-5-5",
+    ]),
+    ("OpenAI (GPT)", [
+        "gpt-5.5",
+        "gpt-5.6-luna",
+        "gpt-6-astra",
+        "gpt-6-luna",
+        "gpt-6-sol",
+    ]),
+    ("xAI (Grok)", [
+        "grok-4.5",
+        "grok-4.6",
+        "grok-4.7",
+    ]),
+    ("Moonshot AI (Kimi)", [
+        "kimi-k2.5",
+        "kimi-k2.6",
+        "kimi-k2.7",
+        "kimi-k2.8",
+        "kimi-k3",
+        "kimi-k3.1-pro",
+    ]),
+    ("Google (Gemini)", [
+        "gemini-3.8-flash",
+        "gemini-4-argon",
+    ]),
+    ("DeepSeek", [
+        "deepseek-v4-pro",
+        "deepseek-v4.1-flash",
+    ]),
+    ("Другие", [
+        "minimax-m3",
+        "qwen3.8-max",
+        "glm-5.3",
+        "sonar",
+        "sonar-pro",
+    ]),
+]
+MODEL_SECTION_BY_ID = {
+    model: section
+    for section, section_models in MODEL_SECTIONS
+    for model in section_models
+}
 MODELS = [
-    "claude-opus-5-5",
-    "claude-sonnet-5-5",
+    model
+    for _, section_models in MODEL_SECTIONS
+    for model in section_models
+]
+PAID_MODELS = {
     "claude-haiku-5-5",
     "claude-opus-4-7",
+    "claude-opus-5-5",
+    "claude-sonnet-5-5",
     "gpt-6-astra",
+    "gpt-6-luna",
     "gpt-6-sol",
-    "gpt-5.5",
-    "gemini-4-argon",
-    "gemini-3.8-flash",
-    "deepseek-v4.1-flash",
-    "deepseek-v4-pro",
-    "kimi-k3.1-pro",
-    "kimi-k3",
-    "kimi-k2.8",
+    "grok-4.5",
+    "grok-4.6",
+    "grok-4.7",
     "kimi-k2.7",
-    "kimi-k2.6",
-    "glm-5.3",
-    "qwen3.8-max",
-    "minimax-m3",
-    "hy3",
-]
+    "kimi-k2.8",
+    "kimi-k3",
+    "kimi-k3.1-pro",
+    "gemini-4-argon",
+    "deepseek-v4.1-flash",
+}
 
 chat_history: Dict[str, List[Dict[str, Any]]] = {}
 user_settings: Dict[str, Dict[str, Any]] = {}
@@ -825,17 +874,7 @@ def _new_chat_keyboard() -> InlineKeyboardMarkup:
 
 
 def _is_paid_model(model: str) -> bool:
-    normalized = str(model or "").lower()
-    return (
-        normalized.startswith("claude")
-        or normalized in {"gpt-6-astra", "gpt-6-sol"}
-        or normalized == "gemini-4-argon"
-        or normalized.startswith("gemini-4-argon-")
-        or normalized == "kimi-k3"
-        or normalized.startswith(("kimi-k3-", "kimi-k3."))
-        or normalized == "deepseek-v4.1-flash"
-        or normalized.startswith("deepseek-v4.1-flash-")
-    )
+    return str(model or "").strip().lower() in PAID_MODELS
 
 
 def _supports_effort(model: str) -> bool:
@@ -940,8 +979,26 @@ def _models_keyboard(
     page_count = max(1, (len(models) + page_size - 1) // page_size)
     page = max(0, min(page, page_count - 1))
     start = page * page_size
-    buttons = []
-    for index, model in enumerate(models[start:start + page_size], start=start):
+    rows = []
+    page_models = list(enumerate(models[start:start + page_size], start=start))
+    current_section = None
+    section_buttons = []
+    for index, model in page_models:
+        section = MODEL_SECTION_BY_ID.get(model) if not custom_api else None
+        if section != current_section:
+            if section_buttons:
+                rows.extend(
+                    section_buttons[pos:pos + 2]
+                    for pos in range(0, len(section_buttons), 2)
+                )
+                section_buttons = []
+            if section:
+                rows.append([InlineKeyboardButton(
+                    text=f"— {section} —",
+                    callback_data="ai_models_section",
+                    style=ButtonStyle.PRIMARY,
+                )])
+            current_section = section
         label = model if len(model) <= 54 else model[:51] + "..."
         if _is_paid_model(model):
             label = f"🔒 {label}"
@@ -949,12 +1006,16 @@ def _models_keyboard(
             f"ai_chat_set_model_{chat_id}_{index}" if chat_id
             else f"ai_model_{index}"
         )
-        buttons.append(InlineKeyboardButton(
+        section_buttons.append(InlineKeyboardButton(
             text=label,
             callback_data=callback_data,
             style=ButtonStyle.PRIMARY if custom_api else _model_style(model),
         ))
-    rows = [buttons[index:index + 2] for index in range(0, len(buttons), 2)]
+    if section_buttons:
+        rows.extend(
+            section_buttons[pos:pos + 2]
+            for pos in range(0, len(section_buttons), 2)
+        )
     if page_count > 1:
         navigation = []
         if page > 0:
@@ -1101,15 +1162,22 @@ def _chat_settings_keyboard(chat_id: str, model: Optional[str] = None) -> Inline
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 def _chat_model_keyboard(chat_id: str) -> InlineKeyboardMarkup:
-    buttons = [
-        InlineKeyboardButton(
-            text=f"🔒 {model}" if _is_paid_model(model) else model,
-            callback_data=f"ai_chat_set_model_{chat_id}_{model}",
-            style=_model_style(model),
-        )
-        for model in MODELS
-    ]
-    rows = [buttons[index:index + 2] for index in range(0, len(buttons), 2)]
+    rows = []
+    for section, section_models in MODEL_SECTIONS:
+        rows.append([InlineKeyboardButton(
+            text=f"— {section} —",
+            callback_data="ai_models_section",
+            style=ButtonStyle.PRIMARY,
+        )])
+        buttons = [
+            InlineKeyboardButton(
+                text=f"🔒 {model}" if _is_paid_model(model) else model,
+                callback_data=f"ai_chat_set_model_{chat_id}_{model}",
+                style=_model_style(model),
+            )
+            for model in section_models
+        ]
+        rows.extend(buttons[index:index + 2] for index in range(0, len(buttons), 2))
     rows.append([InlineKeyboardButton(
         text="⬅️ Назад к настройкам",
         callback_data=f"ai_chat_settings_{chat_id}",
