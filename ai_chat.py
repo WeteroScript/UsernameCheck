@@ -2187,8 +2187,7 @@ async def _request_model_once(
         api_url = api_url.rstrip("/") + "/chat/completions"
     if not api_key:
         raise RuntimeError(
-            "Не задан TOKENPLAN_API_KEY. Добавь API-ключ TokenPlan в переменные "
-            "окружения или в локальный .env-файл."
+            "Не заданы TOKENPLAN_API_KEY и TOKENPLAN_API_KEY_BACKUP. Добавь хотя бы один API-ключ TokenPlan."
         )
     if not api_url:
         raise RuntimeError("Не задан TOKENPLAN_BASE_URL.")
@@ -3401,7 +3400,7 @@ async def ai_chat_models_page(callback: types.CallbackQuery):
     )
 
 
-@router.callback_query(lambda callback: callback.data and callback.data.startswith("ai_folder_"))
+@router.callback_query(lambda callback: callback.data and callback.data.startswith("ai_folder_") and not callback.data.startswith("ai_folder_delete_"))
 async def ai_model_folder(callback: types.CallbackQuery, state: FSMContext):
     folder_key = callback.data[len("ai_folder_"):]
     user_id = callback.from_user.id
