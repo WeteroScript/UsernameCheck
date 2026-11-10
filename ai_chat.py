@@ -1076,6 +1076,7 @@ def _my_chats_keyboard(
 
     rows.extend([
         [InlineKeyboardButton(text="➕ Новый чат", callback_data="ai_new", style=ButtonStyle.SUCCESS)],
+        *([[InlineKeyboardButton(text="🗑 Удалить папку", callback_data=f"ai_folder_delete_{_model_folder_key(model_filter)}", style=ButtonStyle.DANGER)]] if model_filter is not None else []),
         [InlineKeyboardButton(
             text="⬅️ Назад к папкам" if model_filter is not None else "⬅️ Назад",
             callback_data="ai_my_chats" if model_filter is not None else "ai_menu",
@@ -3422,6 +3423,56 @@ async def ai_model_folder(callback: types.CallbackQuery, state: FSMContext):
         f"Сохранено диалогов: {count}. Выбери чат, чтобы продолжить:",
         parse_mode="HTML",
         reply_markup=_my_chats_keyboard(user_id, model_filter=model),
+    )
+
+
+@router.callback_query(lambda callback: callback.data and callback.data.startswith("ai_folder_delete_"))
+async def ai_folder_delete_prompt(callback: types.CallbackQuery, state: FSMContext):
+    folder_key = callback.data[len("ai_folder_delete_"):]
+    chats = _user_chats(callback.from_user.id)
+    models = {str(chat.get("model") or "unknown") for chat in chats
+              if _model_folder_key(str(chat.get("model") or "unknown")) == folder_key}
+    if not models:
+        await callback.answer("Папка не найдена.", show_alert=True)
+        return
+    model = next(iter(models))
+    count = sum(1 for chat in chats if str(chat.get("model") or "unknown") == model)
+    await callback.answer()
+    await callback.message.edit_text(
+        f"Удалить папку <b>{html.escape(_model_folder_title(model))}</b> и все её диалоги ({count})? История будет удалена без возможности восстановления.",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="Да, удалить", callback_data=f"ai_folder_delete_confirm_{folder_key}", style=ButtonStyle.DANGER)],
+            [InlineKeyboardButton(text="Отмена", callback_data=f"ai_folder_{folder_key}", style=ButtonStyle.PRIMARY)],
+        ]),
+    )
+
+
+@router.callback_query(lambda callback: callback.data and callback.data.startswith("ai_folder_delete_confirm_"))
+async def ai_folder_delete_confirm(callback: types.CallbackQuery, state: FSMContext):
+    folder_key = callback.data[len("ai_folder_delete_confirm_"):]
+    user_id = callback.from_user.id
+    chats = _user_chats(user_id)
+    models = {str(chat.get("model") or "unknown") for chat in chats
+              if _model_folder_key(str(chat.get("model") or "unknown")) == folder_key}
+    if not models:
+        await callback.answer("Папка уже удалена.", show_alert=True)
+        return
+    model = next(iter(models))
+    remaining = [chat for chat in chats if str(chat.get("model") or "unknown") != model]
+    removed_count = len(chats) - len(remaining)
+    chat_history[str(user_id)] = remaining
+    if not _save_history():
+        chat_history[str(user_id)] = chats
+        await callback.answer("Не удалось сохранить удаление. История восстановлена.", show_alert=True)
+        return
+    await state.clear()
+    await callback.answer(f"Удалено диалогов: {removed_count}.")
+    folder_count = len({str(chat.get("model") or "unknown") for chat in remaining})
+    await callback.message.edit_text(
+        f"📚 <b>Мои чаты</b>\n\nВсего диалогов: {len(remaining)} · Папок моделей: {folder_count}.\nВыбери папку модели:",
+        parse_mode="HTML",
+        reply_markup=_my_chats_keyboard(user_id),
     )
 
 
