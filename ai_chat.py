@@ -2279,6 +2279,8 @@ async def _request_model_once(
                             except json.JSONDecodeError:
                                 fallback_data = {}
                             if fallback.status != 200:
+                                if custom_api is None and _quota_error_response(fallback.status, fallback_body):
+                                    raise _TokenPlanQuotaExceeded(api_key, fallback_body[:500] or "Лимит API исчерпан")
                                 if fallback.status == 502:
                                     fallback_request_id = (
                                         fallback.headers.get("x-request-id")
