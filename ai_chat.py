@@ -41,8 +41,11 @@ load_dotenv()
 
 router = Router(name="ai_chat")
 
-DEFAULT_API_URL = "https://tokenplan.lat/v1/chat/completions"
+DEFAULT_API_URL = "https://tokenplan.lat/v1"
 API_KEY_ENV = "TOKENPLAN_API_KEY"
+BACKUP_API_KEY_ENV = "TOKENPLAN_API_KEY_BACKUP"
+API_KEY_COOLDOWN_SECONDS = 5 * 60 * 60
+_api_key_cooldowns: Dict[str, float] = {}
 HISTORY_PATH = Path(data_file(os.getenv("AI_CHAT_HISTORY_FILE", "ai_chats.json")))
 SETTINGS_PATH = Path(data_file(os.getenv("AI_CHAT_SETTINGS_FILE", "ai_chat_settings.json")))
 MAX_CUSTOM_PROMPT_CHARS = 20000
