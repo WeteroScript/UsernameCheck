@@ -2002,6 +2002,8 @@ async def _request_claude_native(
             body_type = response.headers.get("Content-Type", "").lower()
             if response.status != 200:
                 body = await response.text()
+                if user_id is not None and _custom_api_pair(user_id) is None and _quota_error_response(response.status, body):
+                    raise _TokenPlanQuotaExceeded(api_key, body[:500] or "Лимит API исчерпан")
                 if response.status == 502:
                     request_id = (
                         response.headers.get("x-request-id")
@@ -2178,7 +2180,7 @@ async def _request_model_once(
         # Личные реквизиты используются парой, без подстановки системных значений.
         api_key, api_url = custom_api
     else:
-        api_key = str(os.getenv(API_KEY_ENV, "")).strip()
+        api_key = _select_system_api_key()
         api_url = str(os.getenv("TOKENPLAN_BASE_URL") or DEFAULT_API_URL).strip()
     if not api_url.rstrip("/").endswith("/chat/completions"):
         api_url = api_url.rstrip("/") + "/chat/completions"
@@ -2238,6 +2240,8 @@ async def _request_model_once(
                 )
                 if response.status != 200:
                     raw_body = await response.text()
+                    if custom_api is None and _quota_error_response(response.status, raw_body):
+                        raise _TokenPlanQuotaExceeded(api_key, raw_body[:500] or "Лимит API исчерпан")
                     try:
                         data = json.loads(raw_body)
                     except json.JSONDecodeError:
