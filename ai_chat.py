@@ -2112,6 +2112,56 @@ class _TokenPlanHTTP502(RuntimeError):
         self.request_id = request_id
 
 
+class _TokenPlanQuotaExceeded(RuntimeError):
+    def __init__(self, api_key: str, detail: str) -> None:
+        super().__init__(detail)
+        self.api_key = api_key
+        self.detail = detail
+
+
+def _system_api_keys() -> List[str]:
+    keys = []
+    for name in (API_KEY_ENV, BACKUP_API_KEY_ENV):
+        key = str(os.getenv(name, "")).strip()
+        if key and key not in keys:
+            keys.append(key)
+    return keys
+
+
+def _select_system_api_key() -> str:
+    now = time.monotonic()
+    for key in _system_api_keys():
+        if _api_key_cooldowns.get(key, 0.0) <= now:
+            return key
+    keys = _system_api_keys()
+    return keys[0] if keys else ""
+
+
+def _quota_error_response(status: int, body: str) -> bool:
+    lowered = body.lower()
+    markers = (
+        "insufficient_quota", "quota exceeded", "quota_exceeded",
+        "billing hard limit", "usage limit", "token limit",
+        "credits exhausted", "out of credits", "лимит исчерпан",
+    )
+    return status == 429 or (status in (402, 403) and any(x in lowered for x in markers))
+
+
+async def _wait_for_available_system_key(exhausted_key: str) -> str:
+    keys = _system_api_keys()
+    if not keys:
+        raise RuntimeError("Не заданы TOKENPLAN_API_KEY и TOKENPLAN_API_KEY_BACKUP.")
+    _api_key_cooldowns[exhausted_key] = time.monotonic() + API_KEY_COOLDOWN_SECONDS
+    while True:
+        now = time.monotonic()
+        for key in keys:
+            if _api_key_cooldowns.get(key, 0.0) <= now:
+                return key
+        delay = min(max(1.0, _api_key_cooldowns.get(key, 0.0) - now) for key in keys)
+        logging.warning("Оба TokenPlan API-ключа временно исчерпаны; ожидание %.0f секунд", delay)
+        await asyncio.sleep(delay)
+
+
 async def _request_model_once(
     model: str,
     previous_messages: List[Dict[str, str]],
