@@ -995,7 +995,7 @@ def _models_keyboard(
             if section:
                 rows.append([InlineKeyboardButton(
                     text=f"— {section} —",
-                    callback_data="ai_models_section",
+                    callback_data="no_action",
                     style=ButtonStyle.PRIMARY,
                 )])
             current_section = section
@@ -1166,7 +1166,7 @@ def _chat_model_keyboard(chat_id: str) -> InlineKeyboardMarkup:
     for section, section_models in MODEL_SECTIONS:
         rows.append([InlineKeyboardButton(
             text=f"— {section} —",
-            callback_data="ai_models_section",
+            callback_data="no_action",
             style=ButtonStyle.PRIMARY,
         )])
         buttons = [
