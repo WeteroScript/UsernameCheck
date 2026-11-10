@@ -2539,6 +2539,23 @@ async def _request_model(
                 _retry_attempt=_retry_attempt,
                 _continuation_depth=_continuation_depth,
             )
+        except _TokenPlanQuotaExceeded as exc:
+            if user_id is not None and _custom_api_pair(user_id) is not None:
+                raise RuntimeError(f"Лимит личного API исчерпан: {exc.detail[:350]}")
+            keys = _system_api_keys()
+            if exc.api_key not in keys:
+                raise RuntimeError(f"API сообщил об исчерпании лимита: {exc.detail[:350]}")
+            _api_key_cooldowns[exc.api_key] = time.monotonic() + API_KEY_COOLDOWN_SECONDS
+            backup_available = any(
+                key != exc.api_key and _api_key_cooldowns.get(key, 0.0) <= time.monotonic()
+                for key in keys
+            )
+            if backup_available:
+                logging.warning("TokenPlan: лимит ключа исчерпан, переключение на следующий доступный ключ")
+                continue
+            await _wait_for_available_system_key(exc.api_key)
+            logging.info("TokenPlan: cooldown завершён, повтор исходного запроса с доступным ключом")
+            continue
         except _TokenPlanHTTP502 as exc:
             retry_count += 1
             logging.warning(
