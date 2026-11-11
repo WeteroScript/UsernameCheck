@@ -2091,13 +2091,19 @@ async def _request_claude_native(
                 chunks: List[str] = []
                 raw_usage: Dict[str, Any] = {}
                 message_stopped = False
+                stream_terminated = False
                 stop_reason: Optional[str] = None
                 async for raw_line in response.content:
                     line = raw_line.decode("utf-8", errors="replace").strip()
                     if not line.startswith("data:"):
                         continue
                     data_text = line[5:].strip()
-                    if not data_text or data_text == "[DONE]":
+                    if not data_text:
+                        continue
+                    if data_text == "[DONE]":
+                        # Некоторые OpenAI-совместимые шлюзы завершают
+                        # Anthropic-поток маркером [DONE], не отправляя message_stop.
+                        stream_terminated = True
                         continue
                     try:
                         event = json.loads(data_text)
@@ -2130,10 +2136,21 @@ async def _request_claude_native(
                             raise _TokenPlanQuotaExceeded(api_key, error_text)
                         raise RuntimeError("TokenPlan Claude stream error: " + error_text)
                 result = "".join(chunks).strip()
-                if not message_stopped:
+                # Совместимые шлюзы могут не присылать Anthropic message_stop:
+                # достаточно явного [DONE] либо штатной причины остановки
+                # из последнего message_delta. Не считаем обычный EOF успешным,
+                # если провайдер не подтвердил завершение ответа.
+                completed_stop_reasons = {"end_turn", "stop_sequence", "max_tokens"}
+                stream_completed = (
+                    message_stopped
+                    or stream_terminated
+                    or stop_reason in completed_stop_reasons
+                )
+                if not stream_completed:
                     raise RuntimeError(
-                        "Поток Claude завершился без события message_stop. "
-                        "Ответ считается незавершённым; следующий авто-запрос не будет запущен."
+                        "Поток Claude оборвался без подтверждения завершения "
+                        "(message_stop, [DONE] или штатного stop_reason). "
+                        "Ответ не сохранён как завершённый."
                     )
             else:
                 data = await response.json(content_type=None)
