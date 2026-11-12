@@ -2828,15 +2828,16 @@ async def ai_auto_help(callback: types.CallbackQuery):
         await callback.answer("Авто-запрос доступен только пользователям Premium.", show_alert=True)
         return
     await callback.answer(
-        "Старт: повторяет запрос после каждого ответа (не чаще раза в 5 с), пока модель не завершит этап "
-        "или не внесёт изменения в GitHub. На такой контрольной точке автоповтор останавливается. "
+        "Старт: автоматически повторяет запрос после каждого ответа (не чаще раза в 5 с), "
+        "в том числе после завершения этапа и коммитов в GitHub. Останавливается только при явном "
+        "завершении всей задачи, ошибке, исчерпании лимита или нажатии «Стоп». "
         "Стоп: ждёт текущий ответ и не запускает следующий цикл. Лимиты действуют.",
         show_alert=True,
     )
 
 
 def _auto_turn_requires_checkpoint(chat: Optional[Dict[str, Any]]) -> bool:
-    """Останавливает автоповтор на завершённом этапе и после побочных действий в GitHub."""
+    """Останавливает цикл только когда модель явно сообщает о полном завершении задачи."""
     if not chat:
         return False
     last_answer = next(
@@ -2850,22 +2851,13 @@ def _auto_turn_requires_checkpoint(chat: Optional[Dict[str, Any]]) -> bool:
     if not last_answer:
         return False
 
-    checkpoint_markers = (
-        "следующий этап",
-        "продолжать ли",
-        "продолжать?",
-        "подтверди следующий этап",
-        "приступать к работе?",
-        "изменения записаны непосредственно в ветку",
-        "изменения отправлены в github",
-        "pull request:",
+    completion_markers = (
         "задача полностью завершена",
         "все этапы завершены",
+        "работа полностью завершена",
+        "проект полностью готов",
     )
-    if any(marker in last_answer for marker in checkpoint_markers):
-        return True
-    return bool(re.search(r"(^|\n)\s*(готово|задача завершена|работа завершена)\s*[:.!]", last_answer))
-
+    return any(marker in last_answer for marker in completion_markers)
 
 async def _auto_request_loop(
     bot,
@@ -2923,10 +2915,7 @@ async def _auto_request_loop(
 
             chat = _find_chat(user.id, chat_id)
             if _auto_turn_requires_checkpoint(chat):
-                stop_reason = (
-                    "Пауза на контрольной точке: этап завершён или внесены изменения в GitHub. "
-                    "Проверь результат и подтверди дальнейшую работу вручную."
-                )
+                stop_reason = "Модель сообщила о полном завершении задачи."
                 break
 
             if stop_event.is_set():
